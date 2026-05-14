@@ -118,10 +118,6 @@ void CAN1_RX1_IRQHandler(void)
 {
     CAN_ClearINTPendingBit(CAN1, CAN_INT_FF1);
 }
-void CAN2_RX0_IRQHandler(void)
-{
-    CAN_ClearINTPendingBit(CAN2, CAN_INT_FF0);
-}
 void CAN2_RX1_IRQHandler(void)
 {
     CAN_ClearINTPendingBit(CAN2, CAN_INT_FF1);

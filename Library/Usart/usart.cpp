@@ -4,7 +4,7 @@
 Usart_C::Usart_C(void)
     : baudrate(0), isTransmission(false),
       _usartNum(0), _rxHead(0), _rxTail(0),
-      _txLen(0), _txPos(0), _usart(nullptr)
+      _txLen(0), _txPos(0), _usart(NULL)
 {
 }
 

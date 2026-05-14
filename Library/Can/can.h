@@ -4,6 +4,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "n32wb452.h"
+#include "n32wb452_can.h"
 
 #define MY_CAN_ADDR         6
 #define CAN_BROADCAST_ADDR  7
@@ -19,14 +20,14 @@ class Can
         void handler(void);
         void SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8_t AD3,
                          uint8_t AD4, uint8_t AD5, uint8_t AD6, uint8_t AD7);
-        bool checkReceiveMsgAddr(CanRxMsg *msg);
-        void processCanRxMessage(CanRxMsg *msg);
+        bool checkReceiveMsgAddr(CanRxMessage *msg);
+        void processCanRxMessage(CanRxMessage *msg);
 
         uint16_t linkCnt;
-        CanRxMsg RxMessage;
+        CanRxMessage RxMessage;
 
     private:
-        CanTxMsg TxMessage;
+        CanTxMessage TxMessage;
 };
 extern Can can;
 

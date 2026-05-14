@@ -122,8 +122,6 @@ void Led::handlerHeater(void)
     static uint16_t pause = 500;
     static uint8_t count = 0;
     
-    static uint8_t modeTest = 0;
-    
     if ((core.getTick()-timer) > pause){
         timer = core.getTick();
         

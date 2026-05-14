@@ -1,5 +1,4 @@
 #include "randomize.h"
-#include "temperature.h"
 #include <stdio.h>
 #include "math.h"
 
@@ -96,7 +95,7 @@ uint32_t Randomize::getValue(void)
     uint32_t val = 0;
     
     for (int i=0; i<32; i++){
-        val |= temp.array[i]&0x01;
+        val |= array[i]&0x01;
         val = val<<1;
     }
     

@@ -4,6 +4,22 @@ ModeTypeDef mode = MODE_SLEEP;
 int levelGsm = 0;
 char serialNumberModem[16] = {0};
 
+uint8_t step = 0;
+uint8_t stepOld = 0;
+bool isReset = false;
+bool isChangePhones = false;
+char updateToVersion[16] = {0};
+uint16_t keyToNeedReset = 0;
+uint8_t counterTrouble = 0;
+char dtmfChar = 0;
+bool isUnknownRing = false;
+bool isConnectedSocket = false;
+
+void setLowPower(bool enable)
+{
+    (void)enable;
+}
+
 void changeMode(ModeTypeDef newMode)
 {
     mode = newMode;

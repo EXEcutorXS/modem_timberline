@@ -404,39 +404,9 @@
               <FilePath>.\User\Converter.cpp</FilePath>
             </File>
             <File>
-              <FileName>graph.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Graph\graph.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>story.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Story\story.cpp</FilePath>
-            </File>
-            <File>
               <FileName>unix_time.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\Library\Timers\unix_time.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>heater.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\heater.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>panel.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Panel\panel.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>CHANGELOG.md</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\CHANGELOG.md</FilePath>
-            </File>
-            <File>
-              <FileName>SERVER_DOC.md</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\SERVER_DOC.md</FilePath>
             </File>
           </Files>
         </Group>
@@ -457,56 +427,6 @@
               <FileName>gsm.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\Library\Gsm\gsm.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>gprs.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Gprs\gprs.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>json.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Json\json.cpp</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>Interface</GroupName>
-          <Files>
-            <File>
-              <FileName>usart.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Usart\usart.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>protocol_1.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\protocol_1.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>protocol_3.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\protocol_3.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>protocol_4.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\protocol_4.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>protocol_5.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\protocol_5.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>protocol_7.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\protocol_7.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>CommandQueue.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Heater\CommandQueue.cpp</FilePath>
             </File>
           </Files>
         </Group>
@@ -534,24 +454,9 @@
               <FilePath>..\Library\Button\button.cpp</FilePath>
             </File>
             <File>
-              <FileName>temperature.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Temperature\temperature.cpp</FilePath>
-            </File>
-            <File>
               <FileName>randomize.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\Library\Randomize\randomize.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>out.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Out\out.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>n32wb452_w25qxx.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\n32wb452_w25qxx.c</FilePath>
             </File>
             <File>
               <FileName>bsp_spi.c</FileName>
@@ -564,14 +469,19 @@
               <FilePath>..\Library\Flash\flash.cpp</FilePath>
             </File>
             <File>
+              <FileName>usart.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>..\.\Library\Usart\usart.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>can.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>..\.\Library\Can\can.cpp</FilePath>
+            </File>
+            <File>
               <FileName>gpio.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Library\Gpio\gpio.h</FilePath>
-            </File>
-            <File>
-              <FileName>Bridge.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Bridge\Bridge.cpp</FilePath>
             </File>
           </Files>
         </Group>

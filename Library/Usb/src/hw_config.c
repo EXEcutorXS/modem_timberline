@@ -41,10 +41,6 @@
 #include "usb_pwr.h"
 
 #include "log.h"
-#include "usart.h"
-#include "heater.h"
-#include "panel.h"
-#include "gprs.h"
 #include "gsm.h"
 #include "modem_handler.h"
 
@@ -330,100 +326,17 @@ bool USART_Config(void)
 *******************************************************************************/
 void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes)
 {
-    /*uint32_t i;
+    uint32_t i;
 
     for (i = 0; i < Nb_bytes; i++)
     {
-        USART_SendData(USART1, *(data_buffer + i));
-        while(USART_GetFlagStatus(USART1, USART_FLAG_TXDE) == RESET); 
-    }*/
-    
-    uint32_t i;
-    
-    if (*(__IO uint8_t*) (0x803C007) != 255){
-        return;
-    }
-    
-    for (i=0; i<Nb_bytes; i++)
-    {
-        if (*(data_buffer + i) == '2'){
-            step = MODE_WORK_STEP_RECONNECT_TO_SERVER;
-            gprs.is2GMode = true;
-            break;
-        }
-        if (*(data_buffer + i) == '4'){
-            step = MODE_WORK_STEP_RECONNECT_TO_SERVER;
-            gprs.is2GMode = false;
-            break;
-        }
-        if (*(data_buffer + i) == '0'){
-            is_service_id = false;
-            service_id = 0;
-            break;
-        }
         if (*(data_buffer + i) == 'r' || *(data_buffer + i) == 'R'){
-            isReset = true;
-            writeSetup();
-            *(__IO uint32_t *)(0x20023F00) = 0x00000000;
             NVIC_SystemReset();
             break;
         }
         if (*(data_buffer + i) == 'g' || *(data_buffer + i) == 'G'){
             logTypeMess = LOG_TYPE_GSM;
-            log_info("\r\n****LOG GSM/GPRS****\r\n");
-            break;
-        }
-        if (*(data_buffer + i) == 'h' || *(data_buffer + i) == 'H'){
-            logTypeMess = LOG_TYPE_HEATER;
-            log_info("\r\n****LOG HEATER****\r\n");
-            if (heater.stateConnect == heater.STATE_HEATER_SEARCH) log_heater("heater.stateConnect: search");
-            else if (heater.stateConnect == heater.STATE_HEATER_CONNECT_ERROR) log_heater("heater.stateConnect: error");
-            else log_heater("heater.stateConnect: ok");
-            
-            void *ptr = malloc(256);
-            sprintf((char*) ptr, "\r\nheater.baudrate: %d", usart.baudrate);
-            log_heater((char*) ptr);
-            sprintf((char*) ptr, "\r\nheater.verProtocol: %d\r\n", heater.verProtocol);
-            log_heater((char*) ptr);
-            free(ptr);
-            break;
-        }
-        if (*(data_buffer + i) == 'p' || *(data_buffer + i) == 'P'){
-            logTypeMess = LOG_TYPE_PANEL;
-            log_info("\r\n****LOG PANEL****\r\n");
-            if (panel.panelState == panel.panelFound) log_panel("panelState: panelFound");
-            else log_panel("panelState: panelNotFound");
-            
-            void *ptr = malloc(256);
-            sprintf((char*) ptr, "\r\npanel.baudrate: %d\r\n", panel.baudrate);
-            log_panel((char*) ptr);
-            free(ptr);
-            
-            break;
-        }
-        if (*(data_buffer + i) == 'u' || *(data_buffer + i) == 'U'){
-            logTypeMess = LOG_TYPE_USART;
-            log_info("\r\n****LOG USART****\r\n");
-            if (heater.stateConnect == heater.STATE_HEATER_SEARCH) log_heater("heater.stateConnect: search");
-            else if (heater.stateConnect == heater.STATE_HEATER_CONNECT_ERROR) log_heater("heater.stateConnect: error");
-            else log_heater("heater.stateConnect: ok");
-            
-            if (panel.panelState == panel.panelFound) log_panel("\r\npanelState: panelFound");
-            else log_panel("\r\npanelState: panelNotFound");
-            
-            void *ptr = malloc(256);
-            sprintf((char*) ptr, "\r\nheater.baudrate: %d", usart.baudrate);
-            log_heater((char*) ptr);
-            sprintf((char*) ptr, "\r\npanel.baudrate: %d", panel.baudrate);
-            log_panel((char*) ptr);
-            sprintf((char*) ptr, "\r\nheater.verProtocol: %d\r\n", heater.verProtocol);
-            log_heater((char*) ptr);
-            free(ptr);
-            break;
-        }
-        if (*(data_buffer + i) == 'b' || *(data_buffer + i) == 'B'){
-            logTypeMess = LOG_TYPE_BLE;
-            log_info("\r\n****LOG BLUETOOTH****\r\n");
+            log_info("\r\n****LOG GSM****\r\n");
             break;
         }
         if (*(data_buffer + i) == 'a' || *(data_buffer + i) == 'A'){

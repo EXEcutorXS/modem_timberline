@@ -29,80 +29,17 @@ void Button::handler(void)
 {
     static status_t statusOld = _BUTTON_STATUS_IDLE;
     
-    if (heater.stateTestStand != -1) return;
-    
-    if (isNeedToManualAccept){
-        if ((core.getTick()-timerManualAccept) > (5*60*1000)){
-            isNeedToManualAccept = false;
-        }
-    }
-    
     if (status != statusOld){
         statusOld = status;
         if (status == _BUTTON_STATUS_PRESSED){
-            if (heater.verProtocol == 3) {
-                led.setFrozenTime(5000);
-            } 
-            else {
-                led.setFrozenTime(8000);
-            }
-            if (isNeedToManualAccept){
-                isNeedToManualAccept = false;
-                isManualAccept = true;
-                led.setHeaterLed(LED_MODE_OFF);
-            }
-            else{
-                if (heater.device[heater.selectedDevice].stage == heater.MODE_WAIT){
-                    log_info("\r\nBUTTON: START_HEATER\r\n");
-                    story.add(STORY_START_COMMAND);//story.add(STORY_START_COMMAND_BUTTON);
-                    heater.run();
-                    led.setHeaterLed(LED_MODE_GREEN);
-                    isCommandStart = true;
-                }
-                else{
-                    log_info("\r\nBUTTON: FINISH\r\n");
-                    story.add(STORY_STOP_COMMAND);//story.add(STORY_STOP_COMMAND_BUTTON);
-                    heater.stop();
-                    led.setHeaterLed(LED_MODE_OFF);
-                    isCommandFinish = true;
-                }
-            }
+            led.setFrozenTime(5000);
+            log_info("\r\nBUTTON: PRESSED\r\n");
+            // TODO: handle short press — send CAN command
         }
         if (status == _BUTTON_STATUS_LONG_HOLD){
-            if (heater.verProtocol == 3) {
-                led.setFrozenTime(5000);
-            } 
-            else {
-                led.setFrozenTime(8000);
-            }
-            if (isNeedToManualAccept){
-                isNeedToManualAccept = false;
-                isManualCancel = true;
-                led.setHeaterLed(LED_MODE_OFF);
-            }
-            else {
-                if (heater.device[heater.selectedDevice].stage == heater.MODE_WAIT){
-                    if (heater.device[heater.selectedDevice].isPreheater){
-                        log_info("\r\nBUTTON: START_PUMP\r\n");
-                        story.add(STORY_PUMP_COMMAND);//story.add(STORY_PUMP_COMMAND_BUTTON);
-                        heater.pump();
-                        led.setHeaterLed(LED_MODE_GREEN);
-                        isCommandPump = true;
-                    }
-                    else{
-                        story.add(STORY_VENTILATION_COMMAND);//story.add(STORY_VENTILATION_COMMAND_BUTTON);
-                        heater.startVentilation(true);
-                        led.setHeaterLed(LED_MODE_GREEN);
-                    }
-                }
-                else{
-                    log_info("\r\nBUTTON: FINISH\r\n");
-                    story.add(STORY_STOP_COMMAND);//story.add(STORY_STOP_COMMAND_BUTTON);
-                    heater.stop();
-                    led.setHeaterLed(LED_MODE_OFF);
-                    isCommandFinish = true;
-                }
-            }
+            led.setFrozenTime(8000);
+            log_info("\r\nBUTTON: LONG HOLD\r\n");
+            // TODO: handle long press — send CAN command
         }
     }
     

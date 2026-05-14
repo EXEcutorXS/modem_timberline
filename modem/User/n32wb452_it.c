@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include "n32wb452_it.h"
 #include "usb_istr.h"
+
 /** @addtogroup N32WB452X_StdPeriph_Template
  * @{
  */
@@ -383,12 +384,6 @@ void SPI2_IRQHandler(void)
     {
     }
 }
-void USART1_IRQHandler(void)
-    {
-    while (1)
-    {
-    }
-}
 void USART2_IRQHandler(void)
     {
     while (1)
@@ -396,10 +391,9 @@ void USART2_IRQHandler(void)
     }
 }
 void USART3_IRQHandler(void)
-    {
-    while (1)
-    {
-    }
+{
+    if (USART_GetIntStatus(USART3, USART_INT_RXDNE) != RESET)
+        (void)USART_ReceiveData(USART3); /* not used — clear flag */
 }
 void EXTI15_10_IRQHandler(void)
     {

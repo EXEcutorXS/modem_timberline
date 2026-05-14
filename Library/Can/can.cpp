@@ -26,15 +26,23 @@ void Can::initialize(void)
 
     GPIO_ConfigPinRemap(GPIO_RMP1_CAN2, ENABLE);
 
+    /* PA5 — CAN_STB, low = transceiver active */
+    RCC_EnableAPB2PeriphClk(RCC_APB2_PERIPH_GPIOA, ENABLE);
+    GPIO_InitStructure.Pin        = GPIO_PIN_5;
+    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_InitPeripheral(GPIOA, &GPIO_InitStructure);
+    GPIO_ResetBits(GPIOA, GPIO_PIN_5);
+
     RCC_EnableAPB1PeriphClk(RCC_APB1_PERIPH_CAN2, ENABLE);
     CAN_DeInit(CAN2);
 
     CAN_InitType CAN_InitStructure;
     CAN_InitStruct(&CAN_InitStructure);
     CAN_InitStructure.TTCM              = DISABLE;
-    CAN_InitStructure.ABOM              = DISABLE;
+    CAN_InitStructure.ABOM              = ENABLE;  /* auto Bus-Off recovery */
     CAN_InitStructure.AWKUM             = DISABLE;
-    CAN_InitStructure.NART              = DISABLE;
+    CAN_InitStructure.NART              = ENABLE;  /* no auto-retransmit — prevents TEC storm */
     CAN_InitStructure.RFLM              = DISABLE;
     CAN_InitStructure.TXFP              = ENABLE;
     CAN_InitStructure.OperatingMode     = CAN_Normal_Mode;
@@ -84,25 +92,16 @@ void Can::SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8
     TxMessage.Data[4] = AD4; TxMessage.Data[5] = AD5;
     TxMessage.Data[6] = AD6; TxMessage.Data[7] = AD7;
 
-    uint8_t mailbox = CAN_TransmitMessage(CAN2, &TxMessage);
-    uint32_t i = 0;
-    uint8_t status = 0;
-    while (status != CAN_TxSTS_Ok) {
-        status = CAN_TransmitSTS(CAN2, mailbox);
-        if (++i == 0xFFFF) { initialize(); break; }
-    }
-}
-
-bool Can::checkReceiveMsgAddr(CanRxMessage *msg)
-{
-    uint8_t type = (msg->ExtId >> 13) & 0x7F;
-    return (type == MY_CAN_TYPE || type == CAN_BROADCAST_TYPE);
+    CAN_TransmitMessage(CAN2, &TxMessage);
 }
 
 void Can::processCanRxMessage(CanRxMessage *msg)
 {
-    // TODO: handle incoming CAN message from device
-    (void)msg;
+    SendMessage(
+        msg->ExtId,
+        msg->Data[0], msg->Data[1], msg->Data[2], msg->Data[3],
+        msg->Data[4], msg->Data[5], msg->Data[6], msg->Data[7]
+    );
 }
 
 extern "C" void CAN2_RX0_IRQHandler(void)
@@ -110,9 +109,7 @@ extern "C" void CAN2_RX0_IRQHandler(void)
     if (CAN_GetIntStatus(CAN2, CAN_INT_FMP0) == SET) {
         can.linkCnt = 0;
         CAN_ReceiveMessage(CAN2, CAN_FIFO0, &can.RxMessage);
-        if (can.checkReceiveMsgAddr(&can.RxMessage)) {
-            can.processCanRxMessage(&can.RxMessage);
-        }
+        can.processCanRxMessage(&can.RxMessage);
         CAN_ClearINTPendingBit(CAN2, CAN_INT_FMP0);
     }
 }

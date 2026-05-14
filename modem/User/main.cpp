@@ -43,6 +43,7 @@ int main(void)
     while (true) {
         core.handler();
         gsm.handler();
+        can.handler();
         button.handler();
         led.handler();
         work.handler();

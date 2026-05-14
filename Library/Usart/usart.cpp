@@ -110,3 +110,4 @@ void Usart_C::transmitNextByte(void)
         USART_ConfigInt(_usart, USART_INT_TXDE, DISABLE);
     }
 }
+

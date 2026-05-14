@@ -59,6 +59,15 @@ uint8_t versionHardware;
 extern bool isConnectedSocket;
 
 Gsm gsm;
+
+extern "C" void USART1_IRQHandler(void)
+{
+    if (USART_GetIntStatus(USART1, USART_INT_RXDNE) != RESET)
+        gsm.usart.receiveIntHandler((uint8_t)USART_ReceiveData(USART1));
+    if (USART_GetIntStatus(USART1, USART_INT_TXDE) != RESET)
+        gsm.usart.transmitNextByte();
+}
+
 //-----------------------------------------------------
 Gsm::Gsm(void)
 {

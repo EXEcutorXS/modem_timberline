@@ -1,0 +1,12 @@
+﻿*.o
+*.d
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.uvguix.*
+*.bak
+Listings/
+Objects/
+.claude/

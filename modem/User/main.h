@@ -8,6 +8,11 @@
 #include "can.h"
 #include <string.h>
 
+/* USB pins:
+ *   A11 - USB DM
+ *   A12 - USB DP
+ */
+
 #if defined (__CC_ARM)
   #pragma anon_unions
 #endif

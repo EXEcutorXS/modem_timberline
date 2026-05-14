@@ -9,6 +9,9 @@
 #include "flash.h"
 #include "work.h"
 #include "modem_handler.h"
+#include "hw_config.h"
+#include "usb_lib.h"
+#include "usb_pwr.h"
 
 const uint8_t _CRC[11] __attribute__((at(0x803C000))) =
 {
@@ -29,6 +32,11 @@ int main(void)
     led.initialize();
     button.initialize();
     randomize.initialize();
+
+    Set_System();
+    USB_Interrupts_Config();
+    Set_USBClock();
+    USB_Init();
 
     work.initialize();
 

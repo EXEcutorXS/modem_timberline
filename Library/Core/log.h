@@ -59,14 +59,14 @@
 #define LOG_TYPE_AT        36
 
 
-void log_info(char* mess);
-void log_warning(char* mess);
-void log_error(char* mess);
-void log_gsm(char* mess);
-void log_heater(char* mess);
-void log_panel(char* mess);
-void log_ble(char* mess);
-void log_at(char* mess);
+void log_info(const char* mess);
+void log_warning(const char* mess);
+void log_error(const char* mess);
+void log_gsm(const char* mess);
+void log_heater(const char* mess);
+void log_panel(const char* mess);
+void log_ble(const char* mess);
+void log_at(const char* mess);
 
 extern int logTypeMess;
 

@@ -43,7 +43,7 @@ extern char serialNumberModem[16];
 int logTypeMess = LOG_TYPE_AT;
 
 //-----------------------------------------------------
-void log_info(char* mess)
+void log_info(const char* mess)
 {
     if (true){
         while(true){
@@ -57,7 +57,7 @@ void log_info(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_warning(char* mess)
+void log_warning(const char* mess)
 {
     if (true){
         while(true){
@@ -71,7 +71,7 @@ void log_warning(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_error(char* mess)
+void log_error(const char* mess)
 {
     if (true){
         while(true){
@@ -85,7 +85,7 @@ void log_error(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_gsm(char* mess)
+void log_gsm(const char* mess)
 {
     if (logTypeMess == LOG_TYPE_GSM || logTypeMess == LOG_TYPE_ALL){
         while(true){
@@ -99,7 +99,7 @@ void log_gsm(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_heater(char* mess)
+void log_heater(const char* mess)
 {
     if (logTypeMess == LOG_TYPE_HEATER || logTypeMess == LOG_TYPE_ALL || logTypeMess == LOG_TYPE_USART){
         while(true){
@@ -113,7 +113,7 @@ void log_heater(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_panel(char* mess)
+void log_panel(const char* mess)
 {
     if (logTypeMess == LOG_TYPE_PANEL || logTypeMess == LOG_TYPE_ALL || logTypeMess == LOG_TYPE_USART){
         while(true){
@@ -127,7 +127,7 @@ void log_panel(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_ble(char* mess)
+void log_ble(const char* mess)
 {
     if (logTypeMess == LOG_TYPE_BLE || logTypeMess == LOG_TYPE_ALL){
         while(true){
@@ -141,7 +141,7 @@ void log_ble(char* mess)
     }
 }
 //-----------------------------------------------------
-void log_at(char* mess)
+void log_at(const char* mess)
 {
     char ptr[64] = {0};
     

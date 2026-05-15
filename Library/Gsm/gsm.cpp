@@ -1,11 +1,11 @@
-/******************************************************************************
-* ��� ���������
-* ������
+﻿/******************************************************************************
+*  
 * 
-* ������������: ����� �.�.
+* 
+* :  ..
 * 
 * 14.11.2024
-* ��������:
+* :
 *******************************************************************************/
 /* Includes ------------------------------------------------------------------*/
 #include "Converter.h"
@@ -18,41 +18,42 @@
 #include "hw_config.h"
 #include "log.h"
 
-static const uint16_t ANSWER_STRINGS_MAX = 29;
-static const char ANSWER_STRINGS[ANSWER_STRINGS_MAX][20] = 
+static const uint16_t ANSWER_STRINGS_MAX = 30;
+static const char ANSWER_STRINGS[ANSWER_STRINGS_MAX][20] =
 {
     "ERROR",                    // 0
     "OK\r",                     // 1
-    "+CIPOPEN: ",                  // 2
+    "+CIPOPEN: ",               // 2
     "ATREADY",                  // 3
     "+CGMR: ",                  // 4
     "RING",                     // 5
-    "+CIPSEND:",                   // 6 ����� ������ ������: 0,1 ��� 4
-    
-    "CONNECT FAIL\r",                   //
-    "+COPS: ",                  // 8 �������� ��������:0,0"Beeline" ��� 0,0"Megafon" � �.�.
-    "CONNECT OK\r",                   //
-    "+CSQ: ",                   // 10 ������� �������:21,0 (��� 21 ����� ���� �� 0 �� 31 ��� 99)
-    "CLOSE",                   // 
-    "+CLIP:",                   // 12 �������� ������:"+7XXXXXXXXXX",145,"","main",0
-    "+CMTI: \"SM\",",           // 13 novoe sms; 
+    "+CIPSEND:",                // 6
+
+    "CONNECT FAIL\r",           // 7
+    "+COPS: ",                  // 8
+    "CONNECT OK\r",             // 9
+    "+CSQ: ",                   // 10
+    "CLOSE",                    // 11
+    "+CLIP:",                   // 12
+    "+CMTI: \"SM\",",           // 13
     "+CMGR:",                   // 14
-    
-    "+CMGS: ",                  // 15 ��������� �� ������� �������� ���
-    "+CUSD:",                   // 16 ������:0,"56748939A766F567C",72
-    "+ICCID: ",                 // 17 
-    "+CNUM:",                   // 18 
-    "RECV FROM:",                  // 19 ������ GPRS
-    "+CFTPSGETFILE: ",                   // 20 
-    ">",            // 21 � �.�.
-    "+CFTPSLOGIN: ",               // 22
-    
+
+    "+CMGS: ",                  // 15
+    "+CUSD:",                   // 16
+    "+ICCID: ",                 // 17
+    "+CNUM:",                   // 18
+    "RECV FROM:",               // 19
+    "+CFTPSGETFILE: ",          // 20
+    ">",                        // 21
+    "+CFTPSLOGIN: ",            // 22
+
     "DOWNLOAD\r",               // 23
-    "+HTTPACTION:",             // 24 +HTTPACTION: 1,713,0
-    "+HTTPHEAD:",           // 25
-    "+HTTPREAD:",                // 26
+    "+HTTPACTION:",             // 24
+    "+HTTPHEAD:",               // 25
+    "+HTTPREAD:",               // 26
     "+RXDTMF: ",                // 27
-    "NO CARRIER"                // 28
+    "NO CARRIER",               // 28
+    "+CREG: "                   // 29 -> ANSWER_CREG (1<<31)
 };
 
 uint8_t versionHardware;
@@ -76,7 +77,7 @@ Gsm::Gsm(void)
 //-----------------------------------------------------
 void Gsm::initialize(void)
 {
-    usart.initialize(1, 19200); // USART1
+    usart.initialize(1, 115200); // USART1 — A7682E default baud
     WakeupPin.Initialize(GPIOA, GPIO_PIN_0, GPIO_Mode_IN_FLOATING);
     PowergoodPin.Initialize(GPIOA, GPIO_PIN_3, GPIO_Mode_IPU);
     RingPin.Initialize(GPIOB, GPIO_PIN_0, GPIO_Mode_IN_FLOATING);
@@ -100,11 +101,29 @@ void Gsm::initialize(void)
 void Gsm::handler(void)
 {
     uint16_t res;
-    
+
+    if (bridgeMode) {
+        processReceivedData();      /* modem → USB (drain RX buffer)       */
+
+        /* TX: send buffered bytes (filled by USB ISR) when UART is free   */
+        if (bridgeTxLen > 0 && !usart.isTransmission) {
+            uint8_t len = (uint8_t)bridgeTxLen;
+            bridgeTxLen = 0;        /* clear before read to avoid race     */
+            /* local echo → USB VCP (modem has ATE0, echo is off)          */
+            for (uint8_t i = 0; i < len; i++)
+                USART_To_USB_Send_Data((char)bridgeTxBuf[i]);
+            /* forward to modem via interrupt-driven Usart_C               */
+            uint8_t tmp[BRIDGE_TX_MAX];
+            for (uint8_t i = 0; i < len; i++) tmp[i] = bridgeTxBuf[i];
+            usart.send(tmp, len);
+        }
+        return;
+    }
+
     inputRing = RingPin.Get();
     inputWakeup = WakeupPin.Get();
     inputPowerGood = PowergoodPin.Get();
-    
+
     if (inputPowerGood == false) return;
     
     processReceivedData();
@@ -112,7 +131,7 @@ void Gsm::handler(void)
 
     if (res){
         isAnswer = true;
-        answer |= 1<<res;
+        answer |= (uint32_t)1<<res;
         
         if (process != PROCESS_ANSWER_RING){
 
@@ -139,7 +158,21 @@ void Gsm::handler(void)
         step = MODE_WORK_STEP_READ_SMS;
         changeProcess(gsm.PROCESS_READ_SMS); // PROCESS_TRANSMIT_GPRS
     }
-    
+
+    /* ── Incoming call: log caller ID (set by CLIP parser in parsing()) ── */
+    if (gsm.isRing) {
+        gsm.isRing = false;
+        log_info("[RING] from: ");
+        if (gsm.phoneRing[0]) {
+            char tmp[16] = {0};
+            for (int i = 0; i < 15 && gsm.phoneRing[i]; i++) tmp[i] = gsm.phoneRing[i];
+            log_info(tmp);
+        } else {
+            log_info("unknown");
+        }
+        log_info("\r\n");
+    }
+
     switch (process){
         case PROCESS_POWER_ON:
             processPowerOn();
@@ -164,6 +197,9 @@ void Gsm::handler(void)
             break;
         case PROCESS_REQUEST_CSQ:
             processRequestCsq();
+            break;
+        case PROCESS_REQUEST_CREG:
+            processRequestCreg();
             break;
         case PROCESS_ANSWER_RING:
             processAnswerRing();
@@ -200,6 +236,8 @@ void Gsm::changeProcess(ProcessTypeDef number)
     process = number;
     mode = 0;
     error = ERROR_EMPTY;
+    isAnswer = false;
+    answer   = 0;
 }
 //-----------------------------------------------------
 void Gsm::processPowerOff(void)
@@ -246,21 +284,14 @@ void Gsm::processSleepOn(void)
 {
     switch(mode){
     case 0:
-        if (sendMessage("AT+QSCLK=1\r\n", 1000)){
-        
-            if (answer & ANSWER_TIMEOUT){
-                mode++;
-                break;
-            }
-            if (answer & ANSWER_ERROR){
-                mode++;
-                break;
-            }
-            if (answer & ANSWER_OK){
-                mode++;
-                break;
-            }
-        
+        DTRPin.Set();   /* DTR HIGH — разрешаем модему войти в режим сна */
+        mode++;
+        break;
+    case 1:
+        if (sendMessage("AT+CSCLK=1\r\n", 1000)){
+            if (answer & ANSWER_TIMEOUT){ mode++; break; }
+            if (answer & ANSWER_ERROR)  { mode++; break; }
+            if (answer & ANSWER_OK)     { mode++; break; }
         }
         break;
     default:
@@ -271,22 +302,22 @@ void Gsm::processSleepOn(void)
 //-----------------------------------------------------
 void Gsm::processSleepOff(void)
 {
+    static uint32_t timer = 0;
     switch(mode){
     case 0:
-        if (sendMessage("AT+QSCLK=0\r\n", 1000)){
-        
-            if (answer & ANSWER_TIMEOUT){
-                mode++;
-                break;
-            }
-            if (answer & ANSWER_ERROR){
-                //mode++;
-            }
-            if (answer & ANSWER_OK){
-                mode++;
-                break;
-            }
-        
+        DTRPin.Reset();         /* DTR LOW — будим модем аппаратно       */
+        timer = core.getTick();
+        mode++;
+        break;
+    case 1:
+        /* Ждём 100 мс — модем поднимается после фронта DTR             */
+        if ((core.getTick() - timer) >= 100UL) mode++;
+        break;
+    case 2:
+        if (sendMessage("AT+CSCLK=0\r\n", 1000)){
+            if (answer & ANSWER_TIMEOUT){ mode++; break; }
+            if (answer & ANSWER_ERROR)  { mode++; break; }
+            if (answer & ANSWER_OK)     { mode++; break; }
         }
         break;
     default:
@@ -368,61 +399,19 @@ void Gsm::processInitGsm(void)
                 break;
             }
             if (answer & ANSWER_OK){
-                if (usart.baudrate == 19200) mode = 2;
-                else mode++;
+                mode = 2;   /* skip baud-rate negotiation — fixed at 115200 */
                 timer = core.getTick();
                 log_gsm("GSM initialize.");
                 break;
             }
-        
+
         }
         break;
-        
+
     case 1:
-        if (sendMessage("AT+IPR=19200\r\n", 1000)){
-            
-            if (answer & ANSWER_TIMEOUT){
-                counterTrouble++;
-                mode = 0;//error = ERROR_TIMEOUT;
-                /*
-                if (baudrate == 38400){
-                    baudrate = 115200;
-                    changeBaudrate(baudrate);
-                }
-                else if (baudrate == 115200){
-                    baudrate = 19200;
-                    changeBaudrate(baudrate);
-                }
-                else if (baudrate == 19200){
-                    baudrate = 9600;
-                    changeBaudrate(baudrate);
-                }
-                else{
-                    baudrate = 38400;
-                    changeBaudrate(baudrate);
-                }
-                */
-                ///*
-                if (usart.baudrate == 19200){ 
-                    usart.changeBaudrate(115200);
-                }
-                else{
-                    usart.changeBaudrate(19200);
-                }//*/
-                break;
-            }
-            if (answer & ANSWER_ERROR){
-                error = ERROR_ANSWER;
-                break;
-            }
-            if (answer & ANSWER_OK){
-                mode++;
-                timer = core.getTick();
-                usart.changeBaudrate(19200);
-                break;
-            }
-        
-        }
+        /* Baud-rate negotiation removed — modem is fixed at 115200.
+           Fall straight through to case 2. */
+        mode = 2;
         break;
         
     case 2:
@@ -829,11 +818,13 @@ void Gsm::processInitGsm(void)
         if (sendMessage("AT+CSQ\r\n", 300)){
     
             if (answer & ANSWER_TIMEOUT){
-                error = ERROR_TIMEOUT;
+                mode++;   /* don't get stuck — advance even without CSQ */
+                log_gsm(".");
                 break;
             }
             if (answer & ANSWER_ERROR){
-                error = ERROR_ANSWER;
+                mode++;
+                log_gsm(".");
                 break;
             }
             if (answer & ANSWER_CSQ){
@@ -958,6 +949,15 @@ void Gsm::processInitGsm(void)
         }
         break;
         
+    case 23:
+        /* Enable new-SMS notifications: modem will send +CMTI: "SM",N */
+        if (sendMessage("AT+CNMI=2,1,0,0,0\r\n", 300)){
+            if (answer & ANSWER_TIMEOUT){ mode++; log_gsm("."); break; }
+            if (answer & ANSWER_ERROR)  { mode++; log_gsm("."); break; }
+            if (answer & ANSWER_OK)     { mode++; log_gsm("."); break; }
+        }
+        break;
+
     default:
         led.modeGsm = LED_MODE_GSM_BLINK_SLOW;
         changeProcess(PROCESS_EMPTY);
@@ -1085,47 +1085,89 @@ void Gsm::processRequestBalance(void)
 //-----------------------------------------------------
 void Gsm::processRequestCsq(void)
 {
+    static uint32_t timer = 0;
     switch(mode){
     case 0:
         setLowPower(false);
         mode++;
         break;
     case 1:
-        if (sendMessage("AT+CSQ\r\n", 300)){
-            
+        if (sendMessage("AT+CSQ\r\n", 1000)){
             if (answer & ANSWER_TIMEOUT){
                 error = ERROR_TIMEOUT;
+                mode = 99;
+                break;
             }
             if (answer & ANSWER_ERROR){
                 error = ERROR_ANSWER;
-            }
-            if (answer & ANSWER_OK){
-                //mode++;
+                mode = 99;
+                break;
             }
             if (answer & ANSWER_CSQ){
+                timer = core.getTick();
                 mode++;
             }
-        
         }
         break;
-        /*
     case 2:
-        if (sendMessage("ATD+79371889277;\r\n", 10000)){
-            switch(answer){
-                case ANSWER_TIMEOUT:
-                    error = ERROR_TIMEOUT;
-                    break;
-                case ANSWER_ERROR:
-                    error = ERROR_ANSWER;
-                    break;
-                case ANSWER_OK:
-                    mode++;
-                    break;
-                default:
-                    mode++;
+        /* Wait for answerData to be populated by the parser */
+        if (answerDataPoint > 0){
+            answer &= ~ANSWER_CSQ;
+            levelGsm = Convert.strToInt((char*)answerData);
+            mode = 99;
+            break;
+        }
+        if ((core.getTick() - timer) > 500){
+            mode = 99;  /* timeout — keep previous levelGsm */
+        }
+        break;
+    default:
+        changeProcess(PROCESS_EMPTY);
+        break;
+    }
+}
+//-----------------------------------------------------
+void Gsm::processRequestCreg(void)
+{
+    static uint32_t timer = 0;
+    switch(mode){
+    case 0:
+        mode++;
+        break;
+    case 1:
+        if (sendMessage("AT+CREG?\r\n", 1000)){
+            if (answer & ANSWER_TIMEOUT){
+                mode = 99;
+                break;
+            }
+            if (answer & ANSWER_ERROR){
+                mode = 99;
+                break;
+            }
+            if ((uint32_t)answer & ANSWER_CREG){
+                timer = core.getTick();
+                mode++;
             }
         }
-        break;*/
+        break;
+    case 2:
+        /* answerData: "1\r" (URC) or "0,1\r" (query) — find stat digit */
+        if (answerDataPoint > 0){
+            answer &= ~ANSWER_CREG;
+            /* stat is the last digit 0-5 before \r */
+            uint8_t stat = 0;
+            for (int i = 0; i < answerDataPoint; i++){
+                char c = (char)answerData[i];
+                if (c >= '0' && c <= '5') stat = (uint8_t)(c - '0');
+            }
+            cregStat = stat;
+            mode = 99;
+            break;
+        }
+        if ((core.getTick() - timer) > 500){
+            mode = 99;
+        }
+        break;
     default:
         changeProcess(PROCESS_EMPTY);
         break;
@@ -1256,21 +1298,20 @@ bool Gsm::sendMessage(const char *transMessage, uint32_t duration)
         
         if (a != sum){
             sum = a;
-            // ��� ������ ������
+            // ---
             timerDuration = core.getTick();
             //!!//isFirst = false;
             isAnswer = false;
-            answer = 0; // ���� �������� �����
+            answer = 0; // ---
             answer |= ANSWER_WAIT;
             startTransmission(transMessage);
         }
         else{
-            // ��� ����������� �������
+            // ---
             if (isAnswer == true){
-                // ���� �����
-                
+                // ---
                 if ((core.getTick() - timerDuration) > duration){
-                    // ����� �������� �����
+                    // ---
                     sum = 0;//!!//isFirst = true;
                     answer |= ANSWER_TIMEOUT;
                     return true;
@@ -1280,9 +1321,9 @@ bool Gsm::sendMessage(const char *transMessage, uint32_t duration)
                 return true;
             }
             else{
-                // �������� ������
+                // ---
                 if ((core.getTick() - timerDuration) > duration){
-                    // ����� �������� �����
+                    // ---
                     sum = 0;//!!//isFirst = true;
                     answer |= ANSWER_TIMEOUT;
                     return true;
@@ -1333,10 +1374,10 @@ bool Gsm::sendMessage(const char *transMessage, uint32_t duration)
 //-----------------------------------------------------
 uint16_t Gsm::parsing(void)
 {
-    static uint16_t posY = 0;   // ������� ������������ ��������� � ������� GSM ������
-    static uint8_t posX = 0;    // ������� ������������ ������� � ������� GSM ������
-    static uint16_t pointTemp = 0;  // ��������� ������ GSM ��������� � ������(���������)
-    static uint16_t point = 0;  // ��������� ������ GSM ��������� � ������
+    static uint16_t posY = 0;   //      GSM 
+    static uint8_t posX = 0;    //      GSM 
+    static uint16_t pointTemp = 0;  //   GSM   ()
+    static uint16_t point = 0;  //   GSM   
     uint16_t res = 0;
     static uint16_t answerLast = 0;
     static bool isFirst = false;
@@ -1347,7 +1388,7 @@ uint16_t Gsm::parsing(void)
     while (posY < ANSWER_STRINGS_MAX)
     {
         if (pointTemp == receivePoint){
-            return 0;    // ���� ��� ������...
+            return 0;    //   ...
         }
         if (ANSWER_STRINGS[posY][posX] == receiveArray[pointTemp]){
             posX++;
@@ -1357,7 +1398,7 @@ uint16_t Gsm::parsing(void)
             if (ANSWER_STRINGS[posY] [posX] == 0){
                 posX = 0;
                 point = pointTemp;
-                res = posY + 2;    // ������� ������ �������
+                res = posY + 2;    // ---
                 posY = 0;
             }
             if (res > 3){
@@ -1372,22 +1413,21 @@ uint16_t Gsm::parsing(void)
                     numberSms = 1;
                 }
             }
-            return res;    // ���� ����������, ��������� �� ���������
+            return res;    //  ,   
         }
         
         pointTemp = point;
         posX = 0;
         posY++;
     }
-    // ���������� �� ����������
-
-    if ((1<<answerLast) & ANSWER_CSQ                // ������� ������� GSM
-        || (1<<answerLast) & ANSWER_ICCID             // ������� ������� GSM
-        || (1<<answerLast) & ANSWER_CGMR         // ICCID
-        || (1<<answerLast) & ANSWER_CNUM            // CNUM
-        || (1<<answerLast) & ANSWER_CMTI            // ���������� ����� ��������� ���������
-        || (1<<answerLast) & ANSWER_CMGR){          // ������ ��� ���������
-        // �������� ������ ��� �������
+    // ---
+    if (((uint32_t)1<<answerLast) & ANSWER_CSQ
+        || ((uint32_t)1<<answerLast) & ANSWER_ICCID
+        || ((uint32_t)1<<answerLast) & ANSWER_CGMR
+        || ((uint32_t)1<<answerLast) & ANSWER_CNUM
+        || ((uint32_t)1<<answerLast) & ANSWER_CMTI
+        || ((uint32_t)1<<answerLast) & ANSWER_CMGR
+        || ((uint32_t)1<<answerLast) & ANSWER_CREG){
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1397,8 +1437,8 @@ uint16_t Gsm::parsing(void)
             answerData[answerDataPoint++] = receiveArray[pointTemp];
         }
     }
-    else if ((1<<answerLast) & ANSWER_DTMF){          // DTMF
-        // �������� ������ ��� �������
+    else if (((uint32_t)1<<answerLast) & ANSWER_DTMF){          // DTMF
+        // ---
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1415,8 +1455,8 @@ uint16_t Gsm::parsing(void)
             }
         }
     }
-    else if ((1<<answerLast) & ANSWER_FTP){
-        // �������� ������ ��� �������
+    else if (((uint32_t)1<<answerLast) & ANSWER_FTP){
+        // ---
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1426,10 +1466,9 @@ uint16_t Gsm::parsing(void)
             answerData[answerDataPoint++] = receiveArray[pointTemp];
         }
     }
-    else if ((1<<answerLast) & ANSWER_CUSD      // ������
-        || (1<<answerLast) & ANSWER_COPS){      // ��� ���������
-        
-        // �������� ������ � ��������
+    else if (((uint32_t)1<<answerLast) & ANSWER_CUSD      // ---
+        || ((uint32_t)1<<answerLast) & ANSWER_COPS){      // ---
+        // ---
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1452,9 +1491,9 @@ uint16_t Gsm::parsing(void)
         
         }
     }
-    else if ((1<<answerLast) & ANSWER_CLIP){
+    else if (((uint32_t)1<<answerLast) & ANSWER_CLIP){
         
-        // �������� ������ � ��������
+        // ---
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1524,8 +1563,8 @@ uint16_t Gsm::parsing(void)
         
         }
     }
-    else if ((1<<answerLast) & ANSWER_HTTPACTION){
-        // �������� ������ � ','
+    else if (((uint32_t)1<<answerLast) & ANSWER_HTTPACTION){
+        //    ','
         if (isFirst){
             isFirst = false;
             answerCodeStrPoint = 0;
@@ -1548,9 +1587,8 @@ uint16_t Gsm::parsing(void)
         
         }
     }
-    else if ((1<<answerLast) & ANSWER_HTTPREAD){   // �������� ������ � �������
-        
-        // �������� ������ � "{}"
+    else if (((uint32_t)1<<answerLast) & ANSWER_HTTPREAD){   // ---
+        //    "{}"
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1575,9 +1613,8 @@ uint16_t Gsm::parsing(void)
         }
     }
 
-    else if ((1<<answerLast) & ANSWER_HTTPHEAD){   // �������� ������ � �������
-        
-        // �������� ������ � " "
+    else if (((uint32_t)1<<answerLast) & ANSWER_HTTPHEAD){   // ---
+        //    " "
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1619,9 +1656,9 @@ uint16_t Gsm::parsing(void)
             }
         }
     }
-    else if ((1<<answerLast) & ANSWER_SOCKET){
+    else if (((uint32_t)1<<answerLast) & ANSWER_SOCKET){
         
-        // �������� ������ � "{}"
+        //    "{}"
         if (isFirst){
             isFirst = false;
             answerDataPoint = 0;
@@ -1656,7 +1693,7 @@ uint16_t Gsm::parsing(void)
         
         }
     }
-    else if ((1<<answerLast) & ANSWER_CLOSED){
+    else if (((uint32_t)1<<answerLast) & ANSWER_CLOSED){
        isConnectedSocket = false;
     }
     
@@ -1665,7 +1702,7 @@ uint16_t Gsm::parsing(void)
     if (pointTemp > (RECEIVE_ARRAY_MAX-1)) pointTemp -= RECEIVE_ARRAY_MAX;
     point = pointTemp;
     
-    return 0;    // ���������� ���
+    return 0;    // ---
 }
 //-----------------------------------------------------
 void Gsm::startTransmission(const char *array)
@@ -1678,18 +1715,18 @@ void Gsm::startTransmission(const char *array)
             if (transArray[i] == 0) break;
         }
         usart.send((uint8_t*)transArray, dataLen);
+        log_at(">> ");
         log_at(transArray);
         
 //        transPoint = 0;
 //        transPoint++;
 //        if (transArray[0] >= 'A' && transArray[0] <= 'Z'){
-//            buffer[point++] = transArray[0]-('A'-'a');  //))//
+//            buffer[point++] = transArray[0]-('A'-'a');  //))// ---
 //        }
 //        else{
-//            buffer[point++] = transArray[0];  //))//
+//            buffer[point++] = transArray[0];  //))// ---
 //        }
-//        if (point >= BUFFER_ARRAY_MAX) point = 0;  //))//
-        
+//        if (point >= BUFFER_ARRAY_MAX) point = 0;  //))// ---
         #ifdef IS_LOG_GSM
         panel.startTransmission(transArray);
         #endif
@@ -1701,18 +1738,18 @@ void Gsm::startTransmission(const char *array)
 //    if (transArray[transPoint] != 0){
 //        USART_SendData(USART1, transArray[transPoint]);
 //        //USART_To_USB_Send_Data(transArray[transPoint]);
-//        
+// ---
 //        char tmp[2] = {0,0};
 //        tmp[0] = transArray[transPoint];
 //        log_at(tmp);
 //        if (transArray[transPoint] >= 'A' && transArray[transPoint] <= 'Z'){
-//            buffer[point++] = transArray[transPoint]-('A'-'a');  //))//
+//            buffer[point++] = transArray[transPoint]-('A'-'a');  //))// ---
 //        }
 //        else{
-//            buffer[point++] = transArray[transPoint];  //))//
+//            buffer[point++] = transArray[transPoint];  //))// ---
 //        }
-//        if (point >= BUFFER_ARRAY_MAX) point = 0;  //))//
-//        
+//        if (point >= BUFFER_ARRAY_MAX) point = 0;  //))// ---
+// ---
 //        transPoint++;
 //    }
 //    else{
@@ -1723,45 +1760,24 @@ void Gsm::startTransmission(const char *array)
 //-----------------------------------------------------
 void Gsm::receiptNextByte(uint8_t byte)
 {
-    uint16_t pos;
-//    buffer[point++] = byte;
-//    if (point >= BUFFER_ARRAY_MAX) point = 0;
-    
+    if (bridgeMode) {
+        /* Bridge mode: send raw byte directly to USB VCP */
+        USART_To_USB_Send_Data((char)byte);
+        return;
+    }
+
     receiveArray[receivePoint++] = byte;
     if (receivePoint >= RECEIVE_ARRAY_MAX) receivePoint = 0;
-    
-    char tmp[2] = {0,0};
-    tmp[0] = byte;
+
+    char tmp[2] = {(char)byte, 0};
     log_at(tmp);
-    pos = receivePoint;
-    pos++;
-    if (pos >= RECEIVE_ARRAY_MAX) pos = 0;
-    receiveArray[pos++] = '<';
-    if (pos >= RECEIVE_ARRAY_MAX) pos = 0;
-    receiveArray[pos++] = '-';
-    if (pos >= RECEIVE_ARRAY_MAX) pos = 0;
-    receiveArray[pos++] = '-';
-    if (pos >= RECEIVE_ARRAY_MAX) pos = 0;
-    receiveArray[pos++] = '-';
-    
-    #ifdef IS_LOG_GSM
-    static char buf[512];
-    static uint8_t p = 0;
-    buf[p++] = byte;
-    if (!panel.usart.isTransmission){
-        if (p < 510) buf[p++] = 0;
-        else buf[511] = 0;
-        panel.startTransmission(buf);
-        p = 0;
-    }
-    #endif
 }
 
 //-----------------------------------------------------
 //void Gsm::usartIrqHandler(void)
 //{
 //    uint8_t byte;
-//    
+// ---
 //    if (USART_GetIntStatus(USART1, USART_INT_RXDNE) != RESET){
 //        ///USART_ClearITPendingBit(USART1, USART_INT_RXDNE);
 //        byte = USART_ReceiveData(USART1);
@@ -1772,7 +1788,7 @@ void Gsm::receiptNextByte(uint8_t byte)
 //        USART_ClrIntPendingBit(USART1, USART_INT_TXC);
 //        gsm.transmitNextByte();
 //    }
-//    
+// ---
 //    volatile uint32_t data = USART1->DAT;
 //    volatile uint32_t sr = USART1->STS;
 //    volatile uint32_t res = sr+data; //dummy op to supress optimisation

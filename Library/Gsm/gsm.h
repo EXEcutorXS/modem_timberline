@@ -47,6 +47,7 @@ class Gsm
             PROCESS_CONNECT_FTP,
             PROCESS_FTP_GET,
             PROCESS_REQUEST_CSQ,
+            PROCESS_REQUEST_CREG,
             PROCESS_ANSWER_RING,
             PROCESS_EMPTY,
             PROCESS_SEND_SMS_ENGLISH,
@@ -89,8 +90,9 @@ class Gsm
             ANSWER_HTTPHEAD =       1<<27,
             ANSWER_HTTPREAD =       1<<28,
             ANSWER_DTMF =       1<<29,
-            ANSWER_NO_CARRIER =       1<<30
+            ANSWER_NO_CARRIER = 1<<30
         } AnswerTypeDef;
+        static const uint32_t ANSWER_CREG = (uint32_t)1 << 31;
         
         typedef enum {
             ERROR_EMPTY,
@@ -112,6 +114,7 @@ class Gsm
         void processInitGsm(void);
         void processRequestBalance(void);
         void processRequestCsq(void);
+        void processRequestCreg(void);
         
         void processAnswerRing(void);
 
@@ -131,8 +134,8 @@ class Gsm
 //        bool isBusy;
         bool isAnswer;
         bool isReadJson, isReadJson1, isReadJson2;
-        int8_t mode; // фаза текущего режима работы с GSM-модулем
-        ProcessTypeDef process; // текущий режим работы с GSM-модулем
+        int8_t mode; // пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ GSM-пїЅпїЅпїЅпїЅпїЅпїЅпїЅ
+        ProcessTypeDef process; // пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ GSM-пїЅпїЅпїЅпїЅпїЅпїЅпїЅ
         uint32_t answer;
         ErrorTypeDef error;
         
@@ -170,6 +173,7 @@ class Gsm
         char phoneSim[16];
         char imei[16];
         char cgmr[32];
+        uint8_t cregStat;   /* last +CREG stat: 0=no, 1=home, 5=roaming */
         
         typedef enum {
             NUMSIM_SEARCH,

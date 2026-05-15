@@ -40,6 +40,8 @@ int main(void)
 
     work.initialize();
 
+    changeMode(MODE_INIT);
+
     while (true) {
         core.handler();
         gsm.handler();
@@ -47,5 +49,6 @@ int main(void)
         button.handler();
         led.handler();
         work.handler();
+        modemHandler();
     }
 }

@@ -1,11 +1,11 @@
-/******************************************************************************
-* ��� ���������
-* ������
+﻿/******************************************************************************
+*  
 * 
-* ������������: ����� �.�.
+* 
+* :  ..
 * 
 * 08.08.2018
-* ��������:
+* :
 *******************************************************************************/
 /* Includes ------------------------------------------------------------------*/
 #include "core.h"
@@ -42,7 +42,7 @@ void Core::initialize(void)
 //    RCC_EnableAPB1PeriphClk(RCC_APB1_PERIPH_TIM6, ENABLE);
 //	TIM_Enable(TIM6, ENABLE);
 //	TIM6->PSC = SystemCoreClock/1000000-1;
-//	
+// ---
 //	RCC_EnableAPB1PeriphClk(RCC_APB1_PERIPH_TIM7, ENABLE);
 //	TIM_Enable(TIM7, ENABLE);
 //	TIM7->PSC = SystemCoreClock/1000-1;
@@ -449,7 +449,7 @@ extern "C" void SysTick_Handler(void)
 {
     static uint16_t count = 0;
     
-    core.incTick();         // ��������� ������
+    core.incTick();         // ---
     if (count < 1000) count++;
     else{
         count = 0;

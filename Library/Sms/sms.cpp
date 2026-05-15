@@ -1,11 +1,11 @@
-/******************************************************************************
-* ��� ���������
-* ������
+﻿/******************************************************************************
+*  
 * 
-* ������������: ����� �.�.
+* 
+* :  ..
 * 
 * 14.11.2024
-* ��������:
+* :
 *******************************************************************************/
 /* Includes ------------------------------------------------------------------*/
 #include "Converter.h"
@@ -27,48 +27,48 @@ Sms::Sms(void)
 //-----------------------------------------------------
 void Sms::setFactory(void)
 {
-    smsCmd.C = 1;  // �������� �������������� ��������� �� ���������� ����� ���������� ���������  ������.
-    smsCmd.E = 1;  // �������� �������������� ��������� � �������������, ���� ������� ��������� � �������� ������.
-    smsCmd.F = 0;  // ���������� ���� ����� ������:
-                            // 0 � �������� � �������������� ������,
-                            // 1 � ���������.
-    smsCmd.J = 0;  // ����������� ������ ����� � ���/��� ���.
-    smsCmd.H = 0;  // ���������/���������� ����������� ������������� ��������� �������.
-    smsCmd.I = 2;  // ���������/��������� ����� ����������:
-                            // 1 � ���������
-                            // 2 � ���������
-                            // �� ��������� 2.
-    smsCmd.L = 1;  // ����� ����� ��� SMS (1 � �������, 0 � ����������)
-    smsCmd.N = 92; // ����������� �������� � ������ ����� ��� ������ � �������� ����������� [80..95]��.
-    smsCmd.P = 1;  // �������� �������������� ������������� �� �������� ��������� �������.
-    smsCmd.R = 40; // ����������� ��������� ���� [30..60]��. �� ��������� 40��.
-    smsCmd.S = 15; // ������� ����������� � �������� �������, �� ������� ��������� ����� ���������� ������� ���������� ����� ������������ �� ����������� �������� ��������� � ��������� W. 
-                            // �������� ������� ����� �������� � �������� �� 1 �� 30?�.
-                            // �� ��������� 15.
-    smsCmd.T = 40; // ����� ������ � �������. ����� ���� ������ � �������� �� 20 �� 120 �����. �� ��������� 40 ���.
-    smsCmd.W = 0;  // ����� �����������:
-                            // 0 � ����� ����������� ��������,
-                            // 2 � ����� ��������������� ����������� �������,
-                            // 3 � ����� ������� ����������� �������.
-                            // ���� ����� ������ ���������:
-                            // 1 � �� ����������� ����� ����� ������������ ���������
-                            // 2 � �� ����������� ������
-                            // 3 � �� ����������� �������� (���������) �������
-                            // 4 � �� ��������, ���������� � ������ ����������.
-                            // �� ��������� 4.
-    smsCmd.e = 0;  // ����� �����������:
-                            // 0 � � ������� ������,
-                            // 1 � � ����������� ������.
-    smsCmd.p = 5;  // �������� �������� ��������. ���������� � �������� �� 0 (����������� �������� ��������) �� 9 (������������ �������� ��������).
-                            // �� ��������� 5.
-    smsCmd.r = 0;  // ������ ����� � ������ ����������� �� ������:
-                            // 0 � � ������� ������,  
-                            // 1 � ���������.
-    smsCmd.s = 0;  // ���������� ������� ������������:
-                            // 0 � � ������� ������, 
-                            // 1 � ���������.
-    smsCmd.t = 88; // ����������� �������� � ������ ����� ��� ������ � �������� ������������� [20..95]��. �� ��������� 88��.
-    smsCmd.M = 0;  // ����� ��� ���������� ��������� / ���� ��� 5 ������� ����� � �������, ����� ������� ����� ���������� ������� �������������.
+    smsCmd.C = 1;  //          .
+    smsCmd.E = 1;  //     ,      .
+    smsCmd.F = 0;  //    :
+                            // 0     ,
+                            // 1  .
+    smsCmd.J = 0;  //     / .
+    smsCmd.H = 0;  // /    .
+    smsCmd.I = 2;  // /  :
+                            // 1  
+                            // 2  
+                            //   2.
+    smsCmd.L = 1;  //    SMS (1  , 0  )
+    smsCmd.N = 92; //           [80..95].
+    smsCmd.P = 1;  //       .
+    smsCmd.R = 40; //    [30..60].   40.
+    smsCmd.S = 15; //     ,                W. 
+                            //        1  30?.
+                            //   15.
+    smsCmd.T = 40; //    .       20  120 .   40 .
+    smsCmd.W = 0;  //  :
+                            // 0    ,
+                            // 2     ,
+                            // 3     .
+                            //    :
+                            // 1       
+                            // 2    
+                            // 3     () 
+                            // 4   ,    .
+                            //   4.
+    smsCmd.e = 0;  //  :
+                            // 0    ,
+                            // 1    .
+    smsCmd.p = 5;  //   .     0 (  )  9 (  ).
+                            //   5.
+    smsCmd.r = 0;  //       :
+                            // 0    ,  
+                            // 1  .
+    smsCmd.s = 0;  //   :
+                            // 0    , 
+                            // 1  .
+    smsCmd.t = 88; //           [20..95].   88.
+    smsCmd.M = 0;  //     /   5    ,      .
 }
 //-----------------------------------------------------
 void Sms::processSendSmsEnglish(void) {
@@ -417,33 +417,63 @@ void Sms::processReadSms(void) {
             }
             break;
         case 4:
-            Convert.intToStrFix(gsm.numberSms, 2, &cmgr[8]); // 00 ����������� �� �����
+            Convert.intToStrFix(gsm.numberSms, 2, &cmgr[8]); // 00   
             gsm.mode++;
             gsm.answerDataPoint = 0;
             for (int i=0; i<gsm.ANSWER_ARRAY_MAX; i++) gsm.answerData[i] = 0;
             break;
         case 5:
-            if (gsm.sendMessage(cmgr, 1000)) {
-                
+            if (gsm.sendMessage(cmgr, 3000)) {
+
                 if (gsm.answer & gsm.ANSWER_TIMEOUT){
                     gsm.numberSms = 0;
                     gsm.changeProcess(gsm.PROCESS_EMPTY);
                     break;
                 }
-                else if (gsm.answer & gsm.ANSWER_ERROR){
-                    gsm.error = gsm.ERROR_ANSWER;
+                if (gsm.answer & gsm.ANSWER_ERROR){
+                    gsm.numberSms = 0;
+                    gsm.changeProcess(gsm.PROCESS_EMPTY);
                     break;
                 }
-                else if (gsm.answer & gsm.ANSWER_OK){
-                    ///gsm.changeProcess(gsm.PROCESS_EMPTY);
-                    ///break;
-                }
-                if (gsm.answer & gsm.ANSWER_CMGR){
+                /* Wait for BOTH +CMGR header AND OK — OK arrives after the
+                   full message body, so answerData is complete by then.     */
+                if ((gsm.answer & gsm.ANSWER_CMGR) && (gsm.answer & gsm.ANSWER_OK)) {
                     gsm.numberSms = 0;
+
+                    /* ── Parse answerData ─────────────────────────────────
+                     * Format after "+CMGR: ":
+                     *   "REC UNREAD","+79XXXXXXXXX",,"date"\r\nBODY\r\n
+                     * Extract phone (2nd quoted field) and body (after \n). */
+                    char smsPhone[20] = {0};
+                    char smsBody[160] = {0};
+                    uint8_t qCount = 0, phoneLen = 0, bodyLen = 0;
+                    bool inBody = false;
+
+                    for (int i = 0; i < gsm.ANSWER_ARRAY_MAX; i++) {
+                        uint8_t c = gsm.answerData[i];
+                        if (c == 0 && !inBody) break;
+                        if (!inBody) {
+                            if (c == '"') qCount++;
+                            else if (qCount == 3 && phoneLen < 19)
+                                smsPhone[phoneLen++] = (char)c;
+                            else if (c == '\n' && qCount >= 4) {
+                                inBody = true;
+                            }
+                        } else {
+                            if (c == '\r' || c == '\n' || c == 0) break;
+                            if (bodyLen < 159) smsBody[bodyLen++] = (char)c;
+                        }
+                    }
+
+                    log_info("[SMS] from: ");
+                    log_info(smsPhone[0] ? smsPhone : "unknown");
+                    log_info("\r\n      text: ");
+                    log_info(smsBody[0]  ? smsBody  : "(empty)");
+                    log_info("\r\n");
+
                     gsm.mode++;
                     break;
                 }
-                
             }
             break;
         case 6:
@@ -519,7 +549,7 @@ void Sms::sendSmsRussian(const char *number, const char *message)
     uint8_t unicode = 1, buf_numb = 1;
     uint16_t buf_point = 0, messNumb = 0;//strlen(message);
     uint16_t a=f/2;
-    if (a != (f*2)) f++;    // �������� ����� ������ ����������
+    if (a != (f*2)) f++;    // ---
     f+=2;
     /*
     if (length == 20){
@@ -541,14 +571,14 @@ void Sms::sendSmsRussian(const char *number, const char *message)
     
     //smsMsg.message[x++] = 
     
-    // SCA � �����:
+    // SCA  :
     if (length <= (140/(unicode+1))) buf_point += Convert.strToStr("001100", &smsMsg.message[buf_point]);// GSM_SendSim("000100");
     else
     {
         buf_point += Convert.strToStr("00510", &smsMsg.message[buf_point]);
         buf_point += Convert.intToStr(buf_numb-1, &smsMsg.message[buf_point]);
     }
-    // ����� � ����� ����������:
+    //    :
     a=0;
     uint8_t buf[16];
     for (int i=0; i<16; i++) buf[i] = 0;
@@ -562,14 +592,14 @@ void Sms::sendSmsRussian(const char *number, const char *message)
         }
     }
     f=a/2;
-    if (f == (a*2)) f=0;    // ������ ����� ������ ����������
-    else f=1;   // ��������
-    if (f == 1) buf[a] = 'F';   // ��������� �� ������
+    if (f == (a*2)) f=0;    // ---
+    else f=1;   // ---
+    if (f == 1) buf[a] = 'F';   // ---
     buf_point += Convert.strToStr("0", &smsMsg.message[buf_point]);
-    if (a > 9) a += 55; // 'B'-����� ������ 11 ����
-    else a += 48;   // ���� ����� � ������ ������
+    if (a > 9) a += 55; // 'B'-  11 
+    else a += 48;   // ---
     buf_point += Convert.charToHex(a, &smsMsg.message[buf_point]);//GSM_SendData(a,1);
-    buf_point += Convert.strToStr("91", &smsMsg.message[buf_point]); // ����������������� ������ ������(+7...)
+    buf_point += Convert.strToStr("91", &smsMsg.message[buf_point]); //   (+7...)
     for (int i=0; i<20; i+=2)
     {
         a = buf[i+1];
@@ -584,13 +614,13 @@ void Sms::sendSmsRussian(const char *number, const char *message)
         }
         if (a == 0) break;
     }
-    // �����(0018 ��� FLASH ���������):
-    if (false) buf_point += Convert.strToStr("001", &smsMsg.message[buf_point]);  // ������������� ���������
-    else buf_point += Convert.strToStr("000", &smsMsg.message[buf_point]);  // ������������� ���������(Flash-���������)
-    if (unicode) buf_point += Convert.strToStr("8", &smsMsg.message[buf_point]); //������ ����������� ���������(UCS2)
-    else buf_point += Convert.strToStr("4", &smsMsg.message[buf_point]); //������ ����������� ���������(ASCII)
-    buf_point += Convert.strToStr("17", &smsMsg.message[buf_point]); // ����� �������� ���- 2 ����
-    // ����� ���������(� HEX):
+    // (0018  FLASH ):
+    if (false) buf_point += Convert.strToStr("001", &smsMsg.message[buf_point]);  // ---
+    else buf_point += Convert.strToStr("000", &smsMsg.message[buf_point]);  //  (Flash-)
+    if (unicode) buf_point += Convert.strToStr("8", &smsMsg.message[buf_point]); //  (UCS2)
+    else buf_point += Convert.strToStr("4", &smsMsg.message[buf_point]); //  (ASCII)
+    buf_point += Convert.strToStr("17", &smsMsg.message[buf_point]); //   - 2 
+    //  ( HEX):
     if (length <= (140/(unicode+1))) a = length*2;///*(unicode+1);
     else
     {
@@ -694,10 +724,10 @@ bool Sms::parseMessage(char* number, char* message)
             }
             if (gsm.phones[k][0] != 0 || isTrust){
                 if ((strlen(gsm.phones[k]) >= 10 && Convert.compareStr(gsm.phones[k], number)) || isTrust){
-                    // ���������� ����������� ������
+                    // ---
                     isCompare = true;
                     if (message[0] >= 'A' && message[0] <= 'Z'){
-                        // ���� ���������� � ���������, �� ����
+                        //    ,  
                         message[0] += ('a'-'A');
                     }
                     gsm.posRingPhone = k;
@@ -711,7 +741,7 @@ bool Sms::parseMessage(char* number, char* message)
                         }
                     }
                     if (code >= 11){
-                        // �������� �������, ������ ����������
+                        //  ,  
                         getMessageParams(&message[3]);
                     }
                     
@@ -866,12 +896,12 @@ bool Sms::parseMessage(char* number, char* message)
                             res = true;
                             break;
                         case 9:
-                            // *15.��������� �����������(A,P,E,C,L)
+                            // *15. (A,P,E,C,L)
                             sendAnswerSmsFive();
                             res = true;
                             break;
                         case 10:
-                            // *16.������ �������(16.100 � �������)
+                            // *16. (16.100  )
                             a = 0;
                             for (int i=0; i<16; i++){
                                 if (message[position] != ' '){
@@ -909,16 +939,16 @@ bool Sms::parseMessage(char* number, char* message)
                             res = true;
                             break;
                         case 14:
-                            // *4.������ ����������(��� ����������)
+                            // *4. ( )
                             sendAnswerSmsParameters(ANSWER_PARAM_NAME_INFO);
                             res = true;
                             break;
                         case 15:
-                            // *5.������� ������� �������(P,E,T,M) ��� ������ ����������� �������(��� ����������)
+                            // *5.  (P,E,T,M)    ( )
                             
                             break;
                         case 16:
-                            // *6.������ ���������� �� ���������� �������(��� ����������)
+                            // *6.    ( )
                             
                             break;
                         case 17:
@@ -930,7 +960,7 @@ bool Sms::parseMessage(char* number, char* message)
                             res = true;
                             break;
                         case 19:
-                            // *9.������ ��������� ������ � ������ ��(��� ����������)
+                            // *9.     ( )
                             a = 0;
                             for (int i=0; i<16; i++){
                                 if (message[position] != ' '){
@@ -943,7 +973,7 @@ bool Sms::parseMessage(char* number, char* message)
                             }
                             if (a == 11 || a == 12){
                                 /*
-                                // ������ ��������� ������
+                                // ---
                                 j=0;
                                 for (int i=0; i<a; i++){
                                     heater.device[heater.selectedDevice].serialNumber[j++] = stroke[i];
@@ -1130,30 +1160,30 @@ void Sms::sendAnswerSmsFive(void)
     if (smsCmd.L == 1){
         n = 0;
         if (smsCmdFlags | SMS_CMD_FLAG_P){
-            // �������� �������������� ������������� �� �������� ��������� �������.
-            n += Convert.strToStr("�������� ��� ������������� ", &message[n]);
-            if (smsCmd.P) n += Convert.strToStr("���.", &message[n]);
-            else n += Convert.strToStr("����.", &message[n]);
+            //       .
+            n += Convert.strToStr("   ", &message[n]);
+            if (smsCmd.P) n += Convert.strToStr(".", &message[n]);
+            else n += Convert.strToStr(".", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         if (smsCmdFlags | SMS_CMD_FLAG_E){
-            // �������� �������������� ��������� � �������������, ���� ������� ��������� � �������� ������.
-            n += Convert.strToStr("�������� ��� ��� ������������� ", &message[n]);
-            if (smsCmd.E) n += Convert.strToStr("���.", &message[n]);
-            else n += Convert.strToStr("����.", &message[n]);
+            //     ,      .
+            n += Convert.strToStr("    ", &message[n]);
+            if (smsCmd.E) n += Convert.strToStr(".", &message[n]);
+            else n += Convert.strToStr(".", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         if (smsCmdFlags | SMS_CMD_FLAG_C){
-            // �������� �������������� ��������� �� ���������� ����� ���������� ���������  ������.
-            n += Convert.strToStr("�������� ��� �� ������ ", &message[n]);
-            if (smsCmd.C) n += Convert.strToStr("���.", &message[n]);
-            else n += Convert.strToStr("����.", &message[n]);
+            //          .
+            n += Convert.strToStr("    ", &message[n]);
+            if (smsCmd.C) n += Convert.strToStr(".", &message[n]);
+            else n += Convert.strToStr(".", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         if (smsCmdFlags | SMS_CMD_FLAG_L){
-            // ����� ����� ��� SMS (0 � ����������, 1 � �������)
-            n += Convert.strToStr("���� ��� ��������� ", &message[n]);
-            n += Convert.strToStr("�������.", &message[n]);
+            //    SMS (0  , 1  )
+            n += Convert.strToStr("   ", &message[n]);
+            n += Convert.strToStr(".", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         n += Convert.strToStr("\0", &message[n]);
@@ -1163,28 +1193,28 @@ void Sms::sendAnswerSmsFive(void)
     else{
         n = 0;
         if (smsCmdFlags | SMS_CMD_FLAG_P){
-            // �������� �������������� ������������� �� �������� ��������� �������.
+            //       .
             n += Convert.strToStr("Sending SMS confirmation ", &message[n]);
             if (smsCmd.P) n += Convert.strToStr("ON.", &message[n]);
             else n += Convert.strToStr("OFF.", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         if (smsCmdFlags | SMS_CMD_FLAG_E){
-            // �������� �������������� ��������� � �������������, ���� ������� ��������� � �������� ������.
+            //     ,      .
             n += Convert.strToStr("Sending SMS in case of malfunction ", &message[n]);
             if (smsCmd.E) n += Convert.strToStr("ON.", &message[n]);
             else n += Convert.strToStr("OFF.", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         if (smsCmdFlags | SMS_CMD_FLAG_C){
-            // �������� �������������� ��������� �� ���������� ����� ���������� ���������  ������.
+            //          .
             n += Convert.strToStr("Sending SMS by call ", &message[n]);
             if (smsCmd.C) n += Convert.strToStr("ON.", &message[n]);
             else n += Convert.strToStr("OFF.", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);
         }
         if (smsCmdFlags | SMS_CMD_FLAG_L){
-            // ����� ����� ��� SMS (0 � ����������, 1 � �������)
+            //    SMS (0  , 1  )
             n += Convert.strToStr("The language of SMS messages is ", &message[n]);
             n += Convert.strToStr("English.", &message[n]);
             n += Convert.strToStr("\r\n", &message[n]);

@@ -327,27 +327,58 @@ bool USART_Config(void)
 void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes)
 {
     uint32_t i;
+    static uint8_t plusCount = 0;
 
     for (i = 0; i < Nb_bytes; i++)
     {
-        if (*(data_buffer + i) == 'r' || *(data_buffer + i) == 'R'){
+        uint8_t b = *(data_buffer + i);
+
+        /* ── Bridge mode: forward every byte straight to modem ── */
+        if (bridgeMode)
+        {
+            if (b == '+') {
+                plusCount++;
+                if (plusCount >= 3) {
+                    bridgeMode = 0;
+                    plusCount  = 0;
+                    log_info("\r\n[Bridge OFF]\r\n");
+                    return;
+                }
+            } else {
+                plusCount = 0;
+            }
+            /* Buffer byte — actual TX done safely in gsm.handler() main loop */
+            if (bridgeTxLen < BRIDGE_TX_MAX) {
+                bridgeTxBuf[bridgeTxLen++] = b;
+            }
+            continue;
+        }
+
+        /* ── Normal command mode ── */
+        plusCount = 0;
+        if (b == 'r' || b == 'R') {
             NVIC_SystemReset();
-            break;
+            return;
         }
-        if (*(data_buffer + i) == 'g' || *(data_buffer + i) == 'G'){
+        if (b == 'b' || b == 'B') {
+            bridgeMode = 1;
+            log_info("\r\n[Bridge ON]  type +++ to exit\r\n");
+            return;
+        }
+        if (b == 'g' || b == 'G') {
             logTypeMess = LOG_TYPE_GSM;
-            log_info("\r\n****LOG GSM****\r\n");
-            break;
+            log_info("\r\n[Log: GSM]\r\n");
+            return;
         }
-        if (*(data_buffer + i) == 'a' || *(data_buffer + i) == 'A'){
+        if (b == 'a' || b == 'A') {
             logTypeMess = LOG_TYPE_ALL;
-            log_info("\r\n****LOG ALL****\r\n");
-            break;
+            log_info("\r\n[Log: ALL]\r\n");
+            return;
         }
-        if (*(data_buffer + i) == 'l' || *(data_buffer + i) == 'L'){
+        if (b == 'l' || b == 'L') {
             logTypeMess = LOG_TYPE_AT;
-            log_info("\r\n****LOG AT GSM MODULE****\r\n");
-            break;
+            log_info("\r\n[Log: AT]\r\n");
+            return;
         }
     }
 }

@@ -1,11 +1,11 @@
-/******************************************************************************
-* ��� DD Inform
-* ������
+﻿/******************************************************************************
+*  DD Inform
 * 
-* ������������: ����� �.�., ������� �.�.
+* 
+* :  ..,  ..
 * 
 * 26.03.2026
-* ��������:
+* :
 *******************************************************************************/
 /* Includes ------------------------------------------------------------------*/
 #include "led.h"
@@ -184,119 +184,119 @@ uint8_t Led::codeToCount(uint8_t error)
     
     switch (error)
 	{
-	case 1: // ��������
+	case 1: // ---
 		ledErrorCode = 1;
 		break;
 
-	case 2:				  // ��������� ��������
-		ledErrorCode = 1; //
+	case 2:				  // ---
+		ledErrorCode = 1; // ---
 		break;
 
-	case 3: //������������� ������� ���������
+	case 3: // ---
 		ledErrorCode = 6;
 		break;
 
-	case 4:				  // ������������� ������� �����������
-		ledErrorCode = 6; //
+	case 4:				  // ---
+		ledErrorCode = 6; // ---
 		break;
 
-	case 5:				  // ������������� ���������� �������
-		ledErrorCode = 5; //
+	case 5:				  // ---
+		ledErrorCode = 5; // ---
 		break;
 
-	case 6: // ������������� ������� ����������� �� ����� ���������� 
+	case 6: // ---
 		ledErrorCode = 6;
 		break;
 
-	case 7: // ���������� ������� �� ������ ������
+	case 7: // ---
 		ledErrorCode = 3;
 		break;
 
-	case 8: // ���������� ������� �� ������ �������
+	case 8: // ---
 		ledErrorCode = 3;
 		break;
 
-	case 9: // ������������� ����� �����������
+	case 9: // ---
 		ledErrorCode = 4;
 		break;
 
-	case 10: // ������������� ����������� ������� (������� ���� ��������)
+	case 10: //    (  )
 		ledErrorCode = 4;
 		break;
 
-	case 11: // ��������. �������� ������� ������������� �������� �������
+	case 11: // .     
 		ledErrorCode = 1;
 		break;
 
-	case 12: // ����������, ���������� ���������� ����� 16� (30�)
+	case 12: // ,    16 (30)
 		ledErrorCode = 9;
 		break;
 
-	case 13:			  // ������� ������� ���������
-		ledErrorCode = 2; //
+	case 13:			  // ---
+		ledErrorCode = 2; // ---
 		break;
 
-	case 14: // ������������� ��������������� ������ �����
+	case 14: // ---
 		ledErrorCode = 7;
 		break;
 
-	case 15: // ����������, ���������� ���������� ����� 10,5� (20�)
+	case 15: // ,    10,5 (20)
 		ledErrorCode = 9;
 		break;
 
-	case 16:			   // ��������� ����� �� ����������
-		ledErrorCode = 10; //
+	case 16:			   // ---
+		ledErrorCode = 10; // ---
 		break;
 
-	case 17:			  // ������������� ���������� ������ - ��ǻ
-		ledErrorCode = 7; //
+	case 17:			  //    - ǻ
+		ledErrorCode = 7; // ---
 		break;
 
-	case 19:			  // ���������� ������� �� ������ ��������
-		ledErrorCode = 3; //
+	case 19:			  // ---
+		ledErrorCode = 3; // ---
 		break;
 
-	case 20:			   // ��� ����� ����� ������ ���������� �  �������
-		ledErrorCode = 13; //
+	case 20:			   // ---
+		ledErrorCode = 13; // ---
 		break;
 
-	case 21:			  // ���������� ������� �� ������ ��������
-		ledErrorCode = 3; //
+	case 21:			  // ---
+		ledErrorCode = 3; // ---
 		break;
 
-	case 22:			  // ������������� ���������� ������ - �����»
-		ledErrorCode = 7; //
+	case 22:			  //    - »
+		ledErrorCode = 7; // ---
 		break;
 
-	case 24:			   // ��������� �������� ������ �� �������� �����������
-		ledErrorCode = 16; //
+	case 24:			   // ---
+		ledErrorCode = 16; // ---
 		break;
-	case 25:			   // �������� �� ������� ������-��������
-		ledErrorCode = 17; //
+	case 25:			   //    -
+		ledErrorCode = 17; // ---
 		break;
-	case 27:			  // ������������� ����������� �������  (��������� �� ���������)
-		ledErrorCode = 4; //
+	case 27:			  //     (  )
+		ledErrorCode = 4; // ---
 		break;
-	case 28:			  // ������������� ����������� ������� (��������� ��������� ��� ����������)
-		ledErrorCode = 4; //
+	case 28:			  //    (   )
+		ledErrorCode = 4; // ---
 		break;
-	case 29:			   // ��������� ���������� ���������� ������ ������� �� ����� ������
+	case 29:			   // ---
 		ledErrorCode = 3; // 20
 		break;
-	case 30:			   // ��� ����� � �������� ������� ��� �������
-		ledErrorCode = 21; //
+	case 30:			   // ---
+		ledErrorCode = 21; // ---
 		break;
-	case 37:			   // ������ ������� � ������� ���������� ������� ���������� �����������
-		ledErrorCode = 22; //
+	case 37:			   // ---
+		ledErrorCode = 22; // ---
 		break;
-	case 50:			   //
-		ledErrorCode = 23; //
+	case 50:			   // ---
+		ledErrorCode = 23; // ---
 		break;
-	case 78:			   // �������������� � ����� �������
-		ledErrorCode = 24; //
+	case 78:			   // ---
+		ledErrorCode = 24; // ---
 		break;
 	default:
-		ledErrorCode = 25; //
+		ledErrorCode = 25; // ---
 		break;
 	}
     

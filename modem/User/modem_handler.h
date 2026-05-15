@@ -7,6 +7,7 @@
 #include "can.h"
 #include "led.h"
 
+/* ── Mode ────────────────────────────────────────────────────────────────── */
 typedef enum {
     MODE_SLEEP = 0,
     MODE_WAIT  = 1,
@@ -16,25 +17,43 @@ typedef enum {
 
 extern ModeTypeDef mode;
 
-extern int levelGsm;
-extern char serialNumberModem[16];
+/* ── Modem runtime state ─────────────────────────────────────────────────
+ * Populated during modeInit(), refreshed periodically in modeWork().    */
+typedef struct {
+    int8_t  csq;            /* signal quality: 0-31; -1 = unknown         */
+    bool    isRegistered;   /* registered on home network  (+CREG: 1)      */
+    bool    isRoaming;      /* registered while roaming   (+CREG: 5)       */
+    char    imei[16];       /* IMEI, null-terminated                       */
+    char    iccid[21];      /* ICCID, null-terminated                      */
+    char    ownNumber[16];  /* own SIM number, null-terminated             */
+    char    firmware[32];   /* modem firmware version string               */
+} ModemState;
 
-/* Legacy compatibility globals used in gsm.cpp / sms.cpp / core.cpp */
-extern uint8_t step;
-extern uint8_t stepOld;
+extern ModemState modem;
+
+/* ── Globals still referenced by gsm.cpp / sms.cpp / core.cpp ───────── */
+extern int      levelGsm;           /* raw CSQ value written by gsm.cpp   */
+extern uint8_t  counterTrouble;     /* consecutive init failures           */
+extern uint8_t  step;               /* SMS read sub-step                   */
+extern uint8_t  stepOld;
 #define MODE_WORK_STEP_READ_SMS 1
+extern bool     isConnectedSocket;
+extern bool     bridgeMode;         /* USB VCP <-> modem passthrough     */
 
-extern bool isReset;
-extern bool isChangePhones;
-extern char updateToVersion[16];
+/* Bridge TX buffer: filled by USB ISR, drained by gsm.handler() main loop */
+#define BRIDGE_TX_MAX  64
+extern volatile uint8_t  bridgeTxBuf[BRIDGE_TX_MAX];
+extern volatile uint8_t  bridgeTxLen;
+extern bool     isReset;
+extern bool     isChangePhones;
+extern char     updateToVersion[16];
 extern uint16_t keyToNeedReset;
-extern uint8_t counterTrouble;
-extern char dtmfChar;
-extern bool isUnknownRing;
-extern bool isConnectedSocket;
+extern char     dtmfChar;
+extern bool     isUnknownRing;
+extern char     serialNumberModem[16];
 
+/* ── API ─────────────────────────────────────────────────────────────────── */
 void setLowPower(bool enable);
-
 void modemHandler(void);
 void changeMode(ModeTypeDef newMode);
 void modeInit(void);

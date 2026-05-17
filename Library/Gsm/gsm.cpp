@@ -12,7 +12,6 @@
 #include "gsm.h"
 #include "sms.h"
 #include "modem_handler.h"
-#include <memory>
 #include <string.h>
 
 #include "hw_config.h"
@@ -329,25 +328,50 @@ void Gsm::processSleepOff(void)
 void Gsm::processPowerOn(void)
 {
     static uint32_t timer = 0;
-    static bool isFirst = true;
-    
-    if (isFirst == true){
-        isFirst = false;
-        #ifdef IS_PLATE_MODEM
-        GPIO_SetBits(GPIOC, GPIO_Pin_1);
-        #endif
-        PowerkeyPin.Set();
-        timer = core.getTick();
-        //led.modeGsm = LED_MODE_GSM_BLINK_MAX;
-        log_gsm("\r\nGSM power on\r\n");
-    }
-    if ((core.getTick() - timer) > 4500){ // 1500
-        led.modeGsm = LED_MODE_GSM_ON;
-        PowerkeyPin.Reset();
-    }
-    if ((core.getTick() - timer) > 5000){ // 2000
-        isFirst = true;
-        changeProcess(PROCESS_WAIT_READY);
+    static uint8_t  pwrStep = 0;
+
+    switch (pwrStep) {
+    case 0:
+        /* Check if modem is already running (e.g. debugger restart) */
+        log_gsm("\r\nGSM power on: checking...\r\n");
+        pwrStep = 1;
+        break;
+
+    case 1:
+        if (sendMessage("AT\r\n", 1000)) {
+            if (answer & ANSWER_OK) {
+                /* Modem already on — skip PWRKEY pulse */
+                log_gsm("GSM already on\r\n");
+                pwrStep = 0;
+                changeProcess(PROCESS_WAIT_READY);
+                break;
+            }
+            /* No response — need to power on via PWRKEY */
+            log_gsm("GSM powering on...\r\n");
+            #ifdef IS_PLATE_MODEM
+            GPIO_SetBits(GPIOC, GPIO_Pin_1);
+            #endif
+            PowerkeyPin.Set();
+            timer  = core.getTick();
+            pwrStep = 2;
+        }
+        break;
+
+    case 2:
+        if ((core.getTick() - timer) >= 1500) {
+            led.modeGsm = LED_MODE_GSM_ON;
+            PowerkeyPin.Reset();
+            timer   = core.getTick();
+            pwrStep = 3;
+        }
+        break;
+
+    case 3:
+        if ((core.getTick() - timer) >= 500) {
+            pwrStep = 0;
+            changeProcess(PROCESS_WAIT_READY);
+        }
+        break;
     }
 }
 //-----------------------------------------------------
@@ -479,15 +503,9 @@ void Gsm::processInitGsm(void)
             }
             if (answer & ANSWER_COPS){
                 if (gsm.answerDataPoint > 0){
-                    if (Convert.compareStr((char *)answerData, "25002")) {   // MegaFon
-                        gsm.mobileOperator = OPERATOR_MEGAFON;
-                    }
-                    else if (Convert.compareStr((char *)answerData, "25099")) {  // Beeline
-                        gsm.mobileOperator = OPERATOR_BEELINE;
-                    }
-                    else if (Convert.compareStr((char *)answerData, "25001")) {      // MTS
-                        gsm.mobileOperator = OPERATOR_MTS;
-                    }
+                    if      (Convert.containsStr((char*)"25002", (char*)answerData)) gsm.mobileOperator = OPERATOR_MEGAFON;
+                    else if (Convert.containsStr((char*)"25099", (char*)answerData)) gsm.mobileOperator = OPERATOR_BEELINE;
+                    else if (Convert.containsStr((char*)"25001", (char*)answerData)) gsm.mobileOperator = OPERATOR_MTS;
                 }
                 numSim = NUMSIM_EXTERNAL;
                 mode = 9;
@@ -564,15 +582,9 @@ void Gsm::processInitGsm(void)
             }
             if (answer & ANSWER_COPS){
                 if (gsm.answerDataPoint > 0){
-                    if (Convert.compareStr((char *)answerData, "25002")) {   // MegaFon
-                        gsm.mobileOperator = OPERATOR_MEGAFON;
-                    }
-                    else if (Convert.compareStr((char *)answerData, "25099")) {  // Beeline
-                        gsm.mobileOperator = OPERATOR_BEELINE;
-                    }
-                    else if (Convert.compareStr((char *)answerData, "25001")) {      // MTS
-                        gsm.mobileOperator = OPERATOR_MTS;
-                    }
+                    if      (Convert.containsStr((char*)"25002", (char*)answerData)) gsm.mobileOperator = OPERATOR_MEGAFON;
+                    else if (Convert.containsStr((char*)"25099", (char*)answerData)) gsm.mobileOperator = OPERATOR_BEELINE;
+                    else if (Convert.containsStr((char*)"25001", (char*)answerData)) gsm.mobileOperator = OPERATOR_MTS;
                 }
                 numSim = NUMSIM_INTERNAL;
                 mode = 10;
@@ -654,40 +666,24 @@ void Gsm::processInitGsm(void)
         
     case 11:
         if (sendMessage("AT+CGMR\r\n", 3000)){
-        
-            if (answer & ANSWER_CGMR){
-                if (gsm.answerDataPoint > 0){
-                    for (int i=0; i<31; i++){
-                        cgmr[i] = gsm.answerData[i];
-                    }
-                    cgmr[31] = 0;
-                    mode++;
-                    log_gsm(".");
-                    break;
-                }
-            }
-            if (answer & ANSWER_TIMEOUT){
-                mode++;//error = ERROR_TIMEOUT;
-                log_gsm(".");
-                break;
-            }
-            if (answer & ANSWER_ERROR){
-                mode++;//error = ERROR_ANSWER;
-                log_gsm(".");
-                break;
-            }
-            if (answer & ANSWER_OK){
+
+            if ((answer & ANSWER_CGMR) && (answer & ANSWER_OK)){
+                /* OK signals end of response — full firmware string is ready */
+                for (int i = 0; i < 31; i++) cgmr[i] = gsm.answerData[i];
+                cgmr[31] = 0;
                 mode++;
                 log_gsm(".");
                 break;
             }
-            
-        
+            if (answer & ANSWER_TIMEOUT){ mode++; log_gsm("."); break; }
+            if (answer & ANSWER_ERROR)  { mode++; log_gsm("."); break; }
+            if (answer & ANSWER_OK)     { mode++; log_gsm("."); break; }
+
         }
         break;
             
     case 12:
-            gsm.mode++;
+            mode++;
             /*if (gsm.sendMessage("ATZ\r\n", 3000)){
                 if (gsm.answer & gsm.ANSWER_TIMEOUT){
                     gsm.mode++;
@@ -705,14 +701,16 @@ void Gsm::processInitGsm(void)
         break;
         
     case 13:
-        if (sendMessage("ATE0\r\n", 300)){  //))// ATE0
-        
+        if (sendMessage("ATE0\r\n", 1000)){  // ATE0 — disable echo
+
             if (answer & ANSWER_TIMEOUT){
-                error = ERROR_TIMEOUT;
+                mode++;          /* modem may already have echo off — skip */
+                log_gsm(".");
                 break;
             }
             if (answer & ANSWER_ERROR){
-                error = ERROR_ANSWER;
+                mode++;          /* non-fatal — continue init */
+                log_gsm(".");
                 break;
             }
             if (answer & ANSWER_OK){
@@ -720,18 +718,20 @@ void Gsm::processInitGsm(void)
                 log_gsm(".");
                 break;
             }
-        
+
         }
         break;
     case 14:
         if (sendMessage("AT+CMEE=2\r\n", 300)){
-        
+
             if (answer & ANSWER_TIMEOUT){
-                error = ERROR_TIMEOUT;
+                mode++;
+                log_gsm(".");
                 break;
             }
             if (answer & ANSWER_ERROR){
-                error = ERROR_ANSWER;
+                mode++;
+                log_gsm(".");
                 break;
             }
             if (answer & ANSWER_OK){
@@ -739,7 +739,7 @@ void Gsm::processInitGsm(void)
                 log_gsm(".");
                 break;
             }
-        
+
         }
         break;
     case 15:
@@ -816,13 +816,15 @@ void Gsm::processInitGsm(void)
         break;
     case 18:
         if (sendMessage("AT+CSQ\r\n", 300)){
-    
+
             if (answer & ANSWER_TIMEOUT){
-                mode++;   /* don't get stuck — advance even without CSQ */
+                timer = core.getTick();  /* ensure case 19 timeout is valid */
+                mode++;
                 log_gsm(".");
                 break;
             }
             if (answer & ANSWER_ERROR){
+                timer = core.getTick();
                 mode++;
                 log_gsm(".");
                 break;
@@ -833,19 +835,21 @@ void Gsm::processInitGsm(void)
                 log_gsm(".");
                 break;
             }
-        
+
         }
         break;
-        
+
     case 19:
-        if ((core.getTick()-timer) > 1000){
-            error = ERROR_TIMEOUT;
-            break;
-        }
+        /* Wait for answerData to be populated by the parser (up to 1 s) */
         if (gsm.answerDataPoint > 0){
             answer &= ~ANSWER_CSQ;
             levelGsm = Convert.strToInt((char*) gsm.answerData);
             mode++;
+            log_gsm(".");
+            break;
+        }
+        if ((core.getTick()-timer) > 1000){
+            mode++;   /* CSQ data not received — non-fatal, continue init */
             log_gsm(".");
             break;
         }
@@ -854,98 +858,73 @@ void Gsm::processInitGsm(void)
     case 20:
         timer = core.getTick();
         if (sendMessage("AT+CICCID\r\n", 9000)){
-        
-            if (answer & ANSWER_ICCID){
-                if (gsm.answerDataPoint > 0){
-                    for (int i=0; i<20; i++){
-                        iccid[i] = gsm.answerData[i];
-                    }
-                    iccid[20] = 0;
-                    mode++;
-                    log_gsm(".");
-//                    break;
-                }
-            }
-            if (answer & ANSWER_TIMEOUT){
-                mode++;//error = ERROR_TIMEOUT;
-                log_gsm(".");
-                break;
-            }
-            if (answer & ANSWER_ERROR){
-                mode++;//error = ERROR_ANSWER;
-                log_gsm(".");
-                break;
-            }
-            if (answer & ANSWER_OK){
+
+            if ((answer & ANSWER_ICCID) && (answer & ANSWER_OK)){
+                /* OK signals end of response — full ICCID is ready */
+                for (int i = 0; i < 20; i++) iccid[i] = gsm.answerData[i];
+                iccid[20] = 0;
                 mode++;
                 log_gsm(".");
                 break;
             }
+            if (answer & ANSWER_TIMEOUT){ mode++; log_gsm("."); break; }
+            if (answer & ANSWER_ERROR)  { mode++; log_gsm("."); break; }
+            if (answer & ANSWER_OK)     { mode++; log_gsm("."); break; }
         }
         break;
-        
+
     case 21:
-        if (sendMessage("AT+CGSN\r\n", 500)){
-            if ((core.getTick()-timer) > 1000 && !isReadImei){
-                isReadImei = true;
-                gsm.answerDataPoint = 0;
-                //answer = 0;
-            }
-            if ((core.getTick()-timer) > 2000){
-                if (answer & ANSWER_TIMEOUT){
-                    uint8_t j = 0;
-                    //if (gsm.answerDataPoint >= 15){
-                        for (int i=0; i<20; i++){
-                            if (gsm.answerData[i] >= '0' && gsm.answerData[i] <= '9'){
-                                imei[j++] = gsm.answerData[i];
-                                if (j >= 15) break;
-                            }
-                        }
-                        imei[15] = 0;
-                        mode++;
-                        log_gsm(".");
-                    //}
-                    isReadImei = false;
-                    break;
-                }
-            }   
+        /* IMEI: AT+CGSN returns raw digits with no prefix.
+         * Use isReadImei as a one-shot flag to clear the buffer on first
+         * entry, then wait for OK to confirm the full response arrived.   */
+        if (!isReadImei) {
+            isReadImei = true;
+            gsm.answerDataPoint = 0;
+            for (int i = 0; i < gsm.ANSWER_ARRAY_MAX; i++) gsm.answerData[i] = 0;
         }
-        break;
-    case 22:
-        if (sendMessage("AT+CNUM\r\n", 300)){
-        
-            if (answer & ANSWER_CNUM){
-                if (gsm.answerDataPoint > 0){
-                    a=0;
-                    res = false;
-                    for (int i=0; i<64; i++){
-                        if (gsm.answerData[i] == '+') res = true;
-                        if (res && gsm.answerData[i] == '\"') break;
-                        if (res) phoneSim[a++] = gsm.answerData[i];
-                        if (a >= 15) break;
-                    }
-                    phoneSim[a++] = 0;
-                    mode++;
-                    log_gsm(".");
-                    break;
-                }
-            }
-            if (answer & ANSWER_TIMEOUT){
-                mode++;//error = ERROR_TIMEOUT;
-                log_gsm(".");
-                break;
-            }
-            if (answer & ANSWER_ERROR){
-                mode++;//error = ERROR_ANSWER;
-                log_gsm(".");
-                break;
-            }
+        if (sendMessage("AT+CGSN\r\n", 3000)){
+            if (answer & ANSWER_TIMEOUT){ isReadImei = false; mode++; log_gsm("."); break; }
+            if (answer & ANSWER_ERROR)  { isReadImei = false; mode++; log_gsm("."); break; }
             if (answer & ANSWER_OK){
+                uint8_t j = 0;
+                for (int i = 0; i < gsm.ANSWER_ARRAY_MAX && j < 15; i++){
+                    if (gsm.answerData[i] == 0) break;
+                    if (gsm.answerData[i] >= '0' && gsm.answerData[i] <= '9')
+                        imei[j++] = gsm.answerData[i];
+                }
+                imei[j] = 0;
+                isReadImei = false;
                 mode++;
                 log_gsm(".");
                 break;
             }
-        
+        }
+        break;
+
+    case 22:
+        if (sendMessage("AT+CNUM\r\n", 3000)){
+
+            if ((answer & ANSWER_CNUM) && (answer & ANSWER_OK)){
+                /* Response: +CNUM: "","79001234567",145  or  "+79001234567"
+                 * Extract content of the second quoted field.              */
+                a = 0;
+                int quoteCount = 0;
+                for (int i = 0; i < 64 && a < 15; i++){
+                    uint8_t c = gsm.answerData[i];
+                    if (c == 0) break;
+                    if (c == '\"') { quoteCount++; continue; }
+                    if (quoteCount == 3) phoneSim[a++] = (char)c;  /* inside 2nd quoted field */
+                    if (quoteCount == 4) break;                     /* closing quote of 2nd field */
+                }
+                phoneSim[a] = 0;
+                mode++;
+                log_gsm(".");
+                break;
+            }
+            if (answer & ANSWER_TIMEOUT){ mode++; log_gsm("."); break; }
+            if (answer & ANSWER_ERROR)  { mode++; log_gsm("."); break; }
+            if (answer & ANSWER_OK)     { mode++; log_gsm("."); break; }
+
         }
         break;
         
@@ -983,25 +962,24 @@ void Gsm::processRequestBalance(void)
         
     case 0:
         setLowPower(false);
-        gsm.mode++;
-    
+        mode++;
+
     case 1:
-        if (gsm.sendMessage("AT+CSCLK=0\r\n", 750)){
-        
-            if (gsm.answer & gsm.ANSWER_TIMEOUT){
-                //??//error = ERROR_TIMEOUT;
-                gsm.mode++;
+        if (sendMessage("AT+CSCLK=0\r\n", 750)){
+
+            if (answer & ANSWER_TIMEOUT){
+                mode++;
                 break;
             }
-            if (gsm.answer & gsm.ANSWER_ERROR){
-                gsm.error = gsm.ERROR_ANSWER;
-                gsm.mode++;
+            if (answer & ANSWER_ERROR){
+                error = ERROR_ANSWER;
+                mode++;
                 break;
             }
-            if (gsm.answer & gsm.ANSWER_OK){
-                gsm.mode++;
+            if (answer & ANSWER_OK){
+                mode++;
             }
-        
+
         }
         break;
         
@@ -1333,45 +1311,6 @@ bool Gsm::sendMessage(const char *transMessage, uint32_t duration)
     }
     return false;
 }
-//-----------------------------------------------------
-//void Gsm::setPwrkey(bool state)
-//{
-//    if (state == true){
-//        switch(versionHardware){
-//            case 1:
-//                GPIO_SetBits(PWRKEY_V1_PORT, PWRKEY_V1_PIN);
-//                break;
-//            case 2:
-//                GPIO_SetBits(PWRKEY_V2_PORT, PWRKEY_V2_PIN);
-//                break;
-//            default:
-//                GPIO_SetBits(PWRKEY_V2_PORT, PWRKEY_V2_PIN);
-//        }
-//    }
-//    else{
-//        switch(versionHardware){
-//            case 1:
-//                GPIO_ResetBits(PWRKEY_V1_PORT, PWRKEY_V1_PIN);
-//                break;
-//            case 2:
-//                GPIO_ResetBits(PWRKEY_V2_PORT, PWRKEY_V2_PIN);
-//                break;
-//            default:
-//                GPIO_ResetBits(PWRKEY_V2_PORT, PWRKEY_V2_PIN);
-//        }
-//    }
-//}
-//-----------------------------------------------------
-//void Gsm::setDtr(bool state)
-//{
-//    if (state == true){
-//        GPIO_SetBits(GPIOB, GPIO_PIN_1);
-//    }
-//    else{
-//        GPIO_ResetBits(GPIOB, GPIO_PIN_1);
-//    }
-//}
-//-----------------------------------------------------
 uint16_t Gsm::parsing(void)
 {
     static uint16_t posY = 0;   //      GSM 
@@ -1381,9 +1320,6 @@ uint16_t Gsm::parsing(void)
     uint16_t res = 0;
     static uint16_t answerLast = 0;
     static bool isFirst = false;
-    static char answerCodeStr[8];
-    static char answerCodeStrPoint = 0;
-    static uint16_t headLength = 0;
     
     while (posY < ANSWER_STRINGS_MAX)
     {
@@ -1443,14 +1379,14 @@ uint16_t Gsm::parsing(void)
             isFirst = false;
             answerDataPoint = 0;
             for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-            isReadJson = true;
+            isInQuote = true;
         }
-        if (isReadJson){
+        if (isInQuote){
             if (answerDataPoint < ANSWER_ARRAY_MAX){
                 answerData[answerDataPoint++] = receiveArray[pointTemp];
                 if (answerDataPoint > 1){
                     dtmfChar = answerData[0];
-                    isReadJson = false;
+                    isInQuote = false;
                 }
             }
         }
@@ -1473,14 +1409,14 @@ uint16_t Gsm::parsing(void)
             isFirst = false;
             answerDataPoint = 0;
             for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-            isReadJson = false;
+            isInQuote = false;
         }
-        if (isReadJson == false){
-            if (receiveArray[pointTemp] == 34) isReadJson = true;
+        if (isInQuote == false){
+            if (receiveArray[pointTemp] == 34) isInQuote = true;
         }
         else{
             if (receiveArray[pointTemp] == 34){
-                isReadJson = false;
+                isInQuote = false;
                 answerLast = 0;
             }
             else{
@@ -1498,14 +1434,14 @@ uint16_t Gsm::parsing(void)
             isFirst = false;
             answerDataPoint = 0;
             for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-            isReadJson = false;
+            isInQuote = false;
         }
-        if (isReadJson == false){
-            if (receiveArray[pointTemp] == 34) isReadJson = true;
+        if (isInQuote == false){
+            if (receiveArray[pointTemp] == 34) isInQuote = true;
         }
         else{
             if (receiveArray[pointTemp] == 34){
-                isReadJson = false;
+                isInQuote = false;
                 answerLast = 0;
                 
                 if (answerDataPoint >= 12){
@@ -1563,99 +1499,6 @@ uint16_t Gsm::parsing(void)
         
         }
     }
-    else if (((uint32_t)1<<answerLast) & ANSWER_HTTPACTION){
-        //    ','
-        if (isFirst){
-            isFirst = false;
-            answerCodeStrPoint = 0;
-            for (int i=0; i<8; i++) answerCodeStr[i] = 0;
-            isReadJson = false;
-        }
-        if (isReadJson == false){
-            if (receiveArray[pointTemp] == ',') isReadJson = true;
-        }
-        else{
-            if (receiveArray[pointTemp] == ','){
-                isReadJson = false;
-                answerLast = 0;
-            }
-            else{
-                if (answerCodeStrPoint < 8){
-                    answerCodeStr[answerCodeStrPoint++] = receiveArray[pointTemp];
-                }
-            }
-        
-        }
-    }
-    else if (((uint32_t)1<<answerLast) & ANSWER_HTTPREAD){   // ---
-        //    "{}"
-        if (isFirst){
-            isFirst = false;
-            answerDataPoint = 0;
-            for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-            isReadJson = false;
-        }
-        if (isReadJson == false){
-            if (receiveArray[pointTemp] == '{') isReadJson = true;
-        }
-        else{
-            if (receiveArray[pointTemp] == 0x0d){//'}'
-                isReadJson = false;
-                answerLast = 0;
-                answerLast = 0;
-            }
-            else{
-                if (answerDataPoint < ANSWER_ARRAY_MAX){
-                    answerData[answerDataPoint++] = receiveArray[pointTemp];
-                }
-            }
-
-        }
-    }
-
-    else if (((uint32_t)1<<answerLast) & ANSWER_HTTPHEAD){   // ---
-        //    " "
-        if (isFirst){
-            isFirst = false;
-            answerDataPoint = 0;
-            for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-            isReadJson = false;
-            headLength = 0;
-        }
-        if (headLength == 0){
-            if (isReadJson == false){
-                if (receiveArray[pointTemp] == ' ') isReadJson = true;
-            }
-            else{
-                if (receiveArray[pointTemp] == '\r' || 
-                    receiveArray[pointTemp] == '\n' || 
-                    answerDataPoint >= 3){
-                    //isReadJson = false;
-                    //answerLast = 0;
-                    headLength = Convert.strToInt((char*) answerData);
-                    answerDataPoint = 0;
-                    for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-                }
-                else{
-                    if (answerDataPoint < ANSWER_ARRAY_MAX){
-                        answerData[answerDataPoint++] = receiveArray[pointTemp];
-                    }
-                }
-            
-            }
-        }
-        else{
-            if (answerDataPoint > headLength){
-                isReadJson = false;
-                answerLast = 0;
-            }
-            else{
-                if (answerDataPoint < ANSWER_ARRAY_MAX){
-                    answerData[answerDataPoint++] = receiveArray[pointTemp];
-                }
-            }
-        }
-    }
     else if (((uint32_t)1<<answerLast) & ANSWER_SOCKET){
         
         //    "{}"
@@ -1663,29 +1506,29 @@ uint16_t Gsm::parsing(void)
             isFirst = false;
             answerDataPoint = 0;
             for (int i=0; i<ANSWER_ARRAY_MAX; i++) answerData[i] = 0;
-            isReadJson1 = false;
-            isReadJson2 = false;
-            isReadJson = false;
+            isInBrace = false;
+            isInBrace2 = false;
+            isInQuote = false;
         }
-        if (isReadJson == false){
-            if (isReadJson1 == false){
-                if (receiveArray[pointTemp] == '{') isReadJson1 = true;
+        if (isInQuote == false){
+            if (isInBrace == false){
+                if (receiveArray[pointTemp] == '{') isInBrace = true;
             }
             else {
-                if (receiveArray[pointTemp] == '\"') isReadJson = true;
-                else isReadJson1 = false;
+                if (receiveArray[pointTemp] == '\"') isInQuote = true;
+                else isInBrace = false;
             }
         }
         else{
-            if (isReadJson2 == false && receiveArray[pointTemp] == '}'){
-                isReadJson2 = true;
+            if (isInBrace2 == false && receiveArray[pointTemp] == '}'){
+                isInBrace2 = true;
             }
-            else if (isReadJson2 == true && receiveArray[pointTemp] == '}'){
-                isReadJson = false;
+            else if (isInBrace2 == true && receiveArray[pointTemp] == '}'){
+                isInQuote = false;
                 answerLast = 0;
             }
             else{
-                isReadJson2 = false;
+                isInBrace2 = false;
                 if (answerDataPoint < ANSWER_ARRAY_MAX){
                     answerData[answerDataPoint++] = receiveArray[pointTemp];
                 }
@@ -1732,32 +1575,6 @@ void Gsm::startTransmission(const char *array)
         #endif
     }
 }
-//-----------------------------------------------------
-//void Gsm::transmitNextByte(void)
-//{
-//    if (transArray[transPoint] != 0){
-//        USART_SendData(USART1, transArray[transPoint]);
-//        //USART_To_USB_Send_Data(transArray[transPoint]);
-// ---
-//        char tmp[2] = {0,0};
-//        tmp[0] = transArray[transPoint];
-//        log_at(tmp);
-//        if (transArray[transPoint] >= 'A' && transArray[transPoint] <= 'Z'){
-//            buffer[point++] = transArray[transPoint]-('A'-'a');  //))// ---
-//        }
-//        else{
-//            buffer[point++] = transArray[transPoint];  //))// ---
-//        }
-//        if (point >= BUFFER_ARRAY_MAX) point = 0;  //))// ---
-// ---
-//        transPoint++;
-//    }
-//    else{
-//        isBusy = false;
-//        USART_ConfigInt(USART1, USART_INT_TXC, DISABLE);
-//    }
-//}
-//-----------------------------------------------------
 void Gsm::receiptNextByte(uint8_t byte)
 {
     if (bridgeMode) {
@@ -1773,53 +1590,3 @@ void Gsm::receiptNextByte(uint8_t byte)
     log_at(tmp);
 }
 
-//-----------------------------------------------------
-//void Gsm::usartIrqHandler(void)
-//{
-//    uint8_t byte;
-// ---
-//    if (USART_GetIntStatus(USART1, USART_INT_RXDNE) != RESET){
-//        ///USART_ClearITPendingBit(USART1, USART_INT_RXDNE);
-//        byte = USART_ReceiveData(USART1);
-//        gsm.receiptNextByte(byte);
-//        //USART_To_USB_Send_Data(byte);
-//    }
-//    if (USART_GetIntStatus(USART1, USART_INT_TXC) != RESET){
-//        USART_ClrIntPendingBit(USART1, USART_INT_TXC);
-//        gsm.transmitNextByte();
-//    }
-// ---
-//    volatile uint32_t data = USART1->DAT;
-//    volatile uint32_t sr = USART1->STS;
-//    volatile uint32_t res = sr+data; //dummy op to supress optimisation
-//}
-//-----------------------------------------------------
-void Gsm::bufRevers(char* str)
-{
-    int i = 0;
-    uint16_t temp = 0;
-    int r = 0;
-
-    while (str[i] != '\0') {
-        i++;
-    }
-    i = i - 1;
-    for (r = 0; r < i; i--, r++) {
-        temp = str[i];
-        str[i] = str[r];
-        str[r] = temp;
-    }
-}
-//-----------------------------------------------------
-void Gsm::intToChar(char* str, int n)
-{
-    int i = 0;
-    while (n > 9) {
-        str[i++] = (n % 10) + '0';
-        n = n / 10;
-    }
-    str[i++] = n + '0';
-    str[i] = '\0';
-    bufRevers(str);
-}
-//-----------------------------------------------------

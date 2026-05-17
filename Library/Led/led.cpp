@@ -303,11 +303,6 @@ uint8_t Led::codeToCount(uint8_t error)
     return ledErrorCode;
 }
 //-----------------------------------------------------
-void Led::setPercent(uint8_t percent)
-{
-    
-}
-//-----------------------------------------------------
 void Led::setHeaterLed(uint8_t mode)
 {
     switch (mode){

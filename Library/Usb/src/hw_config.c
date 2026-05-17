@@ -44,6 +44,9 @@
 #include "gsm.h"
 #include "modem_handler.h"
 
+/* C-callable SMS emulator (implemented in sms.cpp) */
+extern void sms_emulate(const char* phone, const char* message);
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -324,12 +327,43 @@ bool USART_Config(void)
                    Nb_bytes: number of bytes to send.
 * Return         : none.
 *******************************************************************************/
+/* Process a complete line received from USB (null-terminated, no \r\n) */
+static void usb_process_line(char* line)
+{
+    /* S <phone> <message body>  — emulate incoming SMS */
+    if ((line[0] == 's' || line[0] == 'S') && line[1] == ' ') {
+        char* phone = line + 2;
+        char* msg   = strchr(phone, ' ');
+        if (msg) {
+            *msg++ = '\0';
+            log_info("[USB SMS] phone="); log_info(phone);
+            log_info(" msg=");            log_info(msg);
+            log_info("\r\n");
+            sms_emulate(phone, msg);
+        } else {
+            log_info("[USB SMS] usage: S <phone> <message>\r\n");
+        }
+        return;
+    }
+
+    if (!line[0]) return;
+
+    /* Single-char commands */
+    char b = line[0];
+    if (b == 'r' || b == 'R') { NVIC_SystemReset(); return; }
+    if (b == 'b' || b == 'B') { bridgeMode = 1; log_info("\r\n[Bridge ON]  type +++ to exit\r\n"); return; }
+    if (b == 'g' || b == 'G') { logTypeMess = LOG_TYPE_GSM; log_info("\r\n[Log: GSM]\r\n"); return; }
+    if (b == 'a' || b == 'A') { logTypeMess = LOG_TYPE_ALL; log_info("\r\n[Log: ALL]\r\n"); return; }
+    if (b == 'l' || b == 'L') { logTypeMess = LOG_TYPE_AT;  log_info("\r\n[Log: AT]\r\n");  return; }
+}
+
 void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes)
 {
-    uint32_t i;
     static uint8_t plusCount = 0;
+    static char    lineBuf[160];
+    static uint8_t lineLen = 0;
 
-    for (i = 0; i < Nb_bytes; i++)
+    for (uint32_t i = 0; i < Nb_bytes; i++)
     {
         uint8_t b = *(data_buffer + i);
 
@@ -347,38 +381,20 @@ void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes)
             } else {
                 plusCount = 0;
             }
-            /* Buffer byte — actual TX done safely in gsm.handler() main loop */
-            if (bridgeTxLen < BRIDGE_TX_MAX) {
+            if (bridgeTxLen < BRIDGE_TX_MAX)
                 bridgeTxBuf[bridgeTxLen++] = b;
-            }
             continue;
         }
 
-        /* ── Normal command mode ── */
         plusCount = 0;
-        if (b == 'r' || b == 'R') {
-            NVIC_SystemReset();
-            return;
-        }
-        if (b == 'b' || b == 'B') {
-            bridgeMode = 1;
-            log_info("\r\n[Bridge ON]  type +++ to exit\r\n");
-            return;
-        }
-        if (b == 'g' || b == 'G') {
-            logTypeMess = LOG_TYPE_GSM;
-            log_info("\r\n[Log: GSM]\r\n");
-            return;
-        }
-        if (b == 'a' || b == 'A') {
-            logTypeMess = LOG_TYPE_ALL;
-            log_info("\r\n[Log: ALL]\r\n");
-            return;
-        }
-        if (b == 'l' || b == 'L') {
-            logTypeMess = LOG_TYPE_AT;
-            log_info("\r\n[Log: AT]\r\n");
-            return;
+
+        if (b == '\r' || b == '\n') {
+            lineBuf[lineLen] = '\0';
+            usb_process_line(lineBuf);
+            lineLen = 0;
+        } else {
+            if (lineLen < (uint8_t)(sizeof(lineBuf) - 1))
+                lineBuf[lineLen++] = (char)b;
         }
     }
 }

@@ -29,8 +29,7 @@ class Led
         void handler(void);
         
         uint8_t codeToCount(uint8_t error);
-        void setPercent(uint8_t percent);
-        void setHeaterLed(uint8_t mode);
+void setHeaterLed(uint8_t mode);
         void setFrozenTime(uint32_t duration);
         
         uint8_t modeGsm, modeHeater;

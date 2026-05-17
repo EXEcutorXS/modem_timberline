@@ -37,6 +37,9 @@ void Flash_C::writeSetup(void)
     }
     array[a++] = core.timeZone;
     array[a++] = gsm.isOnlySmsMode ? 1 : 0;
+    for (x = 0; x < 5; x++) {
+        array[a++] = (uint8_t)gsm.pin[x];
+    }
 
     x = 0;
     for (a = 0; a < 511; a++) {
@@ -78,9 +81,20 @@ void Flash_C::readSetup(void)
         }
         core.timeZone = array[a++];
         gsm.isOnlySmsMode = (array[a++] == 1);
+        for (x = 0; x < 5; x++) {
+            gsm.pin[x] = (char)array[a++];
+        }
+        /* ensure null-termination if flash was written by older firmware */
+        gsm.pin[4] = '\0';
+        /* if PIN was never written (all zeros) — restore default */
+        if (strlen(gsm.pin) != 4) {
+            gsm.pin[0]='1'; gsm.pin[1]='2'; gsm.pin[2]='3'; gsm.pin[3]='4'; gsm.pin[4]='\0';
+            writeSetup();
+        }
     } else {
         gsm.isOnlySmsMode = true;
         core.timeZone = 3;
+        gsm.pin[0]='1'; gsm.pin[1]='2'; gsm.pin[2]='3'; gsm.pin[3]='4'; gsm.pin[4]='\0';
         writeSetup();
     }
 }

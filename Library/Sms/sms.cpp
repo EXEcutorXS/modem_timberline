@@ -10,6 +10,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "Converter.h"
 #include "sms.h"
+#include "timberline_sms.h"
 #include "gsm.h"
 #include "modem_handler.h"
 #include "flash.h"
@@ -19,6 +20,12 @@
 #include "log.h"
 
 Sms sms;
+
+extern "C" void sms_emulate(const char* phone, const char* message)
+{
+    sms.parseMessage((char*)phone, (char*)message);
+}
+
 //-----------------------------------------------------
 Sms::Sms(void)
 {
@@ -440,36 +447,45 @@ void Sms::processReadSms(void) {
                 if ((gsm.answer & gsm.ANSWER_CMGR) && (gsm.answer & gsm.ANSWER_OK)) {
                     gsm.numberSms = 0;
 
-                    /* ── Parse answerData ─────────────────────────────────
-                     * Format after "+CMGR: ":
-                     *   "REC UNREAD","+79XXXXXXXXX",,"date"\r\nBODY\r\n
-                     * Extract phone (2nd quoted field) and body (after \n). */
+                    /* ── Null-terminate answerData ───────────────────────── */
+                    uint16_t dLen = gsm.answerDataPoint;
+                    if (dLen >= gsm.ANSWER_ARRAY_MAX)
+                        dLen = gsm.ANSWER_ARRAY_MAX - 1;
+                    gsm.answerData[dLen] = 0;
+
+                    /* ── Log raw modem response (always visible) ─────────── */
+                    log_info("[SMS] raw: \"");
+                    log_info((const char*)gsm.answerData);
+                    log_info("\"\r\n");
+
+                    /* ── Extract phone: between 3rd and 4th quote ────────── */
+                    /* Format after "+CMGR: ":
+                     *   "REC UNREAD","+79XXXXXXXXX",,"date"\r\nBODY\r\n     */
                     char smsPhone[20] = {0};
                     char smsBody[160] = {0};
-                    uint8_t qCount = 0, phoneLen = 0, bodyLen = 0;
-                    bool inBody = false;
+                    int  qc = 0, pi = 0;
+                    for (int i = 0; i < (int)dLen && pi < 19; i++) {
+                        char ch = (char)gsm.answerData[i];
+                        if (ch == '"') { qc++; continue; }
+                        if (qc == 3)  smsPhone[pi++] = ch;
+                        else if (qc > 3) break;
+                    }
 
-                    for (int i = 0; i < gsm.ANSWER_ARRAY_MAX; i++) {
-                        uint8_t c = gsm.answerData[i];
-                        if (c == 0 && !inBody) break;
-                        if (!inBody) {
-                            if (c == '"') qCount++;
-                            else if (qCount == 3 && phoneLen < 19)
-                                smsPhone[phoneLen++] = (char)c;
-                            else if (c == '\n' && qCount >= 4) {
-                                inBody = true;
-                            }
-                        } else {
-                            if (c == '\r' || c == '\n' || c == 0) break;
-                            if (bodyLen < 159) smsBody[bodyLen++] = (char)c;
+                    /* ── Extract body: text after first '\n' in answerData ── */
+                    int nlPos = -1;
+                    for (int i = 0; i < (int)dLen; i++) {
+                        if (gsm.answerData[i] == '\n') { nlPos = i + 1; break; }
+                    }
+                    if (nlPos >= 0) {
+                        int bi = 0;
+                        for (int i = nlPos; i < (int)dLen && bi < 159; i++) {
+                            char ch = (char)gsm.answerData[i];
+                            if (ch == '\r' || ch == '\n' || ch == 0) break;
+                            smsBody[bi++] = ch;
                         }
                     }
 
-                    log_info("[SMS] from: ");
-                    log_info(smsPhone[0] ? smsPhone : "unknown");
-                    log_info("\r\n      text: ");
-                    log_info(smsBody[0]  ? smsBody  : "(empty)");
-                    log_info("\r\n");
+                    parseMessage(smsPhone, smsBody);
 
                     gsm.mode++;
                     break;
@@ -494,15 +510,16 @@ void Sms::processReadSms(void) {
         
         }
         break;
-        
+
         default:
             if (keyToNeedReset == 0xAA55){
                 keyToNeedReset = 0;
                 NVIC_SystemReset();
             }
+            step = stepOld;
             gsm.changeProcess(gsm.PROCESS_EMPTY);
             break;
-    
+
     }
 }
 //-----------------------------------------------------
@@ -664,6 +681,148 @@ void Sms::sendSmsRussian(const char *number, const char *message)
 }
 //-----------------------------------------------------
 bool Sms::parseMessage(char* number, char* message)
+{
+    /* ── Save sender phone for reply functions ───────────────────────────── */
+    strncpy(replyPhone, number, PHONE_MAX_LEN - 1);
+    replyPhone[PHONE_MAX_LEN - 1] = '\0';
+
+    char ts[32]; unixTime.getTimestamp(ts);
+    log_gsm(ts); log_gsm(" SMS from: "); log_gsm(number[0] ? number : "unknown"); log_gsm("\r\n");
+
+    /* ── Parse ───────────────────────────────────────────────────────────── */
+    TlSmsParseResult result;
+    tl_sms_parse(number, message, gsm.pin, gsm.phones[0], &gsm.phones[1], result);
+
+    if (!result.authenticated) {
+        log_gsm("Auth failed\r\n");
+        return false;
+    }
+
+    /* ── Log parse errors ────────────────────────────────────────────────── */
+    for (uint8_t e = 0; e < result.errCount; e++) {
+        log_gsm("Parse error: "); log_gsm(result.errors[e]); log_gsm("\r\n");
+    }
+
+    /* ── Dispatch commands ───────────────────────────────────────────────── */
+    bool res = (result.cmdCount > 0);
+    for (uint8_t i = 0; i < result.cmdCount; i++) {
+        const TlSmsCmd& cmd = result.cmds[i];
+        switch (cmd.type) {
+
+            case TL_CMD_ADMIN:
+                strncpy(gsm.phones[0], cmd.phone, 15);
+                gsm.phones[0][15] = '\0';
+                flash.writeSetup();
+                sendAnswerText("Admin phone updated.");
+                break;
+
+            case TL_CMD_PHONE:
+                if (cmd.phoneNum >= 1 && cmd.phoneNum <= 5) {
+                    strncpy(gsm.phones[cmd.phoneNum], cmd.phone, 15);
+                    gsm.phones[cmd.phoneNum][15] = '\0';
+                    flash.writeSetup();
+                    sendAnswerText("Phone updated.");
+                }
+                break;
+
+            case TL_CMD_WARMUP:
+                /* TODO: set burner/element on, all zones heat, floor on */
+                break;
+
+            case TL_CMD_SETPIN:
+                memcpy(gsm.pin, cmd.pin, 5);
+                flash.writeSetup();
+                sendAnswerText("PIN updated.");
+                break;
+
+            case TL_CMD_PING:
+                sendAnswerSmsPing();
+                break;
+
+            case TL_CMD_RESET:
+                sendAnswerText("Reset...");
+                keyToNeedReset = 0xAA55;
+                *(__IO uint32_t *)(0x20023F00) = 0x00000000;
+                break;
+
+            case TL_CMD_FACTORY:
+                setFactory();
+                sendAnswerText("Factory reset done.");
+                break;
+
+            case TL_CMD_STATUS:
+                /* TODO: build and send status SMS */
+                break;
+
+            case TL_CMD_FAULTREPORT:
+                /* TODO: cmd.boolVal */
+                break;
+
+            case TL_CMD_UNIT:
+                /* TODO: cmd.unit — TL_UNIT_C / TL_UNIT_F */
+                break;
+
+            case TL_CMD_BURNER:
+                /* TODO: cmd.boolVal */
+                break;
+
+            case TL_CMD_ELEMENT:
+                /* TODO: cmd.boolVal */
+                break;
+
+            case TL_CMD_FLOOR_TOGGLE:
+                /* TODO: cmd.boolVal */
+                break;
+
+            case TL_CMD_FLOOR_SETPOINT:
+                /* TODO: cmd.intVal (2..32 °C) */
+                break;
+
+            case TL_CMD_ENGINE_TOGGLE:
+                /* TODO: cmd.boolVal */
+                break;
+
+            case TL_CMD_ENGINE_SETPOINT:
+                /* TODO: cmd.intVal (0..80 °C) */
+                break;
+
+            case TL_CMD_SYSTIMER:
+                /* TODO: cmd.intVal (1..100 h, 96+ = unlimited) */
+                break;
+
+            case TL_CMD_ZONE_STATE:
+                /* TODO: cmd.zone.num (1..5 or TL_ZONE_ALL), cmd.zone.state */
+                break;
+
+            case TL_CMD_ZONE_FAN_MODE:
+                /* TODO: cmd.zone.num, cmd.zone.fanMode */
+                break;
+
+            case TL_CMD_ZONE_FAN_PERCENT:
+                /* TODO: cmd.zone.num, cmd.zone.percent (10..100) */
+                break;
+
+            case TL_CMD_ZONE_DAY_SP:
+                /* TODO: cmd.zone.num, cmd.zone.setpoint (10..32 °C) */
+                break;
+
+            case TL_CMD_ZONE_NIGHT_SP:
+                /* TODO: cmd.zone.num, cmd.zone.setpoint (10..32 °C) */
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    if (!res) log_gsm("No commands recognised\r\n");
+    return res;
+}
+//-----------------------------------------------------
+// REMOVED: getMessageParams() — replaced by tl_sms_parse()
+//-----------------------------------------------------
+#if 0 /* old parseMessage — kept for reference, delete when no longer needed */
+bool Sms::parseMessage_OLD(char* number, char* message)
 {
     const int COMMANDS_MAX = 22;
     const char commands[COMMANDS_MAX][13] = 
@@ -1016,8 +1175,8 @@ bool Sms::parseMessage(char* number, char* message)
 
                     break;
                 }
-            }   
-        }   
+            }
+        }
         if (!res){
             if (isCompare){
                 log_gsm("message not recognized!\r\n");
@@ -1029,7 +1188,9 @@ bool Sms::parseMessage(char* number, char* message)
     }
     return res;
 }
+#endif /* old parseMessage */
 //-----------------------------------------------------
+#if 0 /* getMessageParams — no longer used, replaced by tl_sms_parse() */
 bool Sms::getMessageParams(char* message)
 {
     int i=0;
@@ -1131,6 +1292,7 @@ bool Sms::getMessageParams(char* message)
         }
     }
 }
+#endif /* getMessageParams */
 //-----------------------------------------------------
 void Sms::sendAnswerSmsParameters(AnswerNameTypeDef name)
 {
@@ -1273,13 +1435,13 @@ void Sms::sendAnswerSmsPing(void)
     
     n += Convert.strToStr("\0", &message[n]);
     
-    sendSmsEnglish(gsm.phones[gsm.posRingPhone], message);
+    sendSmsEnglish(replyPhone, message);
 }
 //-----------------------------------------------------
 void Sms::sendAnswerText(char *message)
 {
     gsm.counterSendSms = 3;
-    sendSmsEnglish(gsm.phones[gsm.posRingPhone], message);
+    sendSmsEnglish(replyPhone, message);
 }
 //-----------------------------------------------------
 void Sms::SendSetup(void)

@@ -339,7 +339,7 @@
               <MiscControls>--wchar32 --cpp</MiscControls>
               <Define>N32WB452, USE_STDPERIPH_DRIVER,N32WB452_BT_API,BD_RTC_USE_LSI,BLE_OTA_WRITE_CHAR_EN,__STDC_LIMIT_MACROS,__STDC_CONSTANT_MACROS,__STRICT_ANSI__</Define>
               <Undefine></Undefine>
-              <IncludePath>..\.\Library\Bluetooth;..\.\Library\Can;..\.\Library\Core;..\.\Library\Gsm;..\.\Library\Led;..\.\Library\Panel;..\.\Library\Usart;.\User;..\.\Library\Ble;..\.\Library;..\Library\Json;..\.\Library\Timers;..\.\Library\Story;..\.\Library\Heater;..\Library\Graph;..\firmware\CMSIS\core;..\firmware\CMSIS\device;..\firmware\n32wb452_std_periph_driver\inc;..\firmware\n32wb452_ble_driver\inc;..\firmware\n32wb452_ble_driver\btapi\inc;..\firmware\n32wb452_ble_driver\profile\inc;..\firmware\n32wb452_ble_driver\platform\inc;..\firmware\n32wb452_ble_driver;.\User\bsp;.\User\ota;.\User\ota\crc16;.\User\ota\encrypt;.\User\ota\sha1;.\User\api\inc;..\Library\Temperature;..\Library\Button;..\Library\Randomize;..\Library\Gprs;..\Library\Sms;..\Library\Out;..\Library\Usb\inc;..\firmware\n32wb452_usbfs_driver\inc;..\Library\Flash;..\Library\Gpio;..\Library\Bridge</IncludePath>
+              <IncludePath>..\.\Library\Bluetooth;..\.\Library\Can;..\.\Library\Core;..\.\Library\Gsm;..\.\Library\Led;..\.\Library\Panel;..\.\Library\Usart;.\User;..\.\Library\Ble;..\.\Library;..\Library\Json;..\.\Library\Timers;..\.\Library\Story;..\.\Library\Heater;..\Library\Graph;..\firmware\CMSIS\core;..\firmware\CMSIS\device;..\firmware\n32wb452_std_periph_driver\inc;..\firmware\n32wb452_ble_driver\inc;..\firmware\n32wb452_ble_driver\btapi\inc;..\firmware\n32wb452_ble_driver\profile\inc;..\firmware\n32wb452_ble_driver\platform\inc;..\firmware\n32wb452_ble_driver;.\User\bsp;.\User\ota;.\User\ota\crc16;.\User\ota\encrypt;.\User\ota\sha1;.\User\api\inc;..\Library\Temperature;..\Library\Button;..\Library\Randomize;..\Library\Gprs;..\Library\Sms;..\Library\Out;..\Library\Usb\inc;..\firmware\n32wb452_usbfs_driver\inc;..\Library\Flash;..\Library\Gpio;..\Library\Bridge;..\Library\Sms</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -408,11 +408,21 @@
               <FileType>8</FileType>
               <FilePath>..\Library\Timers\unix_time.cpp</FilePath>
             </File>
+            <File>
+              <FileName>Timberline.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\Timberline.cpp</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
           <GroupName>Modem</GroupName>
           <Files>
+            <File>
+              <FileName>timberline_sms.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>..\Library\Sms\timberline_sms.cpp</FilePath>
+            </File>
             <File>
               <FileName>modem_handler.cpp</FileName>
               <FileType>8</FileType>

@@ -438,6 +438,11 @@
               <FileType>8</FileType>
               <FilePath>..\Library\Gsm\gsm.cpp</FilePath>
             </File>
+            <File>
+              <FileName>Modem.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\Modem.cpp</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -3,8 +3,7 @@
 
 #include "n32wb452.h"
 #include "core.h"
-#include "gsm.h"
-#include "sms.h"
+#include "Modem.h"
 #include "can.h"
 #include <string.h>
 

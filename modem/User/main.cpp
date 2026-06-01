@@ -1,14 +1,12 @@
 #include "main.h"
 #include "core.h"
-#include "gsm.h"
-#include "sms.h"
+#include "Modem.h"
 #include "can.h"
 #include "led.h"
 #include "button.h"
 #include "randomize.h"
 #include "flash.h"
 #include "work.h"
-#include "modem_handler.h"
 #include "hw_config.h"
 #include "usb_lib.h"
 #include "usb_pwr.h"
@@ -27,7 +25,7 @@ int main(void)
     flash.readSetup();
     flash.readSerial();
 
-    gsm.initialize();
+    modem.initialize();
     can.initialize();
     led.initialize();
     button.initialize();
@@ -40,15 +38,12 @@ int main(void)
 
     work.initialize();
 
-    changeMode(MODE_INIT);
-
     while (true) {
         core.handler();
-        gsm.handler();
+        modem.handler();
         can.handler();
         button.handler();
         led.handler();
         work.handler();
-        modemHandler();
     }
 }

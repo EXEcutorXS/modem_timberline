@@ -7,6 +7,10 @@ enum heaterState_t {idle,ignition,heating,workOnPower,blowing};
 
 class Timberline
 {
+	public:
+	void init();
+	void ProcessCanMessage(CanRxMessage* msg);
+	
 	//Control
 	uint8_t MbcVersion[4];
 	bool HeaterButton;
@@ -35,3 +39,7 @@ class Timberline
 	heaterState_t heaterState;
 	uint8_t zoneFanCurrentPwm[ZONE_COUNT];
 };
+
+extern Timberline timberline;
+
+

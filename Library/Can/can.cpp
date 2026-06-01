@@ -1,5 +1,6 @@
 #include "can.h"
 #include "log.h"
+#include "Timberline.h"
 
 Can can;
 
@@ -127,11 +128,12 @@ static void logCanFrame(const char* dir, uint32_t id, const uint8_t* data, uint8
 void Can::processCanRxMessage(CanRxMessage *msg)
 {
     logCanFrame("[CAN RX]", msg->ExtId, msg->Data, msg->DLC);
-    SendMessage(
-        msg->ExtId,
-        msg->Data[0], msg->Data[1], msg->Data[2], msg->Data[3],
-        msg->Data[4], msg->Data[5], msg->Data[6], msg->Data[7]
-    );
+//    SendMessage(
+//        msg->ExtId,
+//        msg->Data[0], msg->Data[1], msg->Data[2], msg->Data[3],
+//        msg->Data[4], msg->Data[5], msg->Data[6], msg->Data[7]
+//    );
+	Timberline. ProcessCanMessage(*msg);
 }
 
 extern "C" void CAN2_RX0_IRQHandler(void)

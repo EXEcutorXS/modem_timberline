@@ -1,22 +1,15 @@
 #include "flash.h"
 #include "Converter.h"
 #include "modem_handler.h"
-#include "gsm.h"
+#include "Modem.h"
 #include "core.h"
+#include <string.h>
 
 Flash_C flash;
 
-Flash_C::Flash_C(void)
-{
-}
-
-void Flash_C::initialize(void)
-{
-}
-
-void Flash_C::handler(void)
-{
-}
+Flash_C::Flash_C(void) {}
+void Flash_C::initialize(void) {}
+void Flash_C::handler(void) {}
 
 void Flash_C::writeSetup(void)
 {
@@ -24,34 +17,28 @@ void Flash_C::writeSetup(void)
     uint8_t x, array[512], i;
 
     FLASH_Unlock();
-    for (a = 0; a < 512; a++) {
+    for (a = 0; a < 512; a++)
         array[a] = *(__IO uint8_t*)(FLASH_SETUP_ADDR + a);
-    }
     FLASH_EraseOnePage(FLASH_SETUP_ADDR);
 
     a = 0;
-    for (i = 0; i < 5; i++) {
-        for (x = 0; x < 16; x++) {
-            array[a++] = gsm.phones[i][x];
-        }
-    }
+    for (i = 0; i < 5; i++)
+        for (x = 0; x < 16; x++)
+            array[a++] = modem.phones[i][x];
     array[a++] = core.timeZone;
-    array[a++] = gsm.isOnlySmsMode ? 1 : 0;
-    for (x = 0; x < 5; x++) {
-        array[a++] = (uint8_t)gsm.pin[x];
-    }
+    array[a++] = modem.isOnlySmsMode ? 1 : 0;
+    for (x = 0; x < 5; x++)
+        array[a++] = (uint8_t)modem.pin[x];
 
     x = 0;
-    for (a = 0; a < 511; a++) {
-        x += array[a];
-    }
+    for (a = 0; a < 511; a++) x += array[a];
     array[511] = x;
 
     for (a = 0; a < 512; a += 4) {
         N  = (uint32_t)array[a];
-        N |= (uint32_t)array[a + 1] << 8;
-        N |= (uint32_t)array[a + 2] << 16;
-        N |= (uint32_t)array[a + 3] << 24;
+        N |= (uint32_t)array[a+1] << 8;
+        N |= (uint32_t)array[a+2] << 16;
+        N |= (uint32_t)array[a+3] << 24;
         FLASH_ProgramWord(FLASH_SETUP_ADDR + a, N);
     }
     FLASH_Lock();
@@ -61,40 +48,30 @@ void Flash_C::readSetup(void)
 {
     uint8_t x, array[512], i;
     uint16_t idx;
-    bool valid = false;
 
     x = 0;
     for (idx = 0; idx < 511; idx++) {
         array[idx] = *(__IO uint8_t*)(FLASH_SETUP_ADDR + idx);
         x += array[idx];
     }
-    if (x == *(__IO uint8_t*)(FLASH_SETUP_ADDR + 511)) {
-        valid = true;
-    }
 
-    if (valid) {
+    if (x == *(__IO uint8_t*)(FLASH_SETUP_ADDR + 511)) {
         uint8_t a = 0;
-        for (i = 0; i < 5; i++) {
-            for (x = 0; x < 16; x++) {
-                gsm.phones[i][x] = array[a++];
-            }
-        }
-        core.timeZone = array[a++];
-        gsm.isOnlySmsMode = (array[a++] == 1);
-        for (x = 0; x < 5; x++) {
-            gsm.pin[x] = (char)array[a++];
-        }
-        /* ensure null-termination if flash was written by older firmware */
-        gsm.pin[4] = '\0';
-        /* if PIN was never written (all zeros) — restore default */
-        if (strlen(gsm.pin) != 4) {
-            gsm.pin[0]='1'; gsm.pin[1]='2'; gsm.pin[2]='3'; gsm.pin[3]='4'; gsm.pin[4]='\0';
+        for (i = 0; i < 5; i++)
+            for (x = 0; x < 16; x++)
+                modem.phones[i][x] = array[a++];
+        core.timeZone       = array[a++];
+        modem.isOnlySmsMode = (array[a++] == 1);
+        for (x = 0; x < 5; x++) modem.pin[x] = (char)array[a++];
+        modem.pin[4] = '\0';
+        if (strlen(modem.pin) != 4) {
+            modem.pin[0]='1'; modem.pin[1]='2'; modem.pin[2]='3'; modem.pin[3]='4'; modem.pin[4]='\0';
             writeSetup();
         }
     } else {
-        gsm.isOnlySmsMode = true;
+        modem.isOnlySmsMode = true;
         core.timeZone = 3;
-        gsm.pin[0]='1'; gsm.pin[1]='2'; gsm.pin[2]='3'; gsm.pin[3]='4'; gsm.pin[4]='\0';
+        modem.pin[0]='1'; modem.pin[1]='2'; modem.pin[2]='3'; modem.pin[3]='4'; modem.pin[4]='\0';
         writeSetup();
     }
 }
@@ -106,16 +83,12 @@ void Flash_C::writeSerial(void)
 
     FLASH_Unlock();
     FLASH_EraseOnePage(FLASH_SERIAL_ADDR);
-
-    for (i = 0; i < 16; i++) {
-        array[i] = serialNumberModem[i];
-    }
-
+    for (i = 0; i < 16; i++) array[i] = serialNumberModem[i];
     for (a = 0; a < 16; a += 4) {
         N  = (uint32_t)array[a];
-        N |= (uint32_t)array[a + 1] << 8;
-        N |= (uint32_t)array[a + 2] << 16;
-        N |= (uint32_t)array[a + 3] << 24;
+        N |= (uint32_t)array[a+1] << 8;
+        N |= (uint32_t)array[a+2] << 16;
+        N |= (uint32_t)array[a+3] << 24;
         FLASH_ProgramWord(FLASH_SERIAL_ADDR + a, N);
     }
     FLASH_Lock();
@@ -123,10 +96,8 @@ void Flash_C::writeSerial(void)
 
 void Flash_C::readSerial(void)
 {
-    uint16_t i;
-    for (i = 0; i < 16; i++) {
+    for (uint16_t i = 0; i < 16; i++)
         serialNumberModem[i] = *(__IO uint8_t*)(FLASH_SERIAL_ADDR + i);
-    }
 }
 
 uint8_t Flash_C::getHardwareVersion(void)

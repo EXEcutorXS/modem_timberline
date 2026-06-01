@@ -44,9 +44,6 @@
 #include "gsm.h"
 #include "modem_handler.h"
 
-/* C-callable SMS emulator (implemented in sms.cpp) */
-extern void sms_emulate(const char* phone, const char* message);
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

@@ -10,7 +10,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "core.h"
 #include "unix_time.h"
-#include "Converter.h"
+#include <stdio.h>
 
 /* Defines ------------------------------------------------------------------*/
 #define SEC_A_DAY 86400
@@ -33,49 +33,15 @@ void UnixTimeClass::handler(void)
 void UnixTimeClass::getTimestamp(char* str)
 {
     // 2024-12-25 08:21:03.740
-    uint8_t p = 0;
     
-    p += Convert.intToStr(year, &str[p]);
-    p += Convert.strToStr("-", &str[p]);
-    p += Convert.intToStrFix(mon, 2, &str[p]);
-    p += Convert.strToStr("-", &str[p]);
-    p += Convert.intToStrFix(mday, 2, &str[p]);
-    
-    p += Convert.strToStr(" ", &str[p]);
-    
-    p += Convert.intToStrFix(hour, 2, &str[p]);
-    p += Convert.strToStr(":", &str[p]);
-    p += Convert.intToStrFix(min, 2, &str[p]);
-    p += Convert.strToStr(":", &str[p]);
-    p += Convert.intToStrFix(sec, 2, &str[p]);
-    
-    p += Convert.strToStr(" ", &str[p]);
-    
-    str[p] = 0;
+    sprintf(str,"%u-%d02-%02d %02d:%02d:%02d",year,mon,mday,hour,min,sec);
 }
 //-----------------------------------------------------
 char* UnixTimeClass::getTimestamp(void)
 {
     // 2024-12-25 08:21:03.740
-    uint8_t p = 0;
-    
-    p += Convert.intToStr(year, &str[p]);
-    p += Convert.strToStr("-", &str[p]);
-    p += Convert.intToStrFix(mon, 2, &str[p]);
-    p += Convert.strToStr("-", &str[p]);
-    p += Convert.intToStrFix(mday, 2, &str[p]);
-    
-    p += Convert.strToStr(" ", &str[p]);
-    
-    p += Convert.intToStrFix(hour, 2, &str[p]);
-    p += Convert.strToStr(":", &str[p]);
-    p += Convert.intToStrFix(min, 2, &str[p]);
-    p += Convert.strToStr(":", &str[p]);
-    p += Convert.intToStrFix(sec, 2, &str[p]);
-    
-    str[p] = 0;
-    
-    return str;
+    sprintf(str,"%u-%d02-%02d %02d:%02d:%02d",year,mon,mday,hour,min,sec);
+return str;
 }
 //-----------------------------------------------------
 void UnixTimeClass::config(void)
@@ -95,7 +61,8 @@ bool UnixTimeClass::isTimeOk(void)
 //-----------------------------------------------------
 void UnixTimeClass::timeUpdate(void)
 {
-    
+    UnixTime++;
+	timerToCal(UnixTime);
 }
 //-----------------------------------------------------
 

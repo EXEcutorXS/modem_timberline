@@ -19,7 +19,7 @@ class UnixTimeClass
     
         void timerToCal (unsigned long timer);
         unsigned long calToTimer (void);
-    
+		uint64_t UnixTime;
         int year;
         char mon;
         char mday;
@@ -32,10 +32,6 @@ class UnixTimeClass
     private:
         void config(void);   
     
-//        RTC_DateTypeDef RTC_DateStructure;
-//        RTC_TimeTypeDef RTC_TimeStructure;
-//        RTC_InitTypeDef RTC_InitStructure;
-//        RTC_AlarmTypeDef  RTC_AlarmStructure;
         __IO uint32_t AsynchPrediv, SynchPrediv; 
         
 };

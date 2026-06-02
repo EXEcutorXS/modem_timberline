@@ -11,8 +11,8 @@ class Work_C
         void handler(void);
 
     private:
-        void gsmHandler(void);
         void resetHandler(void);
+        void canBroadcast(void);
 };
 
 extern Work_C work;

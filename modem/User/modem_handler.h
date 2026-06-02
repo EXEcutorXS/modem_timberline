@@ -16,7 +16,9 @@ extern volatile uint8_t bridgeTxLen;
 /* Set by core.cpp watchdog handler */
 extern bool isReset;
 
-/* SMS emulation via USB (S <phone> <text>) */
+/* SMS emulation via USB (S <phone> <text>).
+   sms_emulate() is called from USB ISR — it only buffers the data.
+   Call modem_process_emulated_sms() from the main loop to actually dispatch. */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,5 +26,6 @@ void sms_emulate(const char* phone, const char* message);
 #ifdef __cplusplus
 }
 #endif
+void modem_process_emulated_sms(void);
 
 #endif /* __MODEM_HANDLER_H__ */

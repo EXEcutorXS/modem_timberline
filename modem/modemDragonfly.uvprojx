@@ -399,11 +399,6 @@
               <FilePath>.\User\work.cpp</FilePath>
             </File>
             <File>
-              <FileName>Converter.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>.\User\Converter.cpp</FilePath>
-            </File>
-            <File>
               <FileName>unix_time.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\Library\Timers\unix_time.cpp</FilePath>
@@ -412,6 +407,16 @@
               <FileName>Timberline.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>.\User\Timberline.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>Version.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\User\Version.h</FilePath>
+            </File>
+            <File>
+              <FileName>Heaters.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\Heaters.cpp</FilePath>
             </File>
           </Files>
         </Group>
@@ -422,11 +427,6 @@
               <FileName>timberline_sms.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\Library\Sms\timberline_sms.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>modem_handler.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>.\User\modem_handler.cpp</FilePath>
             </File>
             <File>
               <FileName>sms.cpp</FileName>
@@ -442,6 +442,16 @@
               <FileName>Modem.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>.\User\Modem.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>modem_handler.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\modem_handler.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>FaultManager.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\FaultManager.cpp</FilePath>
             </File>
           </Files>
         </Group>

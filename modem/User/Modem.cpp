@@ -22,12 +22,17 @@ Modem::Modem()
       answer(0), capture(CAP_NONE),
       state(ST_POWER_ON), step(0),
       smsPending(false), smsSlot(0),
+      ussdPending(false),
       timerCsq(0), timerCreg(0),
       rxCursor(0), lineLen(0),
-      isOnlySmsMode(true)
+      smsDebugMode(true),
+      isOnlySmsMode(true),
+      tempUnit(0),
+      faultReport(true),
+      cmdAck(true)
 {
     imei[0] = iccid[0] = ownNumber[0] = 0;
-    smsPhone[0] = smsText[0] = cmgrPhone[0] = cmgrBody[0] = 0;
+    smsPhone[0] = smsText[0] = cmgrPhone[0] = cmgrBody[0] = ussdReq[0] = 0;
     for (int i = 0; i < 5; i++) phones[i][0] = 0;
     pin[0]='1'; pin[1]='2'; pin[2]='3'; pin[3]='4'; pin[4]='\0';
 }
@@ -60,12 +65,21 @@ void Modem::handler(void) {
         case ST_SEND_SMS:   doSendSms();   break;
         case ST_POLL_CSQ:   doPollCsq();   break;
         case ST_POLL_CREG:  doPollCreg();  break;
+        case ST_USSD:       doUssd();      break;
     }
 }
 
 /* ── sendSms ─────────────────────────────────────────────────────────── */
 void Modem::sendSms(const char* phone, const char* text) {
-    if (!phone || phone[0] != '+' || smsPending) return;
+    if (!phone || phone[0] != '+') return;
+
+    log_info("[SMS] to: "); log_info(phone);
+    log_info(" | ");        log_info(text);
+    log_info("\r\n");
+
+    if (smsDebugMode) return;
+
+    if (smsPending) return;
     strncpy(smsPhone, phone, sizeof(smsPhone) - 1); smsPhone[sizeof(smsPhone)-1] = 0;
     strncpy(smsText,  text,  sizeof(smsText)  - 1); smsText[sizeof(smsText) -1] = 0;
     smsPending = true;
@@ -207,6 +221,13 @@ void Modem::parseLine(void) {
         nthQuoted(s + 7, 1, ownNumber, sizeof(ownNumber));
         answer |= ANS_CNUM;
     }
+    else if (starts(s,"+CUSD:")) {
+        /* +CUSD: 0,"text",15  — log the quoted text field */
+        char cusdBuf[64];
+        nthQuoted(s + 7, 1, cusdBuf, sizeof(cusdBuf));
+        log_info("[USSD] "); log_info(cusdBuf); log_info("\r\n");
+        answer |= ANS_CUSD;
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -273,8 +294,50 @@ void Modem::doIdle(void) {
     uint32_t now = core.getTick();
     if (answer & ANS_CMTI)          { answer &= ~ANS_CMTI; setState(ST_READ_SMS);  return; }
     if (smsPending)                  { setState(ST_SEND_SMS);  return; }
+    if (ussdPending)                 { setState(ST_USSD);       return; }
     if ((now - timerCsq)  >= 30000) { setState(ST_POLL_CSQ);   return; }
     if ((now - timerCreg) >= 60000) { setState(ST_POLL_CREG);  return; }
+}
+
+/* ── sendUssd ────────────────────────────────────────────────────────── */
+void Modem::sendUssd(const char* req) {
+    if (!req || !req[0] || ussdPending) return;
+    strncpy(ussdReq, req, sizeof(ussdReq) - 1);
+    ussdReq[sizeof(ussdReq) - 1] = 0;
+    ussdPending = true;
+}
+
+/* ── doUssd ──────────────────────────────────────────────────────────── */
+void Modem::doUssd(void) {
+    static char cmd[48];
+
+    switch (step) {
+    case 0:
+        if (atCmd("AT+CSCS=\"IRA\"\r\n", 300)) step++;
+        break;
+    case 1: {
+        /* Build AT+CUSD=1,"<req>",15\r\n */
+        int n = 0;
+        const char* pre = "AT+CUSD=1,\"";
+        while (*pre) cmd[n++] = *pre++;
+        for (int i = 0; ussdReq[i] && n < 44; i++) cmd[n++] = ussdReq[i];
+        cmd[n++]='"'; cmd[n++]=','; cmd[n++]='1'; cmd[n++]='5';
+        cmd[n++]='\r'; cmd[n++]='\n'; cmd[n]=0;
+
+        if (atCmd(cmd, 10000)) {
+            if (answer & ANS_CUSD) {
+                /* Response already logged by parseLine */
+            } else if (answer & ANS_TIMEOUT) {
+                log_info("[USSD] timeout\r\n");
+            } else if (answer & ANS_ERROR) {
+                log_info("[USSD] error\r\n");
+            }
+            ussdPending = false;
+            setState(ST_IDLE);
+        }
+        break;
+    }
+    }
 }
 
 void Modem::doReadSms(void) {

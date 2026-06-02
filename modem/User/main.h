@@ -5,6 +5,7 @@
 #include "core.h"
 #include "Modem.h"
 #include "can.h"
+#include "version.h"
 #include <string.h>
 
 /* USB pins:

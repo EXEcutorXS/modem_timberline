@@ -143,32 +143,9 @@ void log_ble(const char* mess)
 //-----------------------------------------------------
 void log_at(const char* mess)
 {
-    char ptr[64] = {0};
-    
     if (logTypeMess == LOG_TYPE_AT){
-        while(true){
-            if (*mess != 0){
-                
-                if (*mess == '\n'){
-                    USART_To_USB_Send_Data(*mess++);
-                    unixTime.getTimestamp((char*) ptr);
-                    for (int i=0; i<64; i++){
-                        if (ptr[i] != 0){
-                            USART_To_USB_Send_Data(ptr[i]);
-                        }
-                        else{
-                            USART_To_USB_Send_Data(' ');
-                            break;
-                        }
-                    }
-                }
-                else{
-                    USART_To_USB_Send_Data(*mess++);
-                }
-            }
-            else{
-                break;
-            }
+        while (*mess){
+            USART_To_USB_Send_Data(*mess++);
         }
     }
 }

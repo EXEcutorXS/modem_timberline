@@ -19,6 +19,8 @@ class Can
 
         uint16_t linkCnt;
         CanRxMessage RxMessage;
+		uint8_t idType;
+		uint8_t idAddress;
 
     private:
         CanTxMessage TxMessage;

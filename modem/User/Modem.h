@@ -17,9 +17,12 @@ public:
     char    ownNumber[16];
 
     /* Access control — persisted in flash */
-    char    phones[5][16];  /* [0] = admin phone; [1..4] = trusted phones */
-    char    pin[5];         /* 4-digit PIN, null-terminated               */
-    bool    isOnlySmsMode;
+    char       phones[5][16];  /* [0] = admin phone; [1..4] = trusted phones */
+    char       pin[5];         /* 4-digit PIN, null-terminated               */
+    bool       isOnlySmsMode;
+    uint8_t    tempUnit;       /* 0 = °C, 1 = °F — persisted in flash        */
+    bool       faultReport;    /* send SMS on fault — persisted in flash      */
+    bool       cmdAck;         /* send confirmation on device commands        */
 
     /* Called on every received SMS (phone and text are temporary buffers) */
     void (*onSmsReceived)(const char* phone, const char* text);
@@ -29,6 +32,9 @@ public:
     void initialize(void);
     void handler(void);
     void sendSms(const char* phone, const char* text);
+    void sendUssd(const char* req);  /* send USSD request, log reply to terminal */
+
+    bool smsDebugMode;   /* true = log SMS to terminal, skip real sending */
 
     /* Called from USART TX interrupt */
     void txIsr(void);
@@ -54,6 +60,7 @@ private:
         ANS_ICCID   = 1<<9,   /* +ICCID: — iccid field updated           */
         ANS_CNUM    = 1<<10,  /* +CNUM: — ownNumber updated              */
         ANS_PROMPT  = 1<<11,  /* >  — modem ready for SMS body           */
+        ANS_CUSD    = 1<<12,  /* +CUSD: — USSD response received         */
     };
     uint32_t answer;
 
@@ -71,6 +78,7 @@ private:
         ST_SEND_SMS,
         ST_POLL_CSQ,
         ST_POLL_CREG,
+        ST_USSD,
     };
     State   state;
     int8_t  step;
@@ -86,6 +94,10 @@ private:
     uint8_t smsSlot;
     char    cmgrPhone[20];
     char    cmgrBody[161];
+
+    /* ── USSD ────────────────────────────────────────────────────────── */
+    bool     ussdPending;
+    char     ussdReq[32];
 
     /* ── Polling timers ──────────────────────────────────────────────── */
     uint32_t timerCsq;
@@ -111,6 +123,7 @@ private:
     void  doSendSms(void);
     void  doPollCsq(void);
     void  doPollCreg(void);
+    void  doUssd(void);
 };
 
 extern Modem modem;

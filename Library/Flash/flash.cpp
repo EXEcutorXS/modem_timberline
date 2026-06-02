@@ -1,5 +1,4 @@
 #include "flash.h"
-#include "Converter.h"
 #include "modem_handler.h"
 #include "Modem.h"
 #include "core.h"
@@ -29,6 +28,9 @@ void Flash_C::writeSetup(void)
     array[a++] = modem.isOnlySmsMode ? 1 : 0;
     for (x = 0; x < 5; x++)
         array[a++] = (uint8_t)modem.pin[x];
+    array[a++] = (uint8_t)modem.tempUnit;
+    array[a++] = modem.faultReport ? 1 : 0;
+    array[a++] = modem.cmdAck      ? 1 : 0;
 
     x = 0;
     for (a = 0; a < 511; a++) x += array[a];
@@ -64,12 +66,18 @@ void Flash_C::readSetup(void)
         modem.isOnlySmsMode = (array[a++] == 1);
         for (x = 0; x < 5; x++) modem.pin[x] = (char)array[a++];
         modem.pin[4] = '\0';
+        modem.tempUnit   = array[a++];
+        modem.faultReport = (array[a++] == 1);
+        modem.cmdAck      = (array[a++] == 1);
         if (strlen(modem.pin) != 4) {
             modem.pin[0]='1'; modem.pin[1]='2'; modem.pin[2]='3'; modem.pin[3]='4'; modem.pin[4]='\0';
             writeSetup();
         }
     } else {
         modem.isOnlySmsMode = true;
+        modem.tempUnit    = 0;
+        modem.faultReport = true;
+        modem.cmdAck      = true;
         core.timeZone = 3;
         modem.pin[0]='1'; modem.pin[1]='2'; modem.pin[2]='3'; modem.pin[3]='4'; modem.pin[4]='\0';
         writeSetup();

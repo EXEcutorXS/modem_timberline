@@ -41,7 +41,6 @@
 #include "usb_pwr.h"
 
 #include "log.h"
-#include "gsm.h"
 #include "modem_handler.h"
 
 #include <stdlib.h>
@@ -343,6 +342,13 @@ static void usb_process_line(char* line)
         return;
     }
 
+    /* U <ussd>  — send USSD request, see reply in log */
+    if ((line[0] == 'u' || line[0] == 'U') && line[1] == ' ') {
+        modem.sendUssd(line + 2);
+        log_info("[USSD] sending: "); log_info(line + 2); log_info("\r\n");
+        return;
+    }
+
     if (!line[0]) return;
 
     /* Single-char commands */
@@ -459,9 +465,7 @@ void Handle_USBAsynchXfer (void)
 *******************************************************************************/
 void USART_To_USB_Send_Data(char byte)
 {
-    if (*(__IO uint8_t*) (0x803C007) != 255){
-        return;
-    }
+    /* USB output is always enabled */
     
     if (linecoding.datatype == 7)
     {

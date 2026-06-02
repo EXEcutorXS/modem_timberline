@@ -75,6 +75,9 @@ void Can::initialize(void)
     NVIC_InitStructure.NVIC_IRQChannelSubPriority        = 0x0;
     NVIC_InitStructure.NVIC_IRQChannelCmd                = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
+
+	idType=VERSION_1;
+	idAddress=0;
 }
 
 void Can::handler(void)
@@ -97,43 +100,10 @@ void Can::SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8
     CAN_TransmitMessage(CAN2, &TxMessage);
 }
 
-static void u8toHex(uint8_t v, char out[3])
-{
-    const char h[] = "0123456789ABCDEF";
-    out[0] = h[v >> 4];
-    out[1] = h[v & 0xF];
-    out[2] = 0;
-}
-
-static void logCanFrame(const char* dir, uint32_t id, const uint8_t* data, uint8_t dlc)
-{
-    char buf[3];
-    log_info(dir);
-    log_info(" ID:0x");
-    /* print 29-bit ExtId as 8 hex digits */
-    for (int8_t shift = 28; shift >= 0; shift -= 4) {
-        u8toHex((uint8_t)((id >> shift) & 0xF), buf);
-        buf[1] = 0;
-        log_info(buf);
-    }
-    log_info(" [");
-    for (uint8_t i = 0; i < dlc; i++) {
-        u8toHex(data[i], buf);
-        log_info(buf);
-        if (i < dlc - 1) log_info(" ");
-    }
-    log_info("]\r\n");
-}
 
 void Can::processCanRxMessage(CanRxMessage *msg)
 {
-    logCanFrame("[CAN RX]", msg->ExtId, msg->Data, msg->DLC);
-//    SendMessage(
-//        msg->ExtId,
-//        msg->Data[0], msg->Data[1], msg->Data[2], msg->Data[3],
-//        msg->Data[4], msg->Data[5], msg->Data[6], msg->Data[7]
-//    );
-	Timberline. ProcessCanMessage(*msg);
+	timberline.ProcessCanMessage(msg);
 }
 
 extern "C" void CAN2_RX0_IRQHandler(void)

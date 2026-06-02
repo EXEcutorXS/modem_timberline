@@ -15,7 +15,7 @@ const uint8_t _CRC[11] __attribute__((at(0x803C000))) =
 {
     0x55, 0x55, 0x55, 0x55,
     0x55, 0x55,
-    44, 255, 10, 43,
+    VERSION_1, VERSION_2, VERSION_3, VERSION_4,
     0x00
 };
 

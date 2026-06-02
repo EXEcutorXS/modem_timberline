@@ -4,7 +4,6 @@
 #include "flash.h"
 #include "log.h"
 #include <string.h>
-#include <stdio.h>
 
 /* Convert temperature to °C if user works in °F */
 static int8_t toC(int8_t val) {
@@ -361,12 +360,6 @@ void sendToHcu(uint16_t pgn,uint8_t* D)
     can.SendMessage(pgn<<20 | timberline.hcuType<<13 | timberline.hcuAddress<<10 | can.idType | can.idAddress,D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
 }
 
-
-/* Send reply only if device-command confirmations are enabled */
-static void ack(const char* phone, const char* msg) {
-    if (modem.cmdAck) modem.sendSms(phone, msg);
-}
-
 static void onSmsReceived(const char* phone, const char* text) {
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     TlSmsParseResult result;
@@ -399,7 +392,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         case TL_CMD_ADMIN:
             strncpy(modem.phones[0], cmd.phone, 15);
             modem.phones[0][15] = '\0';
-            modem.sendSms(phone, "Admin set");
+            modem.sendSms(phone, "Admin set.");
             break;
 
         case TL_CMD_PHONE:
@@ -415,165 +408,96 @@ static void onSmsReceived(const char* phone, const char* text) {
             modem.sendSms(phone, "PIN updated.");
             break;
 
-        case TL_CMD_OFF: {
-            uint8_t Doff[8] = {0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
-            sendToHcu(22, Doff);
-            ack(phone, "All off");
-            break;
-        }
+        /* TODO: device control commands */
 
         case TL_CMD_BURNER:
-            D[7] = 0xFC | cmd.boolVal;
-            sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Burner: ON" : "Burner: OFF");
-            break;
 
+            D[7]=0xFC | cmd.boolVal;
+            sendToHcu(22,D);
+            break;
         case TL_CMD_ELEMENT:
-            D[7] = 0xF3 | (cmd.boolVal << 2);
-            sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Element: ON" : "Element: OFF");
+            D[7]=0xF3 | (cmd.boolVal<<2);
+            sendToHcu(22,D);
             break;
-
         case TL_CMD_FLOOR_TOGGLE:
-            D[7] = 0xCF | (cmd.boolVal << 4);
-            sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Floor: ON" : "Floor: OFF");
+            D[7]=0xCF | (cmd.boolVal<<4);
+            sendToHcu(22,D);
             break;
-
-        case TL_CMD_FLOOR_SETPOINT: {
-            int8_t sp = toC(cmd.intVal);
-            D[0] = 3;
-            D[1] = (uint8_t)(sp + 75);
-            sendToHcu(19, D);
-            static char rsp[24];
-            sprintf(rsp, "Floor: %d\xb0%c", sp, modem.tempUnit ? 'F' : 'C');
-            ack(phone, rsp);
+        case TL_CMD_FLOOR_SETPOINT:
+            D[1]=3;
+            D[7]=toC(cmd.intVal)+75;
+            sendToHcu(19,D);
             break;
-        }
-
         case TL_CMD_ENGINE_TOGGLE:
-            D[7] = 0x3F | (cmd.boolVal << 6);
-            sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Engine: ON" : "Engine: OFF");
+            D[7]=0x3F | (cmd.boolVal<<6);
+            sendToHcu(22,D);
             break;
-
-        case TL_CMD_ENGINE_SETPOINT: {
-            int8_t sp = toC(cmd.intVal);
-            D[0] = 3;
-            D[3] = (uint8_t)(sp + 75);
-            sendToHcu(19, D);
-            static char rsp[24];
-            sprintf(rsp, "Engine: %d\xb0%c", sp, modem.tempUnit ? 'F' : 'C');
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_ZONE_STATE: {
-            static const char* zstate[] = {"off","heat","vent"};
-            switch (cmd.zone.num) {          /* 1-based: z1..z5 */
-            case 1: D[0] = 0xFC | cmd.zone.state; break;
-            case 2: D[0] = 0xF3 | (cmd.zone.state << 2); break;
-            case 3: D[0] = 0xCF | (cmd.zone.state << 4); break;
-            case 4: D[0] = 0x3F | (cmd.zone.state << 6); break;
-            case 5: D[1] = 0xFC | cmd.zone.state; break;
-            }
-            sendToHcu(22, D);
-            static char rsp[16];
-            sprintf(rsp, "Z%d: %s", cmd.zone.num,
-                    cmd.zone.state < 3 ? zstate[cmd.zone.state] : "?");
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_ZONE_FAN_MODE: {
-            switch (cmd.zone.num) {          /* 1-based */
-            case 1: D[4] = 0xFC | cmd.zone.fanMode; break;
-            case 2: D[4] = 0xF3 | (cmd.zone.fanMode << 2); break;
-            case 3: D[4] = 0xCF | (cmd.zone.fanMode << 4); break;
-            case 4: D[4] = 0x3F | (cmd.zone.fanMode << 6); break;
-            case 5: D[5] = 0xFC | cmd.zone.fanMode; break;
-            }
-            sendToHcu(27, D);
-            static char rsp[24];
-            sprintf(rsp, "Z%d fan: %s", cmd.zone.num,
-                    cmd.zone.fanMode == TL_FAN_MANUAL ? "manual" : "auto");
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_ZONE_FAN_PERCENT: {
-            D[cmd.zone.num - 1] = cmd.zone.percent;   /* 0-based array index */
-            sendToHcu(27, D);
-            static char rsp[20];
-            sprintf(rsp, "Z%d fan: %d%%", cmd.zone.num, cmd.zone.percent);
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_ZONE_DAY_SP: {
-            int8_t sp = toC(cmd.zone.setpoint);
-            D[cmd.zone.num - 1] = (uint8_t)(sp + 75);  /* 0-based array index */
-            sendToHcu(25, D);
-            static char rsp[24];
-            sprintf(rsp, "Z%d day: %d\xb0%c", cmd.zone.num, sp, modem.tempUnit ? 'F' : 'C');
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_ZONE_NIGHT_SP: {
-            int8_t sp = toC(cmd.zone.setpoint);
-            D[cmd.zone.num - 1] = (uint8_t)(sp + 75);  /* 0-based array index */
-            sendToHcu(25, D);
-            static char rsp[24];
-            sprintf(rsp, "Z%d night: %d\xb0%c", cmd.zone.num, sp, modem.tempUnit ? 'F' : 'C');
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_WARMUP:
-            D[0] = 0x55; D[1] = 0xFD;
-            sendToHcu(22, D);
-            switch (cmd.warmupMode) {
-            case TL_WARMUP_BURNER:  D[7] = 0xF0 | 1; sendToHcu(22, D); break;
-            case TL_WARMUP_ELEMENT: D[7] = 0xF0 | 4; sendToHcu(22, D); break;
-            case TL_WARMUP_BOTH:    D[7] = 0xF0 | 5; sendToHcu(22, D); break;
-            }
-            ack(phone, "Warmup started");
-            break;
-
         case TL_CMD_UNIT:
             modem.tempUnit = cmd.unit;
             flash.writeSetup();
             modem.sendSms(phone, cmd.unit == TL_UNIT_F ? "Units: F" : "Units: C");
             break;
 
-        case TL_CMD_FAULTREPORT:
-            modem.faultReport = cmd.boolVal;
-            flash.writeSetup();
-            modem.sendSms(phone, cmd.boolVal ? "Fault report: ON" : "Fault report: OFF");
+        case TL_CMD_ENGINE_SETPOINT:
+            D[0]=0x3;
+            D[3]=toC(cmd.intVal)+75;
+            sendToHcu(19,D);
             break;
-
-        case TL_CMD_SYSTIMER: {
-            timberline.SystemTimeLimitHours = cmd.intVal;
-            static char rsp[28];
-            uint8_t t = cmd.intVal;
-            if (t > 100 || t == 0) t = 100;
-            if (t > 96) sprintf(rsp, "System timer: unlimited");
-            else        sprintf(rsp, "System timer: %d h", t);
-            D[0] = 3; D[6] = t;
-            sendToHcu(19, D);
-            ack(phone, rsp);
-            break;
-        }
-
-        case TL_CMD_ACK:
-            modem.cmdAck = cmd.boolVal;
-            flash.writeSetup();
-            modem.sendSms(phone, cmd.boolVal ? "Ack: ON" : "Ack: OFF");
-            break;
-
+        /* toC() applied when implemented */
+        case TL_CMD_ZONE_DAY_SP:
+            D[cmd.zone.num]=toC(cmd.zone.setpoint)+75;
+            sendToHcu(25,D);
+        case TL_CMD_ZONE_NIGHT_SP:
+            D[cmd.zone.num]=toC(cmd.zone.setpoint)+75;
+            sendToHcu(25,D);
+        case TL_CMD_ZONE_STATE:
+            switch(cmd.zone.num)
+            {
+            case 0:
+                D[0]=0xFC | cmd.zone.state;
+                break;
+            case 1:
+                D[0]=0xF3 | cmd.zone.state<<2;
+                break;
+            case 2:
+                D[0]=0xCF | cmd.zone.state<<4;
+                break;
+            case 3:
+                D[0]=0x3F | cmd.zone.state<<6;
+                break;
+            case 4:
+                D[1]=0xFC | cmd.zone.state;
+                break;
+                sendToHcu(22,D);
+            }
+            sendToHcu(2,D);
+        case TL_CMD_ZONE_FAN_MODE:
+switch(cmd.zone.num)
+            {
+            case 0:
+                D[4]=0xFC | cmd.zone.fanMode;
+                break;
+            case 1:
+                D[4]=0xF3 | cmd.zone.fanMode<<2;
+                break;
+            case 2:
+                D[4]=0xCF | cmd.zone.fanMode<<4;
+                break;
+            case 3:
+                D[4]=0x3F | cmd.zone.fanMode<<6;
+                break;
+            case 4:
+                D[5]=0xFC | cmd.zone.fanMode;
+                break;
+                sendToHcu(27,D);
+            }
+            sendToHcu(2,D);
+        case TL_CMD_ZONE_FAN_PERCENT:
         case TL_CMD_STATUS:
-            timberline.sendStatus(phone);
+        case TL_CMD_WARMUP:
+        case TL_CMD_FAULTREPORT:
+        case TL_CMD_SYSTIMER:
+            modem.sendSms(phone, "TODO");
             break;
 
         default:
@@ -584,106 +508,4 @@ static void onSmsReceived(const char* phone, const char* text) {
 
 void Timberline::init(void) {
     modem.onSmsReceived = onSmsReceived;
-}
-
-/* ── sendStatus ──────────────────────────────────────────────────────── */
-
-/* Append a null-terminated string, return new position */
-static uint8_t apStr(char* buf, uint8_t n, const char* s) {
-    while (*s && n < 139) buf[n++] = *s++;
-    return n;
-}
-
-/* Append integer (signed), return new position */
-static uint8_t apInt(char* buf, uint8_t n, int16_t v) {
-    if (v < 0) { if (n < 139) buf[n++] = '-'; v = -v; }
-    if (v >= 100) { if (n < 139) buf[n++] = '0' + v/100; }
-    if (v >= 10)  { if (n < 139) buf[n++] = '0' + (v/10)%10; }
-    if (n < 139) buf[n++] = '0' + v%10;
-    return n;
-}
-
-/* Convert °C to display unit */
-static int16_t dispTemp(int8_t c) {
-    if (modem.tempUnit == 1 /* TL_UNIT_F */)
-        return (int16_t)c * 9 / 5 + 32;
-    return c;
-}
-
-static const char* UNIT_STR(void) { return modem.tempUnit == 1 ? "\xb0""F" : "\xb0""C"; }
-
-static const char* stageStr(heaterStateIcon_t s) {
-    switch (s) {
-        case ignition:    return "IGN";
-        case heating:     return "heat";
-        case workOnPower: return "work";
-        case blowing:     return "blow";
-        default:          return "idle";
-    }
-}
-
-void Timberline::sendStatus(const char* phone) {
-    static char msg[141];
-    uint8_t n = 0;
-    const char* u = UNIT_STR();
-
-    /* ── Burner ── */
-    n = apStr(msg, n, "Burn:");
-    if (HeaterButton) {
-        n = apStr(msg, n, "on-");
-        n = apStr(msg, n, stageStr(heaterStateIcon));
-        n = apStr(msg, n, "-");
-        n = apInt(msg, n, dispTemp((int8_t)heaters.Instances[mainHeaterNum].Tliquid));
-        n = apStr(msg, n, u);
-    } else {
-        n = apStr(msg, n, "off");
-    }
-    msg[n++] = '\n';
-
-    /* ── Element (skip if disabled) ── */
-    if (!elementDisabled) {
-        n = apStr(msg, n, "Elm:");
-        n = apStr(msg, n, elementState ? "on" : "off");
-        msg[n++] = '\n';
-    }
-
-    /* ── Zones (only connected) ── */
-    for (uint8_t i = 0; i < ZONE_COUNT; i++) {
-        if (zoneConnected[i] <= 0) continue;
-        msg[n++] = 'Z';
-        msg[n++] = '1' + i;
-        msg[n++] = ' ';
-        switch (zoneStates[i]) {
-            case heat: n = apStr(msg, n, "heat"); break;
-            case vent: n = apStr(msg, n, "vent"); break;
-            default:   n = apStr(msg, n, "off");  break;
-        }
-        msg[n++] = ' ';
-        n = apInt(msg, n, dispTemp(zoneCurrentTemp[i]));
-        n = apStr(msg, n, u);
-        n = apStr(msg, n, "->");
-        n = apInt(msg, n, dispTemp((int8_t)zoneDaySetpoint[i]));
-        n = apStr(msg, n, u);
-        msg[n++] = '\n';
-    }
-
-    /* ── Tank, outdoor ── */
-    n = apStr(msg, n, "Ttank:");
-    n = apInt(msg, n, dispTemp(tankTemperature));
-    n = apStr(msg, n, u); msg[n++] = '\n';
-
-    n = apStr(msg, n, "Tout:");
-    n = apInt(msg, n, dispTemp(outdoorTemperature));
-    n = apStr(msg, n, u); msg[n++] = '\n';
-
-    /* ── Voltage ── */
-    int16_t v10 = (int16_t)(heaters.Instances[mainHeaterNum].Voltage * 10.0f + 0.5f);
-    if (v10 >= 100) { if (n < 139) msg[n++] = '0' + v10/100; }
-    if (n < 139) msg[n++] = '0' + (v10/10)%10;
-    if (n < 139) msg[n++] = '.';
-    if (n < 139) msg[n++] = '0' + v10%10;
-    n = apStr(msg, n, "V");
-
-    msg[n] = 0;
-    modem.sendSms(phone, msg);
 }

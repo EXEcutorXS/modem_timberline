@@ -212,6 +212,17 @@ static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
         return;
     }
 
+    /* ── off — turn everything off ─────────────────────────────────────── */
+    if (!strcmp(cmd, "off")) {
+        c.type = TL_CMD_OFF; add_cmd(res, c); return;
+    }
+
+    /* ── ack on/off ─────────────────────────────────────────────────────── */
+    if (!strcmp(cmd, "ack")) {
+        if (!parse_bool(arg, bval)) { add_error(res, "ack: on/off"); return; }
+        c.type = TL_CMD_ACK; c.boolVal = bval; add_cmd(res, c); return;
+    }
+
     /* ── burner on/off ──────────────────────────────────────────────────── */
     if (!strcmp(cmd, "burner")) {
         if (!parse_bool(arg, bval)) { add_error(res, "burner: on/off"); return; }

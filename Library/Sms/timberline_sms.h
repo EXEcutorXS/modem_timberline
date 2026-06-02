@@ -41,6 +41,8 @@ enum TlCmdType {
     TL_CMD_PING,            /* no params              — modem info reply        */
     TL_CMD_RESET,           /* no params              — reboot modem            */
     TL_CMD_FACTORY,         /* no params              — reset modem settings    */
+    TL_CMD_OFF,             /* no params              — turn everything off      */
+    TL_CMD_ACK,             /* boolVal                — enable/disable device command confirmations */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/

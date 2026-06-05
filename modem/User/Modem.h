@@ -11,7 +11,7 @@ public:
     /* ── Public state ────────────────────────────────────────────────── */
     bool    isRegistered;   /* +CREG: 1  — on home network               */
     bool    isRoaming;      /* +CREG: 5  — roaming                       */
-    int8_t  csq;            /* 0-31, -1 = unknown                        */
+    uint8_t csq;            /* 0-31 = valid, 0xFF = unknown              */
     char    imei[16];
     char    iccid[21];
     char    ownNumber[16];

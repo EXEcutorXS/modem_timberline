@@ -27,7 +27,7 @@ void Work_C::handler(void) {
 
 /* ── canBroadcast ─────────────────────────────────────────────────────────
  * PGN 18 — version/presence announcement (every 5 s)
- * PGN 20 — GSM status: registration, signal, settings flags (every 5 s)  */
+ * PGN 60 — GSM status: registration, signal, settings flags (every 5 s)  */
 void Work_C::canBroadcast(void) {
     static uint32_t timer = 0;
     if ((core.getTick() - timer) < 5000) return;
@@ -50,7 +50,7 @@ void Work_C::canBroadcast(void) {
                            | ((modem.faultReport  ? 1 : 0) << 4)
                            | ((modem.cmdAck       ? 1 : 0) << 6));
     uint8_t d1 = (uint8_t)(0xFC | (modem.tempUnit & 1));  /* bits 2-7 = 0b111111 */
-    uint8_t csq = (modem.csq >= 0 && modem.csq <= 31) ? (uint8_t)modem.csq : 0xFF;
+    uint8_t csq = modem.csq;   /* 0-31 valid, 0xFF = unknown */
 
     uint32_t id60 = (60u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
                   | ((uint32_t)can.idType<<3) | can.idAddress;
@@ -59,9 +59,20 @@ void Work_C::canBroadcast(void) {
 }
 
 void Work_C::resetHandler(void) {
-    static uint32_t timerReset = 0;
-    if ((core.getTick() - timerReset) > (15 * 60 * 1000)) {
+    static uint32_t timerReset  = 0;
+    static uint32_t timerTick   = 0;
+
+    /* Increment linkCnt every second (CAN ISR resets it to 0 on each RX) */
+    if ((core.getTick() - timerTick) >= 1000) {
+        timerTick = core.getTick();
+        can.linkCnt++;
+    }
+
+    /* Kick watchdog while CAN is alive (message in last ~3 s) */
+    if (can.linkCnt < 3)
         timerReset = core.getTick();
+
+    if ((core.getTick() - timerReset) > (15 * 60 * 1000)) {
         flash.writeSetup();
         *(__IO uint32_t *)(0x20023F00) = 0x00000000;
         NVIC_SystemReset();

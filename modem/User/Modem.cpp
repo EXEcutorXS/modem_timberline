@@ -1,4 +1,5 @@
 #include "Modem.h"
+#include "modem_handler.h"
 #include "core.h"
 #include "log.h"
 #include <string.h>
@@ -17,7 +18,7 @@ extern "C" void USART1_IRQHandler(void) {
 
 /* ── Constructor ─────────────────────────────────────────────────────── */
 Modem::Modem()
-    : isRegistered(false), isRoaming(false), csq(-1),
+    : isRegistered(false), isRoaming(false), csq(0xFF),
       onSmsReceived(0),
       answer(0), capture(CAP_NONE),
       state(ST_POWER_ON), step(0),
@@ -56,6 +57,26 @@ void Modem::initialize(void) {
 void Modem::handler(void) {
     if (!PowergoodPin.Get()) return;
     drainRx();
+
+    /* Bridge mode: forward USB→modem, state machine paused.
+       AT commands need \r as terminator; terminals often send \n only —
+       expand each \n to \r\n so the modem sees a proper line ending.    */
+    if (bridgeMode) {
+        uint8_t len = bridgeTxLen;
+        if (len > 0) {
+            static uint8_t local[BRIDGE_TX_MAX * 2];
+            uint8_t out = 0;
+            for (uint8_t i = 0; i < len && out < sizeof(local) - 1; i++) {
+                uint8_t c = bridgeTxBuf[i];
+                if (c == '\n') local[out++] = '\r'; /* ensure CR before LF */
+                local[out++] = c;
+            }
+            bridgeTxLen = 0;
+            usart.send(local, out);
+        }
+        return;
+    }
+
     switch (state) {
         case ST_POWER_ON:   doPowerOn();   break;
         case ST_WAIT_READY: doWaitReady(); break;
@@ -94,6 +115,7 @@ void Modem::transmit(const char* s) {
     uint16_t n = 0;
     while (*s && n < 511) buf[n++] = *s++;
     if (!n) return;
+    buf[n] = 0;                  /* null-terminate for log_at */
     usart.send((uint8_t*)buf, n);
     log_at(">> "); log_at(buf);
 }
@@ -124,7 +146,8 @@ void Modem::drainRx(void) {
         char c = (char)usart.getByte(rxCursor++);
         if (rxCursor >= Usart_C::BUFFER_SIZE) rxCursor = 0;
 
-        char dbg[2] = {c, 0}; log_at(dbg);
+        char dbg[2] = {c, 0};
+        if (bridgeMode) log_info(dbg); else log_at(dbg);
 
         /* SMS prompt arrives as "> " without newline */
         if (c == '>' && lineLen == 0) { answer |= ANS_PROMPT; continue; }
@@ -185,7 +208,8 @@ void Modem::parseLine(void) {
         answer |= ANS_READY;
     }
     else if (starts(s,"+CSQ: ")) {
-        csq = (int8_t)atoi(s + 6);
+        int v = atoi(s + 6);
+        csq = (v >= 0 && v <= 31) ? (uint8_t)v : 0xFF;
         answer |= ANS_CSQ;
     }
     else if (starts(s,"+CREG: ")) {
@@ -222,10 +246,47 @@ void Modem::parseLine(void) {
         answer |= ANS_CNUM;
     }
     else if (starts(s,"+CUSD:")) {
-        /* +CUSD: 0,"text",15  — log the quoted text field */
-        char cusdBuf[64];
-        nthQuoted(s + 7, 1, cusdBuf, sizeof(cusdBuf));
-        log_info("[USSD] "); log_info(cusdBuf); log_info("\r\n");
+        char raw[128];
+        nthQuoted(s + 7, 0, raw, sizeof(raw));
+
+        /* Detect UCS2 hex: all chars are 0-9/A-F and length divisible by 4 */
+        int rlen = (int)strlen(raw);
+        bool isUcs2 = (rlen >= 4) && (rlen % 4 == 0);
+        for (int i = 0; i < rlen && isUcs2; i++) {
+            char c = raw[i];
+            if (!((c>='0'&&c<='9')||(c>='A'&&c<='F')||(c>='a'&&c<='f')))
+                isUcs2 = false;
+        }
+
+        static char decoded[128];
+        if (isUcs2) {
+            /* UTF-16BE hex → UTF-8 */
+            int di = 0;
+            for (int i = 0; i < rlen - 3 && di < 125; i += 4) {
+                #define HV(c) ((uint8_t)((c)>='a'?(c)-'a'+10:(c)>='A'?(c)-'A'+10:(c)-'0'))
+                uint16_t cp = (uint16_t)( ((uint16_t)HV(raw[i  ])<<12)
+                                        | ((uint16_t)HV(raw[i+1])<< 8)
+                                        | ((uint16_t)HV(raw[i+2])<< 4)
+                                        |  (uint16_t)HV(raw[i+3]));
+                #undef HV
+                if (cp < 0x80) {
+                    decoded[di++] = (char)cp;
+                } else if (cp < 0x800) {
+                    decoded[di++] = (char)(0xC0 | (cp >> 6));
+                    decoded[di++] = (char)(0x80 | (cp & 0x3F));
+                } else {
+                    decoded[di++] = (char)(0xE0 | ( cp >> 12));
+                    decoded[di++] = (char)(0x80 | ((cp >>  6) & 0x3F));
+                    decoded[di++] = (char)(0x80 | ( cp        & 0x3F));
+                }
+            }
+            decoded[di] = 0;
+        } else {
+            strncpy(decoded, raw, sizeof(decoded) - 1);
+            decoded[sizeof(decoded)-1] = 0;
+        }
+
+        log_info("[USSD] "); log_info(decoded); log_info("\r\n");
         answer |= ANS_CUSD;
     }
 }
@@ -304,6 +365,10 @@ void Modem::sendUssd(const char* req) {
     if (!req || !req[0] || ussdPending) return;
     strncpy(ussdReq, req, sizeof(ussdReq) - 1);
     ussdReq[sizeof(ussdReq) - 1] = 0;
+    /* USSD codes always end with '#'; drop any junk the terminal appended */
+    char* last_hash = strrchr(ussdReq, '#');
+    if (last_hash) *(last_hash + 1) = '\0';
+    if (!ussdReq[0]) return;
     ussdPending = true;
 }
 
@@ -312,26 +377,19 @@ void Modem::doUssd(void) {
     static char cmd[48];
 
     switch (step) {
-    case 0:
-        if (atCmd("AT+CSCS=\"IRA\"\r\n", 300)) step++;
-        break;
-    case 1: {
-        /* Build AT+CUSD=1,"<req>",15\r\n */
+    case 0: {
+        /* A7682 firmware rejects '#' in USSD strings (CME ERROR).
+           Send without the trailing '#' — tested: network still responds. */
         int n = 0;
         const char* pre = "AT+CUSD=1,\"";
         while (*pre) cmd[n++] = *pre++;
-        for (int i = 0; ussdReq[i] && n < 44; i++) cmd[n++] = ussdReq[i];
-        cmd[n++]='"'; cmd[n++]=','; cmd[n++]='1'; cmd[n++]='5';
-        cmd[n++]='\r'; cmd[n++]='\n'; cmd[n]=0;
+        for (int i = 0; ussdReq[i] && ussdReq[i] != '#' && n < 44; i++)
+            cmd[n++] = ussdReq[i];
+        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
 
-        if (atCmd(cmd, 10000)) {
-            if (answer & ANS_CUSD) {
-                /* Response already logged by parseLine */
-            } else if (answer & ANS_TIMEOUT) {
-                log_info("[USSD] timeout\r\n");
-            } else if (answer & ANS_ERROR) {
-                log_info("[USSD] error\r\n");
-            }
+        if (atCmd(cmd, 15000)) {
+            if (answer & ANS_TIMEOUT) log_info("[USSD] timeout\r\n");
+            if (answer & ANS_ERROR)   log_info("[USSD] error\r\n");
             ussdPending = false;
             setState(ST_IDLE);
         }

@@ -345,7 +345,7 @@ static void usb_process_line(char* line)
     /* U <ussd>  — send USSD request, see reply in log */
     if ((line[0] == 'u' || line[0] == 'U') && line[1] == ' ') {
         modem.sendUssd(line + 2);
-        log_info("[USSD] sending: "); log_info(line + 2); log_info("\r\n");
+        log_at("[USSD] sending: "); log_at(line + 2); log_at("\r\n");
         return;
     }
 
@@ -384,7 +384,14 @@ void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes)
             } else {
                 plusCount = 0;
             }
-            if (bridgeTxLen < BRIDGE_TX_MAX)
+            /* Echo typed character back to terminal */
+            if (b == '\r' || b == '\n') {
+                USART_To_USB_Send_Data('\r');
+                USART_To_USB_Send_Data('\n');
+            } else {
+                USART_To_USB_Send_Data(b);
+            }
+            if (bridgeTxLen < BRIDGE_TX_MAX && b != 0x00) /* skip null bytes from UTF-16 terminals */
                 bridgeTxBuf[bridgeTxLen++] = b;
             continue;
         }

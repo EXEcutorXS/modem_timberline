@@ -26,7 +26,7 @@ Modem::Modem()
       ussdPending(false),
       timerCsq(0), timerCreg(0),
       rxCursor(0), lineLen(0),
-      smsDebugMode(true),
+      smsDebugMode(false),
       isOnlySmsMode(true),
       tempUnit(0),
       faultReport(true),
@@ -330,7 +330,7 @@ void Modem::doInit(void) {
     case 1:  if (atCmd("ATE0\r\n",                1000)) step++; break;
     case 2:  if (atCmd("AT+CMEE=2\r\n",            300)) step++; break;
     case 3:  if (atCmd("AT+CMGF=1\r\n",            500)) step++; break;
-    case 4:  if (atCmd("AT+CMGD=,4\r\n",          5000)) step++; break;
+    case 4:  if (atCmd("AT+CMGD=1,4\r\n",          5000)) step++; break;
     case 5:  if (atCmd("AT+CNMI=2,1,0,0,0\r\n",    300)) step++; break;
     case 6:  if (atCmd("AT+CSQ\r\n",              1000)) step++; break;
     case 7:  if (atCmd("AT+CICCID\r\n",           5000)) step++; break;

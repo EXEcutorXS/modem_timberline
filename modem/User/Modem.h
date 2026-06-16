@@ -16,6 +16,11 @@ public:
     char    iccid[21];
     char    ownNumber[16];
 
+    /* Network info — from +CREG: (lac/ci) and +COPS: (operator), polled  */
+    char     operatorCode[7];  /* numeric MCC+MNC, e.g. "25099"           */
+    uint16_t lac;               /* location area code                     */
+    uint32_t cellId;            /* cell ID                                */
+
     /* Access control — persisted in flash */
     char       phones[5][16];  /* [0] = admin phone; [1..4] = trusted phones */
     char       pin[5];         /* 4-digit PIN, null-terminated               */
@@ -61,6 +66,7 @@ private:
         ANS_CNUM    = 1<<10,  /* +CNUM: — ownNumber updated              */
         ANS_PROMPT  = 1<<11,  /* >  — modem ready for SMS body           */
         ANS_CUSD    = 1<<12,  /* +CUSD: — USSD response received         */
+        ANS_COPS    = 1<<13,  /* +COPS: — operatorCode updated           */
     };
     uint32_t answer;
 

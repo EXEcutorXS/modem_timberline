@@ -384,6 +384,11 @@
           <GroupName>Main</GroupName>
           <Files>
             <File>
+              <FileName>DataActualizator.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\DataActualizator.cpp</FilePath>
+            </File>
+            <File>
               <FileName>main.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>.\User\main.cpp</FilePath>
@@ -404,40 +409,15 @@
               <FilePath>..\Library\Timers\unix_time.cpp</FilePath>
             </File>
             <File>
-              <FileName>Timberline.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>.\User\Timberline.cpp</FilePath>
-            </File>
-            <File>
               <FileName>Version.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\User\Version.h</FilePath>
-            </File>
-            <File>
-              <FileName>Heaters.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>.\User\Heaters.cpp</FilePath>
             </File>
           </Files>
         </Group>
         <Group>
           <GroupName>Modem</GroupName>
           <Files>
-            <File>
-              <FileName>timberline_sms.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Sms\timberline_sms.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>sms.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Sms\sms.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>gsm.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Library\Gsm\gsm.cpp</FilePath>
-            </File>
             <File>
               <FileName>Modem.cpp</FileName>
               <FileType>8</FileType>
@@ -448,16 +428,46 @@
               <FileType>8</FileType>
               <FilePath>.\User\modem_handler.cpp</FilePath>
             </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Timberline</GroupName>
+          <Files>
             <File>
               <FileName>FaultManager.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>.\User\FaultManager.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>timberline_sms.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>..\Library\Sms\timberline_sms.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>Timberline.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\Timberline.cpp</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Heaters</GroupName>
+          <Files>
+            <File>
+              <FileName>Heaters.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\Heaters.cpp</FilePath>
             </File>
           </Files>
         </Group>
         <Group>
           <GroupName>Drivers</GroupName>
           <Files>
+            <File>
+              <FileName>StringTransfer.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\StringTransfer.cpp</FilePath>
+            </File>
             <File>
               <FileName>led.cpp</FileName>
               <FileType>8</FileType>

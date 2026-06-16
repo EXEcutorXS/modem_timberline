@@ -1,5 +1,6 @@
 #include "Timberline.h"
 #include "Modem.h"
+#include "StringTransfer.h"
 #include "timberline_sms.h"
 #include "flash.h"
 #include "log.h"
@@ -31,6 +32,8 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
     uint8_t temp=0;
 
     ID=(pgn<<20)+(TransType<<13)+(TransAddr<<10)+(can.idType<<3)+can.idAddress;
+
+    stringTransfer.onCanMessage(msg->ExtId, D);
 
     uint32_t Addr;
 
@@ -70,6 +73,16 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         {
         case  0:// ?
             break;
+        }
+        break;
+    case 60: //GSM settings write request, same sub-packet layout as the status broadcast
+        if (D[0]==1) {
+            //2 бита на bool (00=off,01=on,11=без изменений), как в canBroadcast()
+            if (((D[1]>>0)&3)<2) modem.isOnlySmsMode = (D[1]>>0)&1;
+            if (((D[1]>>2)&3)<2) modem.faultReport   = (D[1]>>2)&1;
+            if (((D[1]>>4)&3)<2) modem.cmdAck         = (D[1]>>4)&1;
+            if (((D[1]>>6)&3)<2) modem.tempUnit       = (D[1]>>6)&1;
+            flash.writeSetup();
         }
         break;
     case 7:
@@ -584,6 +597,7 @@ static void onSmsReceived(const char* phone, const char* text) {
 
 void Timberline::init(void) {
     modem.onSmsReceived = onSmsReceived;
+    stringTransfer.registerString(STRID_IMEI, modem.imei, sizeof(modem.imei));
 }
 
 /* ── sendStatus ──────────────────────────────────────────────────────── */

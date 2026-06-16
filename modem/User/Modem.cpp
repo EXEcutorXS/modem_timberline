@@ -19,20 +19,21 @@ extern "C" void USART1_IRQHandler(void) {
 /* ── Constructor ─────────────────────────────────────────────────────── */
 Modem::Modem()
     : isRegistered(false), isRoaming(false), csq(0xFF),
+      lac(0xFFFF), cellId(0xFFFFFFFF),
+      isOnlySmsMode(true),
+      tempUnit(0),
+      faultReport(true),
+      cmdAck(true),
       onSmsReceived(0),
+      smsDebugMode(false),
       answer(0), capture(CAP_NONE),
       state(ST_POWER_ON), step(0),
       smsPending(false), smsSlot(0),
       ussdPending(false),
       timerCsq(0), timerCreg(0),
-      rxCursor(0), lineLen(0),
-      smsDebugMode(false),
-      isOnlySmsMode(true),
-      tempUnit(0),
-      faultReport(true),
-      cmdAck(true)
+      rxCursor(0), lineLen(0)
 {
-    imei[0] = iccid[0] = ownNumber[0] = 0;
+    imei[0] = iccid[0] = ownNumber[0] = operatorCode[0] = 0;
     smsPhone[0] = smsText[0] = cmgrPhone[0] = cmgrBody[0] = ussdReq[0] = 0;
     for (int i = 0; i < 5; i++) phones[i][0] = 0;
     pin[0]='1'; pin[1]='2'; pin[2]='3'; pin[3]='4'; pin[4]='\0';
@@ -213,11 +214,44 @@ void Modem::parseLine(void) {
         answer |= ANS_CSQ;
     }
     else if (starts(s,"+CREG: ")) {
-        char stat = '0';
-        for (int i = 7; s[i]; i++) if (s[i] >= '0' && s[i] <= '5') stat = s[i];
+        /* AT+CREG=2 makes both the poll reply and the URC carry lac/ci:
+             poll: <n>,<stat>[,"<lac>","<ci>"]   URC: <stat>[,"<lac>","<ci>"]
+           Collect the unquoted leading comma-separated fields — the last
+           one is always <stat> regardless of whether <n> is present. */
+        const char* p = s + 7;
+        char tok[2][8]; int ntok = 0;
+        {
+            char buf[8]; int bi = 0;
+            while (*p && *p != '"' && ntok < 2) {
+                if (*p == ',') {
+                    buf[bi] = 0;
+                    if (bi) { strncpy(tok[ntok], buf, sizeof(tok[0])-1); tok[ntok][sizeof(tok[0])-1] = 0; ntok++; }
+                    bi = 0;
+                } else if (bi < (int)sizeof(buf)-1) buf[bi++] = *p;
+                p++;
+            }
+            if (bi && ntok < 2) { buf[bi] = 0; strncpy(tok[ntok], buf, sizeof(tok[0])-1); tok[ntok][sizeof(tok[0])-1] = 0; ntok++; }
+        }
+        char stat = (ntok > 0) ? tok[ntok-1][0] : '0';
         isRegistered = (stat == '1');
         isRoaming    = (stat == '5');
+
+        if (*p == '"') {
+            char hexLac[8], hexCi[12];
+            nthQuoted(s + 7, 0, hexLac, sizeof(hexLac));
+            nthQuoted(s + 7, 1, hexCi,  sizeof(hexCi));
+            lac    = (uint16_t)strtol(hexLac, NULL, 16);
+            cellId = (uint32_t)strtol(hexCi,  NULL, 16);
+        }
         answer |= ANS_CREG;
+    }
+    else if (starts(s,"+COPS: ")) {
+        /* AT+COPS=3,2 selects numeric format, so the 3rd field (oper) is a
+           quoted MCC+MNC string, e.g. +COPS: 0,2,"25099",7 */
+        char oper[8];
+        nthQuoted(s + 7, 0, oper, sizeof(oper));
+        if (oper[0]) { strncpy(operatorCode, oper, sizeof(operatorCode)-1); operatorCode[sizeof(operatorCode)-1] = 0; }
+        answer |= ANS_COPS;
     }
     else if (starts(s,"+CMTI: ")) {
         /* +CMTI: "SM",3 */
@@ -340,7 +374,10 @@ void Modem::doInit(void) {
         if (atCmd("AT+CGSN\r\n", 3000)) { capture = CAP_NONE; step++; }
         break;
     case 9:  if (atCmd("AT+CNUM\r\n",             3000)) step++; break;
-    case 10: if (atCmd("AT+CREG?\r\n",            2000)) step++; break;
+    case 10: if (atCmd("AT+CREG=2\r\n",            300)) step++; break;
+    case 11: if (atCmd("AT+CREG?\r\n",            2000)) step++; break;
+    case 12: if (atCmd("AT+COPS=3,2\r\n",          300)) step++; break;
+    case 13: if (atCmd("AT+COPS?\r\n",            3000)) step++; break;
     default:
         log_info("Modem ready. IMEI="); log_info(imei[0]       ? imei       : "?");
         log_info(" SIM=");              log_info(ownNumber[0]   ? ownNumber  : "?");
@@ -484,5 +521,17 @@ void Modem::doPollCsq(void) {
 }
 
 void Modem::doPollCreg(void) {
-    if (atCmd("AT+CREG?\r\n", 2000)) { timerCreg = core.getTick(); setState(ST_IDLE); }
+    /* AT+CREG=2 enables lac/ci in the +CREG: response (and URC); cheap to
+       re-assert every poll since some modems forget it across power cycles.
+       AT+COPS=3,2 selects numeric operator format for the +COPS: query. */
+    switch (step) {
+    case 0: if (atCmd("AT+CREG=2\r\n",  300)) step++; break;
+    case 1: if (atCmd("AT+CREG?\r\n",  2000)) step++; break;
+    case 2: if (atCmd("AT+COPS=3,2\r\n", 300)) step++; break;
+    case 3: if (atCmd("AT+COPS?\r\n",  3000)) step++; break;
+    default:
+        timerCreg = core.getTick();
+        setState(ST_IDLE);
+        break;
+    }
 }

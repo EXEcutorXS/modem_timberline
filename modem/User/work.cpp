@@ -2,6 +2,8 @@
 #include "Modem.h"
 #include "Timberline.h"
 #include "FaultManager.h"
+#include "DataActualizator.h"
+#include "StringTransfer.h"
 #include "modem_handler.h"
 #include "can.h"
 #include "core.h"
@@ -23,39 +25,62 @@ void Work_C::handler(void) {
     modem_process_emulated_sms();
     faultManager.handler();
     canBroadcast();
+    dataActualizator.handler();
+    stringTransfer.handler();
 }
 
 /* ── canBroadcast ─────────────────────────────────────────────────────────
  * PGN 18 — version/presence announcement (every 5 s)
- * PGN 60 — GSM status: registration, signal, settings flags (every 5 s)  */
+ * PGN 60 — GSM status, multi-packet: D[0] selects the sub-packet:
+ *   0 — registration/roaming + CSQ                  (every 5 s, fast-changing)
+ *   1 — settings flags — отправляются сразу при изменении, см. DataActualizator
+ *   2 — operator code (numeric MCC+MNC, ASCII digits)
+ *   3 — LAC + Cell ID
+ *   Sub-packets 2-3 rarely change, sent every 30 s.
+ * IMEI (and other long/variable strings) are no longer packed into PGN60 —
+ * they're transferred on demand via the generic PGN61/62 string protocol,
+ * see StringTransfer.cpp.                                                  */
 void Work_C::canBroadcast(void) {
-    static uint32_t timer = 0;
-    if ((core.getTick() - timer) < 5000) return;
-    timer = core.getTick();
-
-    uint32_t id18 = (18u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
-                  | ((uint32_t)can.idType<<3) | can.idAddress;
-    can.SendMessage(id18,
-        VERSION_1, VERSION_2, VERSION_3, VERSION_4,
-        0xFF, 0xFF, 0xFF, 0xFF);
-
-    /* 2-bit encoding per bool: 0b00=off, 0b01=on, 0b11=no data
-       D[0]: bits 0-1=registered, bits 2-3=roaming,
-             bits 4-5=faultReport, bits 6-7=cmdAck
-       D[1]: bits 0-1=tempUnit (0=C,1=F), bits 2-7=0b111111 (no data)
-       D[2]: CSQ 0-31, 0xFF=unknown
-       D[3..7]: 0xFF reserved                                              */
-    uint8_t d0 = (uint8_t)(  (modem.isRegistered ? 1 : 0)
-                           | ((modem.isRoaming    ? 1 : 0) << 2)
-                           | ((modem.faultReport  ? 1 : 0) << 4)
-                           | ((modem.cmdAck       ? 1 : 0) << 6));
-    uint8_t d1 = (uint8_t)(0xFC | (modem.tempUnit & 1));  /* bits 2-7 = 0b111111 */
-    uint8_t csq = modem.csq;   /* 0-31 valid, 0xFF = unknown */
-
+    static uint32_t timer     = 0;
+    static uint32_t timerSlow = 0;
     uint32_t id60 = (60u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
                   | ((uint32_t)can.idType<<3) | can.idAddress;
-    can.SendMessage(id60,
-        d0, d1, csq, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+
+    if ((core.getTick() - timer) >= 5000) {
+        timer = core.getTick();
+
+        uint32_t id18 = (18u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
+                      | ((uint32_t)can.idType<<3) | can.idAddress;
+        can.SendMessage(id18,
+            VERSION_1, VERSION_2, VERSION_3, VERSION_4,
+            0xFF, 0xFF, 0xFF, 0xFF);
+
+        /* Sub-packet 0: D[1] = 2 bits/bool (00=off,01=on,11=no data):
+         *   bits0-1 registered, bits2-3 roaming. D[2]=CSQ */
+        uint8_t d1 = (uint8_t)(  (modem.isRegistered ? 1u : 0u)
+                                | ((modem.isRoaming   ? 1u : 0u) << 2));
+        can.SendMessage(id60,
+            0, d1, modem.csq, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+    }
+
+    if ((core.getTick() - timerSlow) >= 30000) {
+        timerSlow = core.getTick();
+
+        /* Sub-packet 2: operator code, up to 5 ASCII digits (MCC+MNC) */
+        char op[5] = {0xFF,0xFF,0xFF,0xFF,0xFF};
+        for (uint8_t i = 0; i < 5 && modem.operatorCode[i]; i++)
+            op[i] = modem.operatorCode[i];
+        can.SendMessage(id60,
+            2, op[0], op[1], op[2], op[3], op[4], 0xFF, 0xFF);
+
+        /* Sub-packet 3: LAC (16-bit) + Cell ID (32-bit), big-endian */
+        can.SendMessage(id60,
+            3,
+            (uint8_t)(modem.lac>>8),    (uint8_t)modem.lac,
+            (uint8_t)(modem.cellId>>24),(uint8_t)(modem.cellId>>16),
+            (uint8_t)(modem.cellId>>8), (uint8_t)modem.cellId,
+            0xFF);
+    }
 }
 
 void Work_C::resetHandler(void) {

@@ -1,6 +1,7 @@
 #include "can.h"
 #include "log.h"
 #include "Timberline.h"
+#include "SlcanBridge.h"
 
 Can can;
 
@@ -87,6 +88,10 @@ void Can::handler(void)
 void Can::SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8_t AD3,
                       uint8_t AD4, uint8_t AD5, uint8_t AD6, uint8_t AD7)
 {
+    /* In SLCAN bridge mode the modem is a transparent adapter — suppress its
+       own firmware traffic so it doesn't interfere with the host's CAN session. */
+    if (slcanBridge.active) return;
+
     TxMessage.StdId   = 0;
     TxMessage.ExtId   = AID;
     TxMessage.RTR     = CAN_RTRQ_Data;
@@ -101,9 +106,29 @@ void Can::SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8
 }
 
 
+void Can::sendRaw(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data)
+{
+    TxMessage.StdId = ext ? 0 : (uint16_t)id;
+    TxMessage.ExtId = ext ? id : 0;
+    TxMessage.RTR   = CAN_RTRQ_Data;
+    TxMessage.IDE   = ext ? CAN_Extended_Id : CAN_Standard_Id;
+    TxMessage.DLC   = dlc;
+    for (uint8_t i = 0; i < 8; i++)
+        TxMessage.Data[i] = i < dlc ? data[i] : 0;
+    CAN_TransmitMessage(CAN2, &TxMessage);
+
+    slcanBridge.onCanTx(ext, id, dlc, data);
+}
+
 void Can::processCanRxMessage(CanRxMessage *msg)
 {
-	timberline.ProcessCanMessage(msg);
+    slcanBridge.onCanRx(msg);
+
+    /* In SLCAN bridge mode skip timberline processing — the modem acts as a
+       transparent adapter and must not respond to frames on behalf of the bus. */
+    if (slcanBridge.active) return;
+
+    timberline.ProcessCanMessage(msg);
 }
 
 extern "C" void CAN2_RX0_IRQHandler(void)

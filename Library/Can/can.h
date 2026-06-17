@@ -15,6 +15,7 @@ class Can
         void handler(void);
         void SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8_t AD3,
                          uint8_t AD4, uint8_t AD5, uint8_t AD6, uint8_t AD7);
+        void sendRaw(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data);
         void processCanRxMessage(CanRxMessage *msg);
 
         uint16_t linkCnt;

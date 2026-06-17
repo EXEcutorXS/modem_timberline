@@ -42,6 +42,7 @@
 
 #include "log.h"
 #include "modem_handler.h"
+#include "SlcanBridge.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -326,6 +327,7 @@ bool USART_Config(void)
 /* Process a complete line received from USB (null-terminated, no \r\n) */
 static void usb_process_line(char* line)
 {
+    if (slcan_process_line(line)) return;
     /* S <phone> <message body>  — emulate incoming SMS */
     if ((line[0] == 's' || line[0] == 'S') && line[1] == ' ') {
         char* phone = line + 2;

@@ -380,6 +380,21 @@ static void ack(const char* phone, const char* msg) {
     if (modem.cmdAck) modem.sendSms(phone, msg);
 }
 
+static const char HELP_SMS[] =
+    "Bad cmd\n"
+    "burner/element/floor/engine on/off\n"
+    "z1 off\n"
+		"z1 heat\n"
+		"z1 vent\n"
+		"z1day 25\n"
+		"z1 manual\n"
+		"z1 auto\n"
+    "warmup\n"
+		"off\n"
+		"status\n"
+		"?\n";
+    
+
 static void onSmsReceived(const char* phone, const char* text) {
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     TlSmsParseResult result;
@@ -390,11 +405,16 @@ static void onSmsReceived(const char* phone, const char* text) {
         return;
     }
 
+    bool hasUnknown = false;
     for (uint8_t e = 0; e < result.errCount; e++) {
         log_info("SMS parse error: ");
         log_info(result.errors[e]);
         log_info("\r\n");
+        if (strncmp(result.errors[e], "unknown:", 8) == 0)
+            hasUnknown = true;
     }
+    if (hasUnknown)
+        modem.sendSms(phone, HELP_SMS);
 
     for (uint8_t i = 0; i < result.cmdCount; i++) {
         const TlSmsCmd& cmd = result.cmds[i];
@@ -409,15 +429,18 @@ static void onSmsReceived(const char* phone, const char* text) {
             NVIC_SystemReset();
             break;
 
-        case TL_CMD_ADMIN:
-            strncpy(modem.phones[0], cmd.phone, 15);
+        case TL_CMD_ADMIN: {
+            const char* p = cmd.phone[0] ? cmd.phone : phone;
+            strncpy(modem.phones[0], p, 15);
             modem.phones[0][15] = '\0';
             modem.sendSms(phone, "Admin set");
             break;
+        }
 
         case TL_CMD_PHONE:
             if (cmd.phoneNum >= 1 && cmd.phoneNum <= 4) {
-                strncpy(modem.phones[cmd.phoneNum], cmd.phone, 15);
+                const char* p = cmd.phone[0] ? cmd.phone : phone;
+                strncpy(modem.phones[cmd.phoneNum], p, 15);
                 modem.phones[cmd.phoneNum][15] = '\0';
                 modem.sendSms(phone, "Phone updated.");
             }
@@ -500,11 +523,11 @@ static void onSmsReceived(const char* phone, const char* text) {
 
         case TL_CMD_ZONE_FAN_MODE: {
             switch (cmd.zone.num) {          /* 1-based */
-            case 1: D[4] = 0xFC | cmd.zone.fanMode; break;
-            case 2: D[4] = 0xF3 | (cmd.zone.fanMode << 2); break;
-            case 3: D[4] = 0xCF | (cmd.zone.fanMode << 4); break;
-            case 4: D[4] = 0x3F | (cmd.zone.fanMode << 6); break;
-            case 5: D[5] = 0xFC | cmd.zone.fanMode; break;
+            case 1: D[5] = 0xFC | cmd.zone.fanMode; break;
+            case 2: D[5] = 0xF3 | (cmd.zone.fanMode << 2); break;
+            case 3: D[5] = 0xCF | (cmd.zone.fanMode << 4); break;
+            case 4: D[5] = 0x3F | (cmd.zone.fanMode << 6); break;
+            case 5: D[6] = 0xFC | cmd.zone.fanMode; break;
             }
             sendToHcu(27, D);
             static char rsp[24];

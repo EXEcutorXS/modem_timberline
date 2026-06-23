@@ -153,10 +153,9 @@ static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
     /* ── phone# <phone>  (phone1..phone5 — trusted phones) ────────────── */
     if (cmd[0] == 'p' && cmd[1] == 'h' && cmd[2] == 'o' && cmd[3] == 'n' &&
         cmd[4] == 'e' && cmd[5] >= '1' && cmd[5] <= '5' && cmd[6] == '\0') {
-        if (!arg[0]) { add_error(res, "phone#: missing number"); return; }
         c.type     = TL_CMD_PHONE;
         c.phoneNum = (uint8_t)(cmd[5] - '0');
-        strncpy(c.phone, arg, 15);
+        strncpy(c.phone, arg, 15);  /* empty = use sender's number */
         c.phone[15] = '\0';
         add_cmd(res, c);
         return;
@@ -175,9 +174,8 @@ static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
 
     /* ── admin <phone> ──────────────────────────────────────────────────── */
     if (!strcmp(cmd, "admin")) {
-        if (!arg[0]) { add_error(res, "admin: missing phone"); return; }
         c.type = TL_CMD_ADMIN;
-        strncpy(c.phone, arg, 15);
+        strncpy(c.phone, arg, 15);  /* empty = use sender's number */
         c.phone[15] = '\0';
         add_cmd(res, c);
         return;
@@ -375,6 +373,10 @@ void tl_sms_parse(const char*       senderPhone,
         if (pinLen != 4) return;                          /* no valid PIN stored */
         if (strncmp(message, pin, 4) != 0) return;        /* wrong PIN           */
         if (message[4] != ' ')            return;         /* no space separator  */
+        cmdStart = message + 5;
+    } else if (pin && strlen(pin) == 4 &&
+               strncmp(message, pin, 4) == 0 && message[4] == ' ') {
+        /* Admin/trusted may optionally send PIN prefix — strip it silently */
         cmdStart = message + 5;
     }
 

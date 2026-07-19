@@ -13,42 +13,25 @@ class Button
         void initialize(void);
         void handler(void);
         bool getState(void);
-    
-        uint8_t buttonStatus;
-    
-        enum state_t
-        {
-            _BUTTON_STATE_RELEASED,
-            _BUTTON_STATE_PRESSED
-        };
-        
-        enum status_t
-        {
-            _BUTTON_STATUS_IDLE,
-            _BUTTON_STATUS_PRESSED,
-            _BUTTON_STATUS_LONG_HOLD,
-            _BUTTON_STATUS_RESET_HOLD
-        };
-        
-        state_t state;
-        status_t status;
-        
-        Button &resetStatus(void);
-        
+
+        /* Set by Timberline::init() — called on short/long press */
+        void (*onShortPress)(void);
+        void (*onLongPress)(void);
+
+        /* Debug-only: watch this in the debugger to see what handler() is
+           doing without instrumenting it with logging. */
+        enum DebugState { BTN_IDLE, BTN_PRESSED, BTN_LONG_FIRED };
+        DebugState debugState;
+        bool       gpioState;        /* live GPIO read, updated every handler() call */
+        bool       rawPrev;         /* previous raw reading, for debounce edge */
+        bool       debounced;       /* current debounced pressed state */
+        uint32_t   rawChangeTick;
+        uint32_t   pressTick;       /* when the debounced press started */
+        bool       longFired;       /* long-press already fired for this hold */
+
     private:
-        uint32_t tickWhenPress;
-        uint32_t tickLastTouch;
-        uint32_t timerPress;
-        uint32_t timerTout;
-    
-        uint8_t isPressed : 1;
-        uint8_t isReleased : 1;
-    
-        static const uint16_t TIME_DEBOUNCE = 100;
+        static const uint16_t TIME_DEBOUNCE  = 30;
         static const uint16_t TIME_LONG_HOLD = 1500;
-        static const uint16_t TIME_RESET = 15000;
-        static const uint16_t TIME_RELOAD = 1000;
-    
 };
 extern Button button;
 

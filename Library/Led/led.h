@@ -8,10 +8,6 @@
 #include "gpio.h"
 
 /* Defines ------------------------------------------------------------------*/
-#define LED_MODE_OFF            0
-#define LED_MODE_GREEN          1
-#define LED_MODE_YELLOW         2
-
 #define LED_MODE_GSM_OFF            0
 #define LED_MODE_GSM_ON             1
 #define LED_MODE_GSM_BLINK_SLOW     2
@@ -24,22 +20,23 @@
 class Led
 {
     public:
-        
+
         void initialize(void);
         void handler(void);
-        
-        uint8_t codeToCount(uint8_t error);
-void setHeaterLed(uint8_t mode);
-        void setFrozenTime(uint32_t duration);
-        
-        uint8_t modeGsm, modeHeater;
-        uint8_t codeHeater;
-        uint32_t timerFrozen;
+
+        uint8_t modeGsm;
 
     private:
         void handlerGsm(void);
-        void handlerHeater(void);
-        Gpio_C LedYellow;
+        void handlerButtonLed(void);
+
+        /* Yellow channel (PA6 / TIM3_CH1) — PWM output, not a plain GPIO,
+           so it can breathe for the burner-only pattern. */
+        void     initYellowPwm(void);
+        void     setYellowDuty(uint16_t duty);   /* 0..PWM_PERIOD */
+        void     stepErrorBlink(uint8_t code);
+        static const uint16_t PWM_PERIOD = 999;
+
         Gpio_C LedGreen;
         Gpio_C LedMode;
 

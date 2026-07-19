@@ -40,9 +40,27 @@
  *   out requests.
  */
 
+/* IDs are fixed by the shared modem<->panel parameter table — keep the
+   numbering identical in the panel's copy of this enum. */
 enum StringId
 {
-    STRID_IMEI = 1,
+    STRID_IMEI               = 1,   /* MODEM_IMEI */
+    STRID_PIN                = 2,   /* MODEM_PIN */
+    STRID_ADMIN_PHONE        = 3,
+    STRID_TRUSTED_PHONE1     = 4,
+    STRID_TRUSTED_PHONE2     = 5,
+    STRID_TRUSTED_PHONE3     = 6,
+    STRID_TRUSTED_PHONE4     = 7,
+    STRID_INTERNET_CHECK_URL = 8,   /* not implemented on the modem yet */
+    STRID_MQTT_BROKER        = 9,   /* not implemented on the modem yet */
+    STRID_MODEM_LOGIN        = 10,  /* not implemented on the modem yet */
+    STRID_MODEM_PASSWORD     = 11,  /* not implemented on the modem yet */
+    STRID_LAST_REC_SMS_TEXT  = 12,
+    STRID_LAST_REC_SMS_NUM   = 13,
+    STRID_LAST_SENT_SMS_TEXT = 14,
+    STRID_LAST_SENT_SMS_NUM  = 15,
+    STRID_OPERATOR_NAME      = 16,
+    STRID_OPERATOR_CODE      = 17,
 };
 
 class StringTransfer
@@ -55,7 +73,11 @@ public:
     void handler(void);
 
 private:
-    enum { MAX_REGS = 8, MAX_LEN = 64 };
+    /* MAX_LEN=161 is the hard ceiling: onPgn62's 32-packet receivedMask bitmask
+       allows at most 32*5=160 data bytes (+1 for the terminator) — enough for
+       a full SMS body (STRID_LAST_*_SMS_TEXT). MAX_REGS covers every id the
+       modem/panel currently register plus headroom for the table's unused ids. */
+    enum { MAX_REGS = 16, MAX_LEN = 161 };
 
     struct RegEntry
     {
@@ -79,6 +101,20 @@ private:
         uint32_t lastSendTick;
     } tx;
 
+    /* Only one outgoing transfer can be "active" at a time (see tx above).
+       sendString() queues here instead of clobbering an in-flight transfer;
+       handler() starts the next queued one once tx finishes. */
+    enum { MAX_PENDING = 3 };
+    struct PendingSend
+    {
+        uint16_t id;
+        char     data[MAX_LEN];
+        uint8_t  toType;
+        uint8_t  toAddress;
+    };
+    PendingSend pending[MAX_PENDING];
+    uint8_t     pendingCount;
+
     struct
     {
         bool     active;
@@ -89,11 +125,28 @@ private:
         uint8_t  fromType;
         uint8_t  fromAddress;
         uint32_t requestTick;
+        uint8_t  retries;
     } rx;
+
+    /* Only one incoming request can be "active" at a time (see rx above).
+       requestString() queues here instead of clobbering an in-flight wait;
+       advanceRxQueue() starts the next queued one once rx finishes or gives up. */
+    enum { MAX_PENDING_RX = 4 };
+    struct PendingRequest
+    {
+        uint16_t id;
+        uint8_t  fromType;
+        uint8_t  fromAddress;
+    };
+    PendingRequest pendingRx[MAX_PENDING_RX];
+    uint8_t        pendingRxCount;
 
     RegEntry* findEntry(uint16_t stringId);
     uint32_t  buildId(uint8_t PGN, uint8_t toType, uint8_t toAddress) const;
     void      beginSend(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
+    void      sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
+    void      beginRequest(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
+    void      advanceRxQueue(void);
     void      onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_t* D);
     void      onPgn62(const uint8_t* D);
 };

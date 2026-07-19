@@ -2,10 +2,10 @@
 #include "modem_handler.h"
 #include "core.h"
 #include "log.h"
+#include "operator_names.h"
 #include <string.h>
 #include <stdlib.h>
 
-uint8_t versionHardware = 0;
 Modem   modem;
 
 
@@ -33,7 +33,7 @@ Modem::Modem()
       timerCsq(0), timerCreg(0),
       rxCursor(0), lineLen(0)
 {
-    imei[0] = iccid[0] = ownNumber[0] = operatorCode[0] = 0;
+    imei[0] = iccid[0] = ownNumber[0] = operatorCode[0] = operatorName[0] = 0;
     smsPhone[0] = smsText[0] = cmgrPhone[0] = cmgrBody[0] = ussdReq[0] = 0;
     for (int i = 0; i < 5; i++) phones[i][0] = 0;
     pin[0]='1'; pin[1]='2'; pin[2]='3'; pin[3]='4'; pin[4]='\0';
@@ -47,10 +47,7 @@ void Modem::initialize(void) {
     PowergoodPin.Initialize(GPIOA, GPIO_PIN_3, GPIO_Mode_IPU);
     DTRPin.Initialize(GPIOB, GPIO_PIN_1, GPIO_Mode_Out_PP);
     DTRPin.Reset();
-    if (versionHardware == 1)
-        PowerkeyPin.Initialize(GPIOB, GPIO_PIN_3, GPIO_Mode_Out_PP);
-    else
-        PowerkeyPin.Initialize(GPIOB, GPIO_PIN_7, GPIO_Mode_Out_PP);
+    PowerkeyPin.Initialize(GPIOB, GPIO_PIN_7, GPIO_Mode_Out_PP);
     PowerkeyPin.Reset();
 }
 
@@ -187,8 +184,17 @@ void Modem::parseLine(void) {
 
     /* Multi-line capture takes priority */
     if (capture == CAP_IMEI) {
-        capture = CAP_NONE;
-        if (lineLen >= 14) { strncpy(imei, s, sizeof(imei)-1); imei[sizeof(imei)-1] = 0; }
+        /* IMEI is plain digits (15 of them). An unsolicited notification
+           (e.g. "+CGEV: EPS PDN ACT ...") can land in this same window —
+           don't mistake it for the IMEI; keep waiting for the real line. */
+        bool looksLikeImei = (lineLen >= 14);
+        for (uint16_t i = 0; looksLikeImei && i < lineLen; i++)
+            if (s[i] < '0' || s[i] > '9') looksLikeImei = false;
+
+        if (looksLikeImei) {
+            strncpy(imei, s, sizeof(imei)-1); imei[sizeof(imei)-1] = 0;
+            capture = CAP_NONE;
+        }
         return;
     }
     if (capture == CAP_CMGR_BODY) {
@@ -250,7 +256,12 @@ void Modem::parseLine(void) {
            quoted MCC+MNC string, e.g. +COPS: 0,2,"25099",7 */
         char oper[8];
         nthQuoted(s + 7, 0, oper, sizeof(oper));
-        if (oper[0]) { strncpy(operatorCode, oper, sizeof(operatorCode)-1); operatorCode[sizeof(operatorCode)-1] = 0; }
+        if (oper[0]) {
+            strncpy(operatorCode, oper, sizeof(operatorCode)-1); operatorCode[sizeof(operatorCode)-1] = 0;
+            const char* name = findOperatorName(operatorCode);
+            if (name) { strncpy(operatorName, name, sizeof(operatorName)-1); operatorName[sizeof(operatorName)-1] = 0; }
+            else operatorName[0] = 0;
+        }
         answer |= ANS_COPS;
     }
     else if (starts(s,"+CMTI: ")) {

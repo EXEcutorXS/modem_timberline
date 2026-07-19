@@ -36,4 +36,10 @@ void DataActualizator::handler(void) {
     }
 }
 
+void DataActualizator::resendSettings(void) {
+    ActualizeInternalData();
+    sendSettings();
+    oldState = newState;
+}
+
 DataActualizator dataActualizator;

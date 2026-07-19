@@ -16,8 +16,15 @@ public:
     char    iccid[21];
     char    ownNumber[16];
 
+    /* Last SMS seen in each direction — exposed for STRID_LAST_*_SMS_* */
+    char    smsPhone[16];   /* last outgoing SMS recipient   */
+    char    smsText[141];   /* last outgoing SMS body        */
+    char    cmgrPhone[20];  /* last incoming SMS sender      */
+    char    cmgrBody[161];  /* last incoming SMS body        */
+
     /* Network info — from +CREG: (lac/ci) and +COPS: (operator), polled  */
     char     operatorCode[7];  /* numeric MCC+MNC, e.g. "25099"           */
+    char     operatorName[24]; /* resolved carrier name, empty if unknown */
     uint16_t lac;               /* location area code                     */
     uint32_t cellId;            /* cell ID                                */
 
@@ -93,13 +100,9 @@ private:
 
     /* ── Outgoing SMS (single pending slot) ──────────────────────────── */
     bool    smsPending;
-    char    smsPhone[16];
-    char    smsText[141];
 
     /* ── Incoming SMS ────────────────────────────────────────────────── */
     uint8_t smsSlot;
-    char    cmgrPhone[20];
-    char    cmgrBody[161];
 
     /* ── USSD ────────────────────────────────────────────────────────── */
     bool     ussdPending;
@@ -133,6 +136,5 @@ private:
 };
 
 extern Modem modem;
-extern uint8_t versionHardware;
 
 #endif /* MODEM_H */

@@ -1,6 +1,7 @@
 #include "FaultManager.h"
 #include "Timberline.h"
 #include "Modem.h"
+#include "core.h"
 #include "log.h"
 #include <string.h>
 
@@ -121,6 +122,14 @@ void FaultManager::handler(void) {
 
     if (!modem.phones[0][0]) return;   /* no admin phone set */
 
+    uint32_t now = core.getTick();
+    if (everSent && (now - lastSentTick) < COOLDOWN_MS) {
+        /* Already texted within the last hour — don't spam while the user
+           clears/re-checks a fault; they already know to look at the RV. */
+        for (uint8_t i = 0; i < 8; i++) prevErrors[i] = timberline.errors[i];
+        return;
+    }
+
     /* Collect new errors (present now but not before) */
     static char msg[141];
     uint8_t len = 0;
@@ -154,6 +163,8 @@ void FaultManager::handler(void) {
     if (len > 0) {
         log_info("FAULT SMS: "); log_info(msg); log_info("\r\n");
         modem.sendSms(modem.phones[0], msg);
+        lastSentTick = now;
+        everSent     = true;
     }
 
     for (uint8_t i = 0; i < 8; i++) prevErrors[i] = timberline.errors[i];

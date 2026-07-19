@@ -12,7 +12,6 @@
 #include "main.h"
 #include "gsm.h"
 #include "unix_time.h"
-#include "flash.h"
 #include "modem_handler.h"
 
 enum
@@ -469,7 +468,6 @@ extern "C" void HardFault_Handler(void)
   
   //}
   isReset = true;
-  flash.writeSetup();
   NVIC_SystemReset();
 }
 //-----------------------------------------------------

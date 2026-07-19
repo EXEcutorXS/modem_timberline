@@ -1,97 +1,57 @@
 #include "button.h"
-#include "math.h"
-#include "led.h"
-
 #include "log.h"
 
 Button button;
 //-----------------------------------------------------
-Button &Button::resetStatus(void)
-{
-    status = _BUTTON_STATUS_IDLE;
-    return *this;
-}
-//-----------------------------------------------------
 void Button::initialize(void)
 {
     GPIO_InitType GPIO_InitStructure;
-    
+
     RCC_EnableAPB2PeriphClk(RCC_APB2_PERIPH_GPIOA, ENABLE);
-    
+
     GPIO_InitStructure.Pin        = GPIO_PIN_8;
     GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    
+
     GPIO_InitPeripheral(GPIOA, &GPIO_InitStructure);
 }
 //-----------------------------------------------------
 void Button::handler(void)
 {
-    static status_t statusOld = _BUTTON_STATUS_IDLE;
-    
-    if (status != statusOld){
-        statusOld = status;
-        if (status == _BUTTON_STATUS_PRESSED){
-            led.setFrozenTime(5000);
-            log_info("\r\nBUTTON: PRESSED\r\n");
-            // TODO: handle short press — send CAN command
-        }
-        if (status == _BUTTON_STATUS_LONG_HOLD){
-            led.setFrozenTime(8000);
-            log_info("\r\nBUTTON: LONG HOLD\r\n");
-            // TODO: handle long press — send CAN command
-        }
+    bool raw = getState();
+    gpioState = raw;   /* live pin read, for watching in the debugger */
+
+    /* Debounce: accept a new raw level only once it's held stable. */
+    if (raw != rawPrev) {
+        rawPrev       = raw;
+        rawChangeTick = core.getTick();
     }
-    
-    buttonStatus = getState();
-    
-    if(buttonStatus)
-    {
-        if(state != _BUTTON_STATE_PRESSED)
-        {
-            tickWhenPress = core.getTick();
-        }
-        state = _BUTTON_STATE_PRESSED;
-        tickLastTouch = core.getTick();
-    }
-    else
-    {
-        timerPress = core.getTick() - tickWhenPress;
-        state = _BUTTON_STATE_RELEASED;
-    }
-    
-    
-    if(state == _BUTTON_STATE_PRESSED)
-    {
-        isPressed = true;
-        if ((core.getTick() - tickWhenPress) >= TIME_LONG_HOLD)
-        {
-            isPressed = false;
-            if (isReleased)
-            {
-                isReleased = false;
-                status = _BUTTON_STATUS_LONG_HOLD;
-                timerTout = core.getTick() + TIME_RELOAD;
+    bool stable = (core.getTick() - rawChangeTick) >= TIME_DEBOUNCE;
+
+    if (stable && raw != debounced) {
+        debounced = raw;
+
+        if (debounced) {
+            /* Press edge */
+            pressTick = core.getTick();
+            longFired = false;
+            debugState = BTN_PRESSED;
+        } else {
+            /* Release edge — short press, unless this hold already fired long */
+            debugState = BTN_IDLE;
+            if (!longFired) {
+                log_info("\r\nBUTTON: PRESSED\r\n");
+                if (onShortPress) onShortPress();
             }
         }
     }
-    else
-    {
-        isReleased = true;
-        if (isPressed)
-        {
-            isPressed = false;
-            if (timerPress > TIME_DEBOUNCE)
-            {
-                status = _BUTTON_STATUS_PRESSED;
-                timerTout = core.getTick() + TIME_RELOAD;
-            }
-        }
+
+    if (debounced && !longFired && (core.getTick() - pressTick) >= TIME_LONG_HOLD) {
+        longFired  = true;
+        debugState = BTN_LONG_FIRED;
+        log_info("\r\nBUTTON: LONG HOLD\r\n");
+        if (onLongPress) onLongPress();
     }
-    
-    
-    if ((status not_eq _BUTTON_STATUS_IDLE) and (core.getTick() > timerTout))
-        resetStatus();
 }
 //-----------------------------------------------------
 bool Button::getState(void)

@@ -33,10 +33,13 @@ void Work_C::handler(void) {
  * PGN 18 — version/presence announcement (every 5 s)
  * PGN 60 — GSM status, multi-packet: D[0] selects the sub-packet:
  *   0 — registration/roaming + CSQ                  (every 5 s, fast-changing)
- *   1 — settings flags — отправляются сразу при изменении, см. DataActualizator
- *   2 — operator code (numeric MCC+MNC, ASCII digits)
+ *   1 — settings flags — sent on change by DataActualizator, plus resent
+ *       here every 10 s in case a panel missed the change-triggered one
+ *   2 — operator code (numeric MCC+MNC, ASCII digits) — only when the
+ *       operator isn't in the operator_names.cpp table; if it is, the
+ *       resolved name is pushed instead via STRID_OPERATOR_NAME (PGN61/62)
  *   3 — LAC + Cell ID
- *   Sub-packets 2-3 rarely change, sent every 30 s.
+ *   Sub-packets 2-3 rarely change, sent every 10 s.
  * IMEI (and other long/variable strings) are no longer packed into PGN60 —
  * they're transferred on demand via the generic PGN61/62 string protocol,
  * see StringTransfer.cpp.                                                  */
@@ -63,15 +66,30 @@ void Work_C::canBroadcast(void) {
             0, d1, modem.csq, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
     }
 
-    if ((core.getTick() - timerSlow) >= 30000) {
+    if ((core.getTick() - timerSlow) >= 10000) {
         timerSlow = core.getTick();
 
-        /* Sub-packet 2: operator code, up to 5 ASCII digits (MCC+MNC) */
-        char op[5] = {0xFF,0xFF,0xFF,0xFF,0xFF};
-        for (uint8_t i = 0; i < 5 && modem.operatorCode[i]; i++)
-            op[i] = modem.operatorCode[i];
-        can.SendMessage(id60,
-            2, op[0], op[1], op[2], op[3], op[4], 0xFF, 0xFF);
+        /* Sub-packet 1: settings flags — periodic safety-net resend. */
+        dataActualizator.resendSettings();
+
+        /* Sub-packet 2: operator code, up to 5 ASCII digits (MCC+MNC) —
+           only sent when the operator isn't resolved to a name below. */
+        static char lastOperatorName[24] = {0};
+        if (modem.operatorName[0]) {
+            if (strcmp(lastOperatorName, modem.operatorName) != 0) {
+                strncpy(lastOperatorName, modem.operatorName, sizeof(lastOperatorName)-1);
+                lastOperatorName[sizeof(lastOperatorName)-1] = 0;
+                stringTransfer.sendString(modem.operatorName, STRID_OPERATOR_NAME,
+                                           can.idType, can.idAddress);
+            }
+        } else {
+            lastOperatorName[0] = 0;
+            char op[5] = {0xFF,0xFF,0xFF,0xFF,0xFF};
+            for (uint8_t i = 0; i < 5 && modem.operatorCode[i]; i++)
+                op[i] = modem.operatorCode[i];
+            can.SendMessage(id60,
+                2, op[0], op[1], op[2], op[3], op[4], 0xFF, 0xFF);
+        }
 
         /* Sub-packet 3: LAC (16-bit) + Cell ID (32-bit), big-endian */
         can.SendMessage(id60,
@@ -80,6 +98,15 @@ void Work_C::canBroadcast(void) {
             (uint8_t)(modem.cellId>>24),(uint8_t)(modem.cellId>>16),
             (uint8_t)(modem.cellId>>8), (uint8_t)modem.cellId,
             0xFF);
+    }
+
+    /* Re-push the last received SMS every 30 s, in case a panel joined the
+       bus late or missed the on-arrival push in Timberline.cpp. */
+    static uint32_t timerSms = 0;
+    if (modem.cmgrBody[0] && (core.getTick() - timerSms) >= 30000) {
+        timerSms = core.getTick();
+        stringTransfer.sendString(modem.cmgrBody,  STRID_LAST_REC_SMS_TEXT, can.idType, can.idAddress);
+        stringTransfer.sendString(modem.cmgrPhone, STRID_LAST_REC_SMS_NUM,  can.idType, can.idAddress);
     }
 }
 
@@ -98,7 +125,13 @@ void Work_C::resetHandler(void) {
         timerReset = core.getTick();
 
     if ((core.getTick() - timerReset) > (15 * 60 * 1000)) {
-        flash.writeSetup();
+        /* No flash.writeSetup() here on purpose: every setting change already
+           persists synchronously at the point it's made (admin/phone/setpin/
+           unit/faultreport/ack — see Timberline.cpp), so there's nothing
+           pending to flush. Writing here would just wear the flash on every
+           routine CAN-silence reset, and if the silence is itself a symptom
+           of something wrong, it'd risk baking corrupted RAM state into
+           persistent storage right before rebooting. */
         *(__IO uint32_t *)(0x20023F00) = 0x00000000;
         NVIC_SystemReset();
     }

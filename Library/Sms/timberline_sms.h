@@ -8,7 +8,6 @@
 #define TL_SMS_MAX_COMMANDS  10
 #define TL_SMS_MAX_ERRORS     5
 #define TL_SMS_ERR_LEN       32
-#define TL_ZONE_ALL        0xFF   /* "zx" — affects all zones */
 
 /* ── Enums ──────────────────────────────────────────────────────────────────*/
 /* Note: ARMCC v5 does not support enum base types — plain enums used here.  */
@@ -20,7 +19,7 @@ enum TlWarmupMode  { TL_WARMUP_BURNER = 0, TL_WARMUP_ELEMENT = 1, TL_WARMUP_BOTH
 enum TlCmdType {
     TL_CMD_NONE = 0,
     TL_CMD_ADMIN,           /* phone[16]              — set admin phone         */
-    TL_CMD_PHONE,           /* phoneNum (1-5), phone[16] — set trusted phone   */
+    TL_CMD_PHONE,           /* phoneNum (1-4), phone[16] — set trusted phone   */
     TL_CMD_WARMUP,          /* warmupMode             — warmup burner/element/both */
     TL_CMD_FAULTREPORT,     /* boolVal                — enable fault SMS        */
     TL_CMD_SETPIN,          /* pin[5]                 — change PIN code         */
@@ -28,15 +27,15 @@ enum TlCmdType {
     TL_CMD_BURNER,          /* boolVal                — diesel burner on/off    */
     TL_CMD_ELEMENT,         /* boolVal                — electric element on/off */
     TL_CMD_FLOOR_TOGGLE,    /* boolVal                — floor heat on/off       */
-    TL_CMD_FLOOR_SETPOINT,  /* intVal  2..32 °C       — floor target temp       */
+    TL_CMD_FLOOR_SETPOINT,  /* intVal  2..32 °C (already converted from °F)    — floor target temp */
     TL_CMD_ENGINE_TOGGLE,   /* boolVal                — engine preheat on/off   */
-    TL_CMD_ENGINE_SETPOINT, /* intVal  0..80 °C       — engine target temp      */
+    TL_CMD_ENGINE_SETPOINT, /* intVal  1..80 °C (already converted from °F)    — engine target temp */
     TL_CMD_SYSTIMER,        /* intVal  1..100 h       — system time limit       */
     TL_CMD_ZONE_STATE,      /* zone.num, zone.state   — off/heat/vent           */
     TL_CMD_ZONE_FAN_MODE,   /* zone.num, zone.fanMode — auto/manual             */
     TL_CMD_ZONE_FAN_PERCENT,/* zone.num, zone.percent — 10..100 %               */
-    TL_CMD_ZONE_DAY_SP,     /* zone.num, zone.setpoint 10..32 °C               */
-    TL_CMD_ZONE_NIGHT_SP,   /* zone.num, zone.setpoint 10..32 °C               */
+    TL_CMD_ZONE_DAY_SP,     /* zone.num, zone.setpoint 10..32 °C (already converted from °F) */
+    TL_CMD_ZONE_NIGHT_SP,   /* zone.num, zone.setpoint 10..32 °C (already converted from °F) */
     TL_CMD_STATUS,          /* no params              — request status reply    */
     TL_CMD_PING,            /* no params              — modem info reply        */
     TL_CMD_RESET,           /* no params              — reboot modem            */
@@ -47,7 +46,7 @@ enum TlCmdType {
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/
 struct TlZonePayload {
-    uint8_t     num;       /* Zone number: 1..5, or TL_ZONE_ALL for 'zx' */
+    uint8_t     num;       /* Zone number: 1..5 */
     TlZoneState state;     /* ZONE_STATE                                  */
     TlFanMode   fanMode;   /* ZONE_FAN_MODE                               */
     uint8_t     percent;   /* ZONE_FAN_PERCENT (10..100)                  */
@@ -61,7 +60,7 @@ struct TlSmsCmd {
     int8_t       intVal;   /* FLOOR_SETPOINT, ENGINE_SETPOINT, SYSTIMER                 */
     TlTempUnit   unit;       /* UNIT                                                     */
     TlWarmupMode warmupMode; /* WARMUP                                                   */
-    uint8_t      phoneNum;   /* PHONE — index 1..5                                       */
+    uint8_t      phoneNum;   /* PHONE — index 1..4                                       */
     char         phone[16];  /* ADMIN, PHONE                                             */
     char         pin[5];     /* SETPIN                                                   */
     TlZonePayload zone;    /* ZONE_* commands                                            */
@@ -83,7 +82,7 @@ struct TlSmsParseResult {
  * Authentication rules:
  *   - Admin phone  (adminPhone): commands without PIN prefix.
  *   - Any other number: message must start with 4-digit PIN and a space,
- *     e.g. "1234 burner on,zx heat".
+ *     e.g. "1234 burner on,z1 heat".
  *   - If adminPhone is NULL or empty the device has no admin set yet;
  *     in that case any sender may use PIN-based auth.
  *
@@ -94,14 +93,18 @@ struct TlSmsParseResult {
  * @param message      Raw SMS body text
  * @param pin          4-digit PIN stored on device, e.g. "1234"
  * @param adminPhone   Admin phone stored on device, NULL / "" if not configured
+ * @param tempUnit     Device's current temperature unit (see "unit" command) — used to
+ *                     validate/interpret setpoint arguments (floor/engine/z#day/z#night).
+ *                     Setpoints are converted to °C here; callers always get °C back.
  * @param result       Output filled by this function
  */
-/* trustedPhones: array of 5 phone strings (phones[1..5]), may be NULL or empty strings */
+/* trustedPhones: array of 4 phone strings (phones[1..4]), may be NULL or empty strings */
 void tl_sms_parse(const char*       senderPhone,
                   const char*       message,
                   const char*       pin,
                   const char*       adminPhone,
                   const char        trustedPhones[][16],
+                  TlTempUnit        tempUnit,
                   TlSmsParseResult& result);
 
 #endif /* TIMBERLINE_SMS_H */

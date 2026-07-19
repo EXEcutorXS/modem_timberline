@@ -57,10 +57,35 @@ void StringTransfer::beginSend(const char* string, uint16_t stringId, uint8_t to
 
 void StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress)
 {
-    beginSend(string, stringId, toType, toAddress);
+    if (!tx.active)
+    {
+        beginSend(string, stringId, toType, toAddress);
+        return;
+    }
+
+    if (pendingCount >= MAX_PENDING)
+        return; /* queue full — drop, caller can retry later */
+
+    PendingSend& p = pending[pendingCount++];
+    p.id = stringId;
+    uint16_t len = (uint16_t)strlen(string);
+    if (len > sizeof(p.data)-1)
+        len = (uint16_t)(sizeof(p.data)-1);
+    memcpy(p.data, string, len);
+    p.data[len] = 0;
+    p.toType    = toType;
+    p.toAddress = toAddress;
 }
 
-void StringTransfer::requestString(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
+void StringTransfer::sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
+{
+    can.SendMessage(buildId(61, fromType, fromAddress),
+        2, 0xFF,
+        (uint8_t)stringId, (uint8_t)(stringId>>8),
+        0xFF, 0xFF, 0xFF, 0xFF);
+}
+
+void StringTransfer::beginRequest(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
 {
     rx.id           = stringId;
     rx.active       = true;
@@ -69,11 +94,44 @@ void StringTransfer::requestString(uint16_t stringId, uint8_t fromType, uint8_t 
     rx.fromType     = fromType;
     rx.fromAddress  = fromAddress;
     rx.requestTick  = core.getTick();
+    rx.retries      = 0;
 
-    can.SendMessage(buildId(61, fromType, fromAddress),
-        2, 0xFF,
-        (uint8_t)stringId, (uint8_t)(stringId>>8),
-        0xFF, 0xFF, 0xFF, 0xFF);
+    sendRequestFrame(stringId, fromType, fromAddress);
+}
+
+void StringTransfer::advanceRxQueue(void)
+{
+    if (pendingRxCount == 0)
+        return;
+
+    beginRequest(pendingRx[0].id, pendingRx[0].fromType, pendingRx[0].fromAddress);
+    for (uint8_t i = 1; i < pendingRxCount; i++)
+        pendingRx[i-1] = pendingRx[i];
+    pendingRxCount--;
+}
+
+void StringTransfer::requestString(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
+{
+    if (!rx.active)
+    {
+        beginRequest(stringId, fromType, fromAddress);
+        return;
+    }
+
+    if (rx.id == stringId)
+        return; /* already being fetched */
+
+    for (uint8_t i = 0; i < pendingRxCount; i++)
+        if (pendingRx[i].id == stringId)
+            return; /* already queued */
+
+    if (pendingRxCount >= MAX_PENDING_RX)
+        return; /* queue full — drop, caller can retry later (e.g. re-visit the screen) */
+
+    PendingRequest& p = pendingRx[pendingRxCount++];
+    p.id          = stringId;
+    p.fromType    = fromType;
+    p.fromAddress = fromAddress;
 }
 
 void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_t* D)
@@ -88,10 +146,24 @@ void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_
         return;
     }
 
-    if (D[0] == 1) /* someone is about to push us a string we asked for */
+    if (D[0] == 1) /* someone is (about to) push us a string — requested or not */
     {
-        if (!rx.active || id != rx.id)
-            return;
+        if (rx.active)
+        {
+            if (id != rx.id)
+                return; /* mid-receive of something else — sender is serialized, so this is rare */
+        }
+        else
+        {
+            /* Not something we're waiting on — accept it anyway if we own a
+               buffer for this id (unsolicited push, e.g. an on-arrival/periodic
+               update), so state doesn't go stale until the next explicit pull. */
+            if (!findEntry(id))
+                return;
+            rx.id     = id;
+            rx.active = true;
+            rx.retries = 0;
+        }
 
         rx.length = (uint16_t)D[4] | ((uint16_t)D[5]<<8);
         if (rx.length > MAX_LEN-1)
@@ -102,6 +174,17 @@ void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_
         rx.fromType     = fromType;
         rx.fromAddress  = fromAddress;
         rx.requestTick  = core.getTick();
+
+        if (rx.packetsTotal == 0)
+        {
+            /* Empty string — no data packets will ever follow, so there's
+               nothing for onPgn62 to complete on. Finish right here. */
+            RegEntry* e = findEntry(id);
+            if (e && e->buffer && e->size > 0)
+                e->buffer[0] = 0;
+            rx.active = false;
+            advanceRxQueue();
+        }
     }
 }
 
@@ -135,6 +218,7 @@ void StringTransfer::onPgn62(const uint8_t* D)
         if (e && e->buffer && rx.length < e->size)
             e->buffer[rx.length] = 0;
         rx.active = false;
+        advanceRxQueue();
     }
 }
 
@@ -162,6 +246,14 @@ void StringTransfer::handler(void)
             if (tx.packetNum >= tx.packetsTotal)
             {
                 tx.active = false;
+
+                if (pendingCount > 0)
+                {
+                    beginSend(pending[0].data, pending[0].id, pending[0].toType, pending[0].toAddress);
+                    for (uint8_t i = 1; i < pendingCount; i++)
+                        pending[i-1] = pending[i];
+                    pendingCount--;
+                }
             }
             else
             {
@@ -183,10 +275,28 @@ void StringTransfer::handler(void)
         }
     }
 
-    if (rx.active && rx.packetsTotal > 0)
+    if (rx.active)
     {
-        uint32_t timeout = (uint32_t)(rx.packetsTotal*5*2);
+        /* No timeout defined yet (still waiting for the "announce") — poll every
+           200ms; once packetsTotal is known, wait out the expected transfer time. */
+        uint32_t timeout = rx.packetsTotal > 0 ? (uint32_t)(rx.packetsTotal*5*2) : 200;
         if ((core.getTick() - rx.requestTick) > timeout)
-            requestString(rx.id, rx.fromType, rx.fromAddress);
+        {
+            if (rx.retries < 5)
+            {
+                rx.retries++;
+                rx.requestTick  = core.getTick();
+                rx.packetsTotal = 0;
+                rx.receivedMask = 0;
+                sendRequestFrame(rx.id, rx.fromType, rx.fromAddress);
+            }
+            else
+            {
+                /* Nobody answered after several tries — give up on this id so a
+                   stuck request can't block everything queued behind it forever. */
+                rx.active = false;
+                advanceRxQueue();
+            }
+        }
     }
 }

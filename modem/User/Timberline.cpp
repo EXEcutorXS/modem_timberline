@@ -2,17 +2,22 @@
 #include "Modem.h"
 #include "StringTransfer.h"
 #include "timberline_sms.h"
+#include "button.h"
 #include "flash.h"
 #include "log.h"
 #include <string.h>
 #include <stdio.h>
 
-/* Convert temperature to °C if user works in °F */
-static int8_t toC(int8_t val) {
-    if (modem.tempUnit == TL_UNIT_F)
-        return (int8_t)(((int16_t)val - 32) * 5 / 9);
-    return val;
+/* Convert °C to display unit — setpoints are stored internally in °C
+   (the SMS parser converts on the way in; see toCelsius() there). */
+static int16_t dispTemp(int8_t c) {
+    if (modem.tempUnit == 1 /* TL_UNIT_F */)
+        return (int16_t)c * 9 / 5 + 32;
+    return c;
 }
+
+static const char* UNIT_STR(void) { return modem.tempUnit == 1 ? "\xb0""F" : "\xb0""C"; }
+
 #include "Heaters.h"
 #include "unix_time.h"
 
@@ -374,10 +379,41 @@ void sendToHcu(uint16_t pgn,uint8_t* D)
     can.SendMessage(pgn<<20 | timberline.hcuType<<13 | timberline.hcuAddress<<10 | can.idType | can.idAddress,D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
 }
 
+/* Physical button: short press cycles burner -> element -> both -> burner...
+   and turns all zones on to heat; long press turns everything off. */
+static uint8_t buttonCycleState = 0;   /* 0=burner, 1=element, 2=both */
+
+static void onButtonShortPress(void)
+{
+    buttonCycleState = (uint8_t)((buttonCycleState + 1) % 3);
+    bool burnerOn  = (buttonCycleState == 0) || (buttonCycleState == 2);
+    bool elementOn = (buttonCycleState == 1) || (buttonCycleState == 2);
+
+    uint8_t D[8] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+    D[0] = (uint8_t)(TL_ZONE_HEAT | (TL_ZONE_HEAT<<2) | (TL_ZONE_HEAT<<4) | (TL_ZONE_HEAT<<6));
+    D[1] = (uint8_t)(0xFC | TL_ZONE_HEAT);
+    D[7] = (uint8_t)(0xF0 | (burnerOn ? 1 : 0) | ((elementOn ? 1 : 0) << 2));
+    sendToHcu(22, D);
+}
+
+static void onButtonLongPress(void)
+{
+    uint8_t Doff[8] = {0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+    sendToHcu(22, Doff);
+    buttonCycleState = 0;   /* next short press starts fresh at "burner" */
+}
+
 
 /* Send reply only if device-command confirmations are enabled */
 static void ack(const char* phone, const char* msg) {
     if (modem.cmdAck) modem.sendSms(phone, msg);
+}
+
+/* zoneConnected: 0=not connected, 1=connected, 2=defrost (always on, not user-controllable). */
+static bool zoneControllable(uint8_t zoneNum) {
+    if (zoneNum < 1 || zoneNum > ZONE_COUNT) return true;
+    int8_t c = timberline.zoneConnected[zoneNum - 1];
+    return c != 0 && c != 2;
 }
 
 static const char HELP_SMS[] =
@@ -396,9 +432,14 @@ static const char HELP_SMS[] =
     
 
 static void onSmsReceived(const char* phone, const char* text) {
+    /* Push the last-received SMS to the bus as soon as it arrives, regardless
+       of auth outcome — useful for diagnosing rejected/garbled commands too. */
+    stringTransfer.sendString(text,  STRID_LAST_REC_SMS_TEXT, can.idType, can.idAddress);
+    stringTransfer.sendString(phone, STRID_LAST_REC_SMS_NUM,  can.idType, can.idAddress);
+
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     TlSmsParseResult result;
-    tl_sms_parse(phone, text, modem.pin, modem.phones[0], &modem.phones[1], result);
+    tl_sms_parse(phone, text, modem.pin, modem.phones[0], &modem.phones[1], (TlTempUnit)modem.tempUnit, result);
 
     if (!result.authenticated) {
         log_info("SMS: auth failed\r\n");
@@ -433,6 +474,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             const char* p = cmd.phone[0] ? cmd.phone : phone;
             strncpy(modem.phones[0], p, 15);
             modem.phones[0][15] = '\0';
+            flash.writeSetup();
             modem.sendSms(phone, "Admin set");
             break;
         }
@@ -442,12 +484,14 @@ static void onSmsReceived(const char* phone, const char* text) {
                 const char* p = cmd.phone[0] ? cmd.phone : phone;
                 strncpy(modem.phones[cmd.phoneNum], p, 15);
                 modem.phones[cmd.phoneNum][15] = '\0';
+                flash.writeSetup();
                 modem.sendSms(phone, "Phone updated.");
             }
             break;
 
         case TL_CMD_SETPIN:
             memcpy(modem.pin, cmd.pin, 5);
+            flash.writeSetup();
             modem.sendSms(phone, "PIN updated.");
             break;
 
@@ -477,12 +521,11 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_FLOOR_SETPOINT: {
-            int8_t sp = toC(cmd.intVal);
             D[0] = 3;
-            D[1] = (uint8_t)(sp + 75);
+            D[1] = (uint8_t)(cmd.intVal + 75);
             sendToHcu(19, D);
             static char rsp[24];
-            sprintf(rsp, "Floor: %d\xb0%c", sp, modem.tempUnit ? 'F' : 'C');
+            sprintf(rsp, "Floor: %d%s", dispTemp(cmd.intVal), UNIT_STR());
             ack(phone, rsp);
             break;
         }
@@ -494,17 +537,17 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_ENGINE_SETPOINT: {
-            int8_t sp = toC(cmd.intVal);
             D[0] = 3;
-            D[3] = (uint8_t)(sp + 75);
+            D[3] = (uint8_t)(cmd.intVal + 75);
             sendToHcu(19, D);
             static char rsp[24];
-            sprintf(rsp, "Engine: %d\xb0%c", sp, modem.tempUnit ? 'F' : 'C');
+            sprintf(rsp, "Engine: %d%s", dispTemp(cmd.intVal), UNIT_STR());
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_STATE: {
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
             static const char* zstate[] = {"off","heat","vent"};
             switch (cmd.zone.num) {          /* 1-based: z1..z5 */
             case 1: D[0] = 0xFC | cmd.zone.state; break;
@@ -522,6 +565,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_ZONE_FAN_MODE: {
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
             switch (cmd.zone.num) {          /* 1-based */
             case 1: D[5] = 0xFC | cmd.zone.fanMode; break;
             case 2: D[5] = 0xF3 | (cmd.zone.fanMode << 2); break;
@@ -538,6 +582,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_ZONE_FAN_PERCENT: {
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
             D[cmd.zone.num - 1] = cmd.zone.percent;   /* 0-based array index */
             sendToHcu(27, D);
             static char rsp[20];
@@ -547,21 +592,21 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_ZONE_DAY_SP: {
-            int8_t sp = toC(cmd.zone.setpoint);
-            D[cmd.zone.num - 1] = (uint8_t)(sp + 75);  /* 0-based array index */
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
+            D[cmd.zone.num - 1] = (uint8_t)(cmd.zone.setpoint + 75);  /* 0-based array index */
             sendToHcu(25, D);
             static char rsp[24];
-            sprintf(rsp, "Z%d day: %d\xb0%c", cmd.zone.num, sp, modem.tempUnit ? 'F' : 'C');
+            sprintf(rsp, "Z%d day: %d%s", cmd.zone.num, dispTemp(cmd.zone.setpoint), UNIT_STR());
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_NIGHT_SP: {
-            int8_t sp = toC(cmd.zone.setpoint);
-            D[cmd.zone.num - 1] = (uint8_t)(sp + 75);  /* 0-based array index */
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
+            D[cmd.zone.num - 1] = (uint8_t)(cmd.zone.setpoint + 75);  /* 0-based array index */
             sendToHcu(25, D);
             static char rsp[24];
-            sprintf(rsp, "Z%d night: %d\xb0%c", cmd.zone.num, sp, modem.tempUnit ? 'F' : 'C');
+            sprintf(rsp, "Z%d night: %d%s", cmd.zone.num, dispTemp(cmd.zone.setpoint), UNIT_STR());
             ack(phone, rsp);
             break;
         }
@@ -620,7 +665,21 @@ static void onSmsReceived(const char* phone, const char* text) {
 
 void Timberline::init(void) {
     modem.onSmsReceived = onSmsReceived;
-    stringTransfer.registerString(STRID_IMEI, modem.imei, sizeof(modem.imei));
+    button.onShortPress = onButtonShortPress;
+    button.onLongPress  = onButtonLongPress;
+    stringTransfer.registerString(STRID_IMEI,           modem.imei,          sizeof(modem.imei));
+    stringTransfer.registerString(STRID_PIN,             modem.pin,           sizeof(modem.pin));
+    stringTransfer.registerString(STRID_ADMIN_PHONE,     modem.phones[0],     sizeof(modem.phones[0]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE1,  modem.phones[1],     sizeof(modem.phones[1]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE2,  modem.phones[2],     sizeof(modem.phones[2]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE3,  modem.phones[3],     sizeof(modem.phones[3]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE4,  modem.phones[4],     sizeof(modem.phones[4]));
+    stringTransfer.registerString(STRID_LAST_REC_SMS_TEXT,  modem.cmgrBody,   sizeof(modem.cmgrBody));
+    stringTransfer.registerString(STRID_LAST_REC_SMS_NUM,   modem.cmgrPhone,  sizeof(modem.cmgrPhone));
+    stringTransfer.registerString(STRID_LAST_SENT_SMS_TEXT, modem.smsText,    sizeof(modem.smsText));
+    stringTransfer.registerString(STRID_LAST_SENT_SMS_NUM,  modem.smsPhone,   sizeof(modem.smsPhone));
+    stringTransfer.registerString(STRID_OPERATOR_NAME,   modem.operatorName,  sizeof(modem.operatorName));
+    stringTransfer.registerString(STRID_OPERATOR_CODE,   modem.operatorCode,  sizeof(modem.operatorCode));
 }
 
 /* ── sendStatus ──────────────────────────────────────────────────────── */
@@ -639,15 +698,6 @@ static uint8_t apInt(char* buf, uint8_t n, int16_t v) {
     if (n < 139) buf[n++] = '0' + v%10;
     return n;
 }
-
-/* Convert °C to display unit */
-static int16_t dispTemp(int8_t c) {
-    if (modem.tempUnit == 1 /* TL_UNIT_F */)
-        return (int16_t)c * 9 / 5 + 32;
-    return c;
-}
-
-static const char* UNIT_STR(void) { return modem.tempUnit == 1 ? "\xb0""F" : "\xb0""C"; }
 
 static const char* stageStr(heaterStateIcon_t s) {
     switch (s) {

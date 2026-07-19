@@ -102,11 +102,10 @@ static void split_cmd_arg(char* seg, char** cmd, char** arg)
     }
 }
 
-/** Parse zone character: '1'..'5' → 1..5, 'x' → TL_ZONE_ALL. */
+/** Parse zone character: '1'..'5' → 1..5. */
 static bool parse_zone_char(char c, uint8_t& znum)
 {
     if (c >= '1' && c <= '5') { znum = (uint8_t)(c - '0'); return true; }
-    if (c == 'x')             { znum = TL_ZONE_ALL;         return true; }
     return false;
 }
 
@@ -129,11 +128,18 @@ static void add_cmd(TlSmsParseResult& res, const TlSmsCmd& cmd)
         add_error(res, "too many commands");
 }
 
+/** Convert a setpoint argument to °C if the device is currently in °F. */
+static int toCelsius(int val, TlTempUnit unit)
+{
+    if (unit == TL_UNIT_F) return (val - 32) * 5 / 9;
+    return val;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Single command parser
    Receives lowercase, trimmed cmd token and arg string.
    ═══════════════════════════════════════════════════════════════════════════*/
-static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
+static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResult& res)
 {
     TlSmsCmd c;
     memset(&c, 0, sizeof(c));
@@ -150,9 +156,9 @@ static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
     if (!strcmp(cmd, "reset"))   { c.type = TL_CMD_RESET;   add_cmd(res, c); return; }
     if (!strcmp(cmd, "factory")) { c.type = TL_CMD_FACTORY; add_cmd(res, c); return; }
 
-    /* ── phone# <phone>  (phone1..phone5 — trusted phones) ────────────── */
+    /* ── phone# <phone>  (phone1..phone4 — trusted phones) ────────────── */
     if (cmd[0] == 'p' && cmd[1] == 'h' && cmd[2] == 'o' && cmd[3] == 'n' &&
-        cmd[4] == 'e' && cmd[5] >= '1' && cmd[5] <= '5' && cmd[6] == '\0') {
+        cmd[4] == 'e' && cmd[5] >= '1' && cmd[5] <= '4' && cmd[6] == '\0') {
         c.type     = TL_CMD_PHONE;
         c.phoneNum = (uint8_t)(cmd[5] - '0');
         strncpy(c.phone, arg, 15);  /* empty = use sender's number */
@@ -235,28 +241,32 @@ static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
         return;
     }
 
-    /* ── floor on/off  |  floor 2..32 ──────────────────────────────────── */
+    /* ── floor on/off  |  floor 2..32 C / 36..90 F ───────────────────────── */
     if (!strcmp(cmd, "floor")) {
+        int lo = (tempUnit == TL_UNIT_F) ? 36 : 2;
+        int hi = (tempUnit == TL_UNIT_F) ? 90 : 32;
         if (parse_bool(arg, bval)) {
             c.type = TL_CMD_FLOOR_TOGGLE; c.boolVal = bval; add_cmd(res, c);
-        } else if (parse_uint(arg, ival) && ival >= 2 && ival <= 32) {
-            c.type = TL_CMD_FLOOR_SETPOINT; c.intVal = (int8_t)ival; add_cmd(res, c);
+        } else if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
+            c.type = TL_CMD_FLOOR_SETPOINT; c.intVal = (int8_t)toCelsius(ival, tempUnit); add_cmd(res, c);
         } else {
-            add_error(res, "floor: on/off or 2-32");
+            add_error(res, (tempUnit == TL_UNIT_F) ? "floor: on/off or 36-90" : "floor: on/off or 2-32");
         }
         return;
     }
 
-    /* ── engine on/off  |  engine 0..80 ────────────────────────────────── */
+    /* ── engine on/off  |  engine 1..80 C / 32..176 F ────────────────────── */
     /* Note: "engine 0" is interpreted as off (bool check first);
-             setpoint range starts from 1 to avoid ambiguity.             */
+             setpoint range starts above 0 to avoid ambiguity.             */
     if (!strcmp(cmd, "engine")) {
+        int lo = (tempUnit == TL_UNIT_F) ? 32 : 1;
+        int hi = (tempUnit == TL_UNIT_F) ? 176 : 80;
         if (parse_bool(arg, bval)) {
             c.type = TL_CMD_ENGINE_TOGGLE; c.boolVal = bval; add_cmd(res, c);
-        } else if (parse_uint(arg, ival) && ival >= 1 && ival <= 80) {
-            c.type = TL_CMD_ENGINE_SETPOINT; c.intVal = (int8_t)ival; add_cmd(res, c);
+        } else if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
+            c.type = TL_CMD_ENGINE_SETPOINT; c.intVal = (int8_t)toCelsius(ival, tempUnit); add_cmd(res, c);
         } else {
-            add_error(res, "engine: on/off or 1-80");
+            add_error(res, (tempUnit == TL_UNIT_F) ? "engine: on/off or 32-176" : "engine: on/off or 1-80");
         }
         return;
     }
@@ -276,33 +286,37 @@ static void parse_one(char* cmd, char* arg, TlSmsParseResult& res)
         uint8_t znum;
         int     cmdlen = (int)strlen(cmd);
 
-        /* z#day <10..32>   cmd = "z1day" (len 5) or "zxday" (len 5) */
+        /* z#day <10..32 C / 50..90 F>   cmd = "z1day" (len 5) */
         if (cmdlen == 5 && !strcmp(cmd + 2, "day") && parse_zone_char(cmd[1], znum)) {
-            if (parse_uint(arg, ival) && ival >= 10 && ival <= 32) {
+            int lo = (tempUnit == TL_UNIT_F) ? 50 : 10;
+            int hi = (tempUnit == TL_UNIT_F) ? 90 : 32;
+            if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
                 c.type = TL_CMD_ZONE_DAY_SP;
                 c.zone.num = znum;
-                c.zone.setpoint = (int8_t)ival;
+                c.zone.setpoint = (int8_t)toCelsius(ival, tempUnit);
                 add_cmd(res, c);
             } else {
-                add_error(res, "z#day: 10-32");
+                add_error(res, (tempUnit == TL_UNIT_F) ? "z#day: 50-90" : "z#day: 10-32");
             }
             return;
         }
 
-        /* z#night <10..32>  cmd = "z1night" (len 7) or "zxnight" (len 7) */
+        /* z#night <10..32 C / 50..90 F>  cmd = "z1night" (len 7) */
         if (cmdlen == 7 && !strcmp(cmd + 2, "night") && parse_zone_char(cmd[1], znum)) {
-            if (parse_uint(arg, ival) && ival >= 10 && ival <= 32) {
+            int lo = (tempUnit == TL_UNIT_F) ? 50 : 10;
+            int hi = (tempUnit == TL_UNIT_F) ? 90 : 32;
+            if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
                 c.type = TL_CMD_ZONE_NIGHT_SP;
                 c.zone.num = znum;
-                c.zone.setpoint = (int8_t)ival;
+                c.zone.setpoint = (int8_t)toCelsius(ival, tempUnit);
                 add_cmd(res, c);
             } else {
-                add_error(res, "z#night: 10-32");
+                add_error(res, (tempUnit == TL_UNIT_F) ? "z#night: 50-90" : "z#night: 10-32");
             }
             return;
         }
 
-        /* z# <arg>  cmd = "z1".."z5" or "zx"  (len 2) */
+        /* z# <arg>  cmd = "z1".."z5"  (len 2) */
         if (cmdlen == 2 && parse_zone_char(cmd[1], znum)) {
             c.zone.num = znum;
 
@@ -343,6 +357,7 @@ void tl_sms_parse(const char*       senderPhone,
                   const char*       pin,
                   const char*       adminPhone,
                   const char        trustedPhones[][16],
+                  TlTempUnit        tempUnit,
                   TlSmsParseResult& result)
 {
     memset(&result, 0, sizeof(result));
@@ -354,10 +369,10 @@ void tl_sms_parse(const char*       senderPhone,
                     senderPhone && senderPhone[0] &&
                     phones_match(senderPhone, adminPhone));
 
-    /* Check trusted phones (phones[1..5]) — authenticated but not admin */
+    /* Check trusted phones (phones[1..4]) — authenticated but not admin */
     bool isTrusted = false;
     if (!isAdmin && trustedPhones && senderPhone && senderPhone[0]) {
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 4; i++) {
             if (trustedPhones[i][0] && phones_match(senderPhone, trustedPhones[i])) {
                 isTrusted = true;
                 break;
@@ -403,6 +418,6 @@ void tl_sms_parse(const char*       senderPhone,
         char* arg;
         split_cmd_arg(segs[i], &cmd, &arg);
 
-        parse_one(cmd, arg, result);
+        parse_one(cmd, arg, tempUnit, result);
     }
 }

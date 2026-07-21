@@ -35,6 +35,9 @@ public:
     uint8_t    tempUnit;       /* 0 = °C, 1 = °F — persisted in flash        */
     bool       faultReport;    /* send SMS on fault — persisted in flash      */
     bool       cmdAck;         /* send confirmation on device commands        */
+    uint8_t    language;       /* 0 = English, 1 = German — persisted in flash;
+                                   used to reply when the SMS itself carries no
+                                   language cue (parse errors, bare "?")       */
 
     /* Called on every received SMS (phone and text are temporary buffers) */
     void (*onSmsReceived)(const char* phone, const char* text);

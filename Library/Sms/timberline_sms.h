@@ -15,6 +15,7 @@ enum TlZoneState { TL_ZONE_OFF = 0, TL_ZONE_HEAT = 1, TL_ZONE_VENT = 2 };
 enum TlFanMode   { TL_FAN_AUTO = 0, TL_FAN_MANUAL = 1 };
 enum TlTempUnit    { TL_UNIT_C = 0,       TL_UNIT_F = 1 };
 enum TlWarmupMode  { TL_WARMUP_BURNER = 0, TL_WARMUP_ELEMENT = 1, TL_WARMUP_BOTH = 2 };
+enum TlLang        { TL_LANG_EN = 0,       TL_LANG_DE = 1 }; /* reply language, detected from cmd keywords */
 
 enum TlCmdType {
     TL_CMD_NONE = 0,
@@ -42,6 +43,7 @@ enum TlCmdType {
     TL_CMD_FACTORY,         /* no params              — reset modem settings    */
     TL_CMD_OFF,             /* no params              — turn everything off      */
     TL_CMD_ACK,             /* boolVal                — enable/disable device command confirmations */
+    TL_CMD_LANG,            /* langArg (TlLang)       — set default reply language (en/de)     */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/
@@ -64,6 +66,7 @@ struct TlSmsCmd {
     char         phone[16];  /* ADMIN, PHONE                                             */
     char         pin[5];     /* SETPIN                                                   */
     TlZonePayload zone;    /* ZONE_* commands                                            */
+    TlLang       langArg;    /* LANG — requested default reply language                  */
 };
 
 /* ── Parse result ───────────────────────────────────────────────────────────*/
@@ -74,6 +77,7 @@ struct TlSmsParseResult {
     TlSmsCmd cmds[TL_SMS_MAX_COMMANDS];
     uint8_t  errCount;
     char     errors[TL_SMS_MAX_ERRORS][TL_SMS_ERR_LEN]; /* human-readable parse errors      */
+    TlLang   lang;               /* reply language, set to TL_LANG_DE if a German keyword was recognised */
 };
 
 /**

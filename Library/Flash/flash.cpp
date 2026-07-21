@@ -31,6 +31,7 @@ void Flash_C::writeSetup(void)
     array[a++] = (uint8_t)modem.tempUnit;
     array[a++] = modem.faultReport ? 1 : 0;
     array[a++] = modem.cmdAck      ? 1 : 0;
+    array[a++] = modem.language;
 
     x = 0;
     for (a = 0; a < 511; a++) x += array[a];
@@ -69,15 +70,20 @@ void Flash_C::readSetup(void)
         modem.tempUnit   = array[a++];
         modem.faultReport = (array[a++] == 1);
         modem.cmdAck      = (array[a++] == 1);
+        modem.language     = array[a++];
+        bool needRewrite = false;
         if (strlen(modem.pin) != 4) {
             modem.pin[0]='1'; modem.pin[1]='2'; modem.pin[2]='3'; modem.pin[3]='4'; modem.pin[4]='\0';
-            writeSetup();
+            needRewrite = true;
         }
+        if (modem.language > 1) { modem.language = 0; needRewrite = true; } /* firmware update from an image with no language byte */
+        if (needRewrite) writeSetup();
     } else {
         modem.isOnlySmsMode = true;
         modem.tempUnit    = 0;
         modem.faultReport = true;
         modem.cmdAck      = true;
+        modem.language    = 0;
         core.timeZone = 3;
         modem.pin[0]='1'; modem.pin[1]='2'; modem.pin[2]='3'; modem.pin[3]='4'; modem.pin[4]='\0';
         writeSetup();

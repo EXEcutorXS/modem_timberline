@@ -20,7 +20,7 @@ class Timberline
 	public:
 	void init();
 	void ProcessCanMessage(CanRxMessage* msg);
-	void sendStatus(const char* phone);
+	void sendStatus(const char* phone, bool german = false);
 	
 	//Control
 	

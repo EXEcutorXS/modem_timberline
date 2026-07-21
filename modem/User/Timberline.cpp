@@ -429,7 +429,21 @@ static const char HELP_SMS[] =
 		"off\n"
 		"status\n"
 		"?\n";
-    
+
+static const char HELP_SMS_DE[] =
+    "Falscher Befehl\n"
+    "brenner/heizstab/fussboden/motor ein/aus\n"
+    "z1 aus\n"
+		"z1 heizen\n"
+		"z1 lueften\n"
+		"z1tag 25\n"
+		"z1 manuell\n"
+		"z1 auto\n"
+    "aufwaermen\n"
+		"aus\n"
+		"zustand\n"
+		"?\n";
+
 
 static void onSmsReceived(const char* phone, const char* text) {
     /* Push the last-received SMS to the bus as soon as it arrives, regardless
@@ -446,6 +460,12 @@ static void onSmsReceived(const char* phone, const char* text) {
         return;
     }
 
+    /* Reply in German if the SMS used any German keyword; otherwise fall back
+       to the persisted default language (see the "lang"/"sprache" command) —
+       needed for replies that carry no language cue of their own, such as a
+       parse-error help text or a bare "?" status request. */
+    bool de = (result.lang == TL_LANG_DE) || (modem.language == TL_LANG_DE);
+
     bool hasUnknown = false;
     for (uint8_t e = 0; e < result.errCount; e++) {
         log_info("SMS parse error: ");
@@ -455,7 +475,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             hasUnknown = true;
     }
     if (hasUnknown)
-        modem.sendSms(phone, HELP_SMS);
+        modem.sendSms(phone, de ? HELP_SMS_DE : HELP_SMS);
 
     for (uint8_t i = 0; i < result.cmdCount; i++) {
         const TlSmsCmd& cmd = result.cmds[i];
@@ -466,7 +486,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_RESET:
-            modem.sendSms(phone, "Resetting...");
+            modem.sendSms(phone, de ? "Neustart..." : "Resetting...");
             NVIC_SystemReset();
             break;
 
@@ -475,7 +495,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             strncpy(modem.phones[0], p, 15);
             modem.phones[0][15] = '\0';
             flash.writeSetup();
-            modem.sendSms(phone, "Admin set");
+            modem.sendSms(phone, de ? "Admin gesetzt" : "Admin set");
             break;
         }
 
@@ -485,39 +505,42 @@ static void onSmsReceived(const char* phone, const char* text) {
                 strncpy(modem.phones[cmd.phoneNum], p, 15);
                 modem.phones[cmd.phoneNum][15] = '\0';
                 flash.writeSetup();
-                modem.sendSms(phone, "Phone updated.");
+                modem.sendSms(phone, de ? "Telefon aktualisiert." : "Phone updated.");
             }
             break;
 
         case TL_CMD_SETPIN:
             memcpy(modem.pin, cmd.pin, 5);
             flash.writeSetup();
-            modem.sendSms(phone, "PIN updated.");
+            modem.sendSms(phone, de ? "PIN aktualisiert." : "PIN updated.");
             break;
 
         case TL_CMD_OFF: {
             uint8_t Doff[8] = {0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
             sendToHcu(22, Doff);
-            ack(phone, "All off");
+            ack(phone, de ? "Alles aus" : "All off");
             break;
         }
 
         case TL_CMD_BURNER:
             D[7] = 0xFC | cmd.boolVal;
             sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Burner: ON" : "Burner: OFF");
+            ack(phone, de ? (cmd.boolVal ? "Brenner: EIN" : "Brenner: AUS")
+                        : (cmd.boolVal ? "Burner: ON"   : "Burner: OFF"));
             break;
 
         case TL_CMD_ELEMENT:
             D[7] = 0xF3 | (cmd.boolVal << 2);
             sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Element: ON" : "Element: OFF");
+            ack(phone, de ? (cmd.boolVal ? "Heizstab: EIN" : "Heizstab: AUS")
+                        : (cmd.boolVal ? "Element: ON"    : "Element: OFF"));
             break;
 
         case TL_CMD_FLOOR_TOGGLE:
             D[7] = 0xCF | (cmd.boolVal << 4);
             sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Floor: ON" : "Floor: OFF");
+            ack(phone, de ? (cmd.boolVal ? "Boden: EIN" : "Boden: AUS")
+                        : (cmd.boolVal ? "Floor: ON"   : "Floor: OFF"));
             break;
 
         case TL_CMD_FLOOR_SETPOINT: {
@@ -525,7 +548,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             D[1] = (uint8_t)(cmd.intVal + 75);
             sendToHcu(19, D);
             static char rsp[24];
-            sprintf(rsp, "Floor: %d%s", dispTemp(cmd.intVal), UNIT_STR());
+            sprintf(rsp, de ? "Boden: %d%s" : "Floor: %d%s", dispTemp(cmd.intVal), UNIT_STR());
             ack(phone, rsp);
             break;
         }
@@ -533,7 +556,8 @@ static void onSmsReceived(const char* phone, const char* text) {
         case TL_CMD_ENGINE_TOGGLE:
             D[7] = 0x3F | (cmd.boolVal << 6);
             sendToHcu(22, D);
-            ack(phone, cmd.boolVal ? "Engine: ON" : "Engine: OFF");
+            ack(phone, de ? (cmd.boolVal ? "Motor: EIN" : "Motor: AUS")
+                        : (cmd.boolVal ? "Engine: ON"  : "Engine: OFF"));
             break;
 
         case TL_CMD_ENGINE_SETPOINT: {
@@ -541,14 +565,15 @@ static void onSmsReceived(const char* phone, const char* text) {
             D[3] = (uint8_t)(cmd.intVal + 75);
             sendToHcu(19, D);
             static char rsp[24];
-            sprintf(rsp, "Engine: %d%s", dispTemp(cmd.intVal), UNIT_STR());
+            sprintf(rsp, de ? "Motor: %d%s" : "Engine: %d%s", dispTemp(cmd.intVal), UNIT_STR());
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_STATE: {
-            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
-            static const char* zstate[] = {"off","heat","vent"};
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, de ? "Nicht verfuegbar" : "Not available"); break; }
+            static const char* zstate[]   = {"off","heat","vent"};
+            static const char* zstateDe[] = {"aus","heizen","lueften"};
             switch (cmd.zone.num) {          /* 1-based: z1..z5 */
             case 1: D[0] = 0xFC | cmd.zone.state; break;
             case 2: D[0] = 0xF3 | (cmd.zone.state << 2); break;
@@ -559,13 +584,13 @@ static void onSmsReceived(const char* phone, const char* text) {
             sendToHcu(22, D);
             static char rsp[16];
             sprintf(rsp, "Z%d: %s", cmd.zone.num,
-                    cmd.zone.state < 3 ? zstate[cmd.zone.state] : "?");
+                    cmd.zone.state < 3 ? (de ? zstateDe[cmd.zone.state] : zstate[cmd.zone.state]) : "?");
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_FAN_MODE: {
-            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, de ? "Nicht verfuegbar" : "Not available"); break; }
             switch (cmd.zone.num) {          /* 1-based */
             case 1: D[5] = 0xFC | cmd.zone.fanMode; break;
             case 2: D[5] = 0xF3 | (cmd.zone.fanMode << 2); break;
@@ -575,38 +600,38 @@ static void onSmsReceived(const char* phone, const char* text) {
             }
             sendToHcu(27, D);
             static char rsp[24];
-            sprintf(rsp, "Z%d fan: %s", cmd.zone.num,
-                    cmd.zone.fanMode == TL_FAN_MANUAL ? "manual" : "auto");
+            sprintf(rsp, de ? "Z%d Luefter: %s" : "Z%d fan: %s", cmd.zone.num,
+                    cmd.zone.fanMode == TL_FAN_MANUAL ? (de ? "manuell" : "manual") : "auto");
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_FAN_PERCENT: {
-            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, de ? "Nicht verfuegbar" : "Not available"); break; }
             D[cmd.zone.num - 1] = cmd.zone.percent;   /* 0-based array index */
             sendToHcu(27, D);
             static char rsp[20];
-            sprintf(rsp, "Z%d fan: %d%%", cmd.zone.num, cmd.zone.percent);
+            sprintf(rsp, de ? "Z%d Luefter: %d%%" : "Z%d fan: %d%%", cmd.zone.num, cmd.zone.percent);
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_DAY_SP: {
-            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, de ? "Nicht verfuegbar" : "Not available"); break; }
             D[cmd.zone.num - 1] = (uint8_t)(cmd.zone.setpoint + 75);  /* 0-based array index */
             sendToHcu(25, D);
             static char rsp[24];
-            sprintf(rsp, "Z%d day: %d%s", cmd.zone.num, dispTemp(cmd.zone.setpoint), UNIT_STR());
+            sprintf(rsp, de ? "Z%d Tag: %d%s" : "Z%d day: %d%s", cmd.zone.num, dispTemp(cmd.zone.setpoint), UNIT_STR());
             ack(phone, rsp);
             break;
         }
 
         case TL_CMD_ZONE_NIGHT_SP: {
-            if (!zoneControllable(cmd.zone.num)) { ack(phone, "Not available"); break; }
+            if (!zoneControllable(cmd.zone.num)) { ack(phone, de ? "Nicht verfuegbar" : "Not available"); break; }
             D[cmd.zone.num - 1] = (uint8_t)(cmd.zone.setpoint + 75);  /* 0-based array index */
             sendToHcu(25, D);
             static char rsp[24];
-            sprintf(rsp, "Z%d night: %d%s", cmd.zone.num, dispTemp(cmd.zone.setpoint), UNIT_STR());
+            sprintf(rsp, de ? "Z%d Nacht: %d%s" : "Z%d night: %d%s", cmd.zone.num, dispTemp(cmd.zone.setpoint), UNIT_STR());
             ack(phone, rsp);
             break;
         }
@@ -619,19 +644,21 @@ static void onSmsReceived(const char* phone, const char* text) {
             case TL_WARMUP_ELEMENT: D[7] = 0xF0 | 4; sendToHcu(22, D); break;
             case TL_WARMUP_BOTH:    D[7] = 0xF0 | 5; sendToHcu(22, D); break;
             }
-            ack(phone, "Warmup started");
+            ack(phone, de ? "Aufwaermen gestartet" : "Warmup started");
             break;
 
         case TL_CMD_UNIT:
             modem.tempUnit = cmd.unit;
             flash.writeSetup();
-            modem.sendSms(phone, cmd.unit == TL_UNIT_F ? "Units: F" : "Units: C");
+            modem.sendSms(phone, de ? (cmd.unit == TL_UNIT_F ? "Einheit: F" : "Einheit: C")
+                                   : (cmd.unit == TL_UNIT_F ? "Units: F"   : "Units: C"));
             break;
 
         case TL_CMD_FAULTREPORT:
             modem.faultReport = cmd.boolVal;
             flash.writeSetup();
-            modem.sendSms(phone, cmd.boolVal ? "Fault report: ON" : "Fault report: OFF");
+            modem.sendSms(phone, de ? (cmd.boolVal ? "Fehlermeldung: EIN" : "Fehlermeldung: AUS")
+                                   : (cmd.boolVal ? "Fault report: ON"   : "Fault report: OFF"));
             break;
 
         case TL_CMD_SYSTIMER: {
@@ -639,8 +666,8 @@ static void onSmsReceived(const char* phone, const char* text) {
             static char rsp[28];
             uint8_t t = cmd.intVal;
             if (t > 100 || t == 0) t = 100;
-            if (t > 96) sprintf(rsp, "System timer: unlimited");
-            else        sprintf(rsp, "System timer: %d h", t);
+            if (t > 96) sprintf(rsp, de ? "Systemzeit: unbegrenzt" : "System timer: unlimited");
+            else        sprintf(rsp, de ? "Systemzeit: %d h" : "System timer: %d h", t);
             D[0] = 3; D[6] = t;
             sendToHcu(19, D);
             ack(phone, rsp);
@@ -650,12 +677,21 @@ static void onSmsReceived(const char* phone, const char* text) {
         case TL_CMD_ACK:
             modem.cmdAck = cmd.boolVal;
             flash.writeSetup();
-            modem.sendSms(phone, cmd.boolVal ? "Ack: ON" : "Ack: OFF");
+            modem.sendSms(phone, de ? (cmd.boolVal ? "Bestaetigung: EIN" : "Bestaetigung: AUS")
+                                   : (cmd.boolVal ? "Ack: ON"       : "Ack: OFF"));
             break;
 
         case TL_CMD_STATUS:
-            timberline.sendStatus(phone);
+            timberline.sendStatus(phone, de);
             break;
+
+        case TL_CMD_LANG: {
+            modem.language = cmd.langArg;
+            flash.writeSetup();
+            bool langDe = (cmd.langArg == TL_LANG_DE);
+            modem.sendSms(phone, langDe ? "Sprache: Deutsch" : "Language: English");
+            break;
+        }
 
         default:
             break;
@@ -699,38 +735,39 @@ static uint8_t apInt(char* buf, uint8_t n, int16_t v) {
     return n;
 }
 
-static const char* stageStr(heaterStateIcon_t s) {
+static const char* stageStr(heaterStateIcon_t s, bool de) {
     switch (s) {
-        case ignition:    return "IGN";
-        case heating:     return "heat";
-        case workOnPower: return "work";
-        case blowing:     return "blow";
+        case ignition:    return de ? "zuend" : "IGN";
+        case heating:     return de ? "heiz"  : "heat";
+        case workOnPower: return de ? "betr"  : "work";
+        case blowing:     return de ? "blas"  : "blow";
         default:          return "idle";
     }
 }
 
-void Timberline::sendStatus(const char* phone) {
+void Timberline::sendStatus(const char* phone, bool german) {
     static char msg[141];
     uint8_t n = 0;
     const char* u = UNIT_STR();
+    bool de = german;
 
     /* ── Burner ── */
-    n = apStr(msg, n, "Burn:");
+    n = apStr(msg, n, de ? "Brenner:" : "Burn:");
     if (HeaterButton) {
-        n = apStr(msg, n, "on-");
-        n = apStr(msg, n, stageStr(heaterStateIcon));
+        n = apStr(msg, n, de ? "ein-" : "on-");
+        n = apStr(msg, n, stageStr(heaterStateIcon, de));
         n = apStr(msg, n, "-");
         n = apInt(msg, n, dispTemp((int8_t)heaters.Instances[mainHeaterNum].Tliquid));
         n = apStr(msg, n, u);
     } else {
-        n = apStr(msg, n, "off");
+        n = apStr(msg, n, de ? "aus" : "off");
     }
     msg[n++] = '\n';
 
     /* ── Element (skip if disabled) ── */
     if (!elementDisabled) {
-        n = apStr(msg, n, "Elm:");
-        n = apStr(msg, n, elementState ? "on" : "off");
+        n = apStr(msg, n, de ? "Heizst:" : "Elm:");
+        n = apStr(msg, n, elementState ? (de ? "ein" : "on") : (de ? "aus" : "off"));
         msg[n++] = '\n';
     }
 
@@ -741,9 +778,9 @@ void Timberline::sendStatus(const char* phone) {
         msg[n++] = '1' + i;
         msg[n++] = ' ';
         switch (zoneStates[i]) {
-            case heat: n = apStr(msg, n, "heat"); break;
-            case vent: n = apStr(msg, n, "vent"); break;
-            default:   n = apStr(msg, n, "off");  break;
+            case heat: n = apStr(msg, n, de ? "heiz"  : "heat"); break;
+            case vent: n = apStr(msg, n, de ? "lueft" : "vent"); break;
+            default:   n = apStr(msg, n, de ? "aus"   : "off");  break;
         }
         msg[n++] = ' ';
         n = apInt(msg, n, dispTemp(zoneCurrentTemp[i]));
@@ -759,7 +796,7 @@ void Timberline::sendStatus(const char* phone) {
     n = apInt(msg, n, dispTemp(tankTemperature));
     n = apStr(msg, n, u); msg[n++] = '\n';
 
-    n = apStr(msg, n, "Tout:");
+    n = apStr(msg, n, de ? "Tauss:" : "Tout:");
     n = apInt(msg, n, dispTemp(outdoorTemperature));
     n = apStr(msg, n, u); msg[n++] = '\n';
 

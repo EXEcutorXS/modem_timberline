@@ -42,11 +42,14 @@ static bool phones_match(const char* a, const char* b)
     return strncmp(a + la - 10, b + lb - 10, 10) == 0;
 }
 
-/** Parse "on"/"1" → true, "off"/"0" → false. Returns false if unrecognised. */
-static bool parse_bool(const char* s, bool& out)
+/** Parse "on"/"1"/"ein" → true, "off"/"0"/"aus" → false. Returns false if unrecognised.
+    Sets german=true when a German word ("ein"/"aus") was matched. */
+static bool parse_bool(const char* s, bool& out, bool& german)
 {
-    if (!strcmp(s, "on")  || !strcmp(s, "1")) { out = true;  return true; }
-    if (!strcmp(s, "off") || !strcmp(s, "0")) { out = false; return true; }
+    if (!strcmp(s, "on")  || !strcmp(s, "1"))  { out = true;  german = false; return true; }
+    if (!strcmp(s, "off") || !strcmp(s, "0"))  { out = false; german = false; return true; }
+    if (!strcmp(s, "ein"))                     { out = true;  german = true;  return true; }
+    if (!strcmp(s, "aus"))                     { out = false; german = true;  return true; }
     return false;
 }
 
@@ -135,9 +138,21 @@ static int toCelsius(int val, TlTempUnit unit)
     return val;
 }
 
+/* Mark the message as German once any German-only keyword is recognised.
+   English keywords never touch this, so a mixed/ambiguous message still
+   defaults to English unless a distinctly German word was seen. */
+static void mark_german(TlSmsParseResult& res) { res.lang = TL_LANG_DE; }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Single command parser
    Receives lowercase, trimmed cmd token and arg string.
+
+   German support: every command keyword accepts an umlaut-free German
+   synonym alongside the English one (e.g. "brenner" for "burner", "ein"/
+   "aus" for "on"/"off"). Recognising a German-only word marks the whole
+   reply as German via mark_german() so Timberline.cpp can pick the matching
+   reply language. Umlauts are intentionally avoided (ae/oe/ue/ss) since the
+   modem talks to the network in the IRA/7-bit charset, which has no umlauts.
    ═══════════════════════════════════════════════════════════════════════════*/
 static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResult& res)
 {
@@ -145,8 +160,9 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
     memset(&c, 0, sizeof(c));
     int ival;
     bool bval;
+    bool bde;
 
-    /* ── status / ? ─────────────────────────────────────────────────────── */
+    /* ── status / ? / zustand ─────────────────────────────────────────────── */
     if (!strcmp(cmd, "status") || !strcmp(cmd, "?")) {
         c.type = TL_CMD_STATUS; add_cmd(res, c); return;
     }
@@ -154,9 +170,11 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
     /* ── ping / reset / factory ─────────────────────────────────────────── */
     if (!strcmp(cmd, "ping"))    { c.type = TL_CMD_PING;    add_cmd(res, c); return; }
     if (!strcmp(cmd, "reset"))   { c.type = TL_CMD_RESET;   add_cmd(res, c); return; }
+    if (!strcmp(cmd, "neustart")){ mark_german(res); c.type = TL_CMD_RESET;   add_cmd(res, c); return; }
     if (!strcmp(cmd, "factory")) { c.type = TL_CMD_FACTORY; add_cmd(res, c); return; }
+    if (!strcmp(cmd, "werksreset")) { mark_german(res); c.type = TL_CMD_FACTORY; add_cmd(res, c); return; }
 
-    /* ── phone# <phone>  (phone1..phone4 — trusted phones) ────────────── */
+    /* ── phone# / telefon# <phone>  (phone1..phone4 — trusted phones) ──── */
     if (cmd[0] == 'p' && cmd[1] == 'h' && cmd[2] == 'o' && cmd[3] == 'n' &&
         cmd[4] == 'e' && cmd[5] >= '1' && cmd[5] <= '4' && cmd[6] == '\0') {
         c.type     = TL_CMD_PHONE;
@@ -166,13 +184,23 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         add_cmd(res, c);
         return;
     }
+    if (!strncmp(cmd, "telefon", 7) && cmd[7] >= '1' && cmd[7] <= '4' && cmd[8] == '\0') {
+        mark_german(res);
+        c.type     = TL_CMD_PHONE;
+        c.phoneNum = (uint8_t)(cmd[7] - '0');
+        strncpy(c.phone, arg, 15);  /* empty = use sender's number */
+        c.phone[15] = '\0';
+        add_cmd(res, c);
+        return;
+    }
 
-    /* ── warmup [burner|element|both] ───────────────────────────────────── */
-    if (!strcmp(cmd, "warmup")) {
+    /* ── warmup / aufwaermen [burner|element|both / brenner|heizstab|beide] ── */
+    if (!strcmp(cmd, "warmup") || !strcmp(cmd, "aufwaermen")) {
+        if (!strcmp(cmd, "aufwaermen")) mark_german(res);
         c.type = TL_CMD_WARMUP;
-        if      (!arg[0] || !strcmp(arg, "burner"))  c.warmupMode = TL_WARMUP_BURNER;
-        else if (!strcmp(arg, "element"))             c.warmupMode = TL_WARMUP_ELEMENT;
-        else if (!strcmp(arg, "both"))                c.warmupMode = TL_WARMUP_BOTH;
+        if      (!arg[0] || !strcmp(arg, "burner") || !strcmp(arg, "brenner"))  c.warmupMode = TL_WARMUP_BURNER;
+        else if (!strcmp(arg, "element") || !strcmp(arg, "heizstab"))            c.warmupMode = TL_WARMUP_ELEMENT;
+        else if (!strcmp(arg, "both") || !strcmp(arg, "beide"))                  c.warmupMode = TL_WARMUP_BOTH;
         else { add_error(res, "warmup: burner/element/both"); return; }
         add_cmd(res, c);
         return;
@@ -187,17 +215,20 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         return;
     }
 
-    /* ── faultreport on/off ─────────────────────────────────────────────── */
-    if (!strcmp(cmd, "faultreport")) {
-        if (!parse_bool(arg, bval)) { add_error(res, "faultreport: on/off"); return; }
+    /* ── faultreport / fehlermeldung on/off ───────────────────────────────── */
+    if (!strcmp(cmd, "faultreport") || !strcmp(cmd, "fehlermeldung")) {
+        if (!strcmp(cmd, "fehlermeldung")) mark_german(res);
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "faultreport: on/off"); return; }
+        if (bde) mark_german(res);
         c.type = TL_CMD_FAULTREPORT;
         c.boolVal = bval;
         add_cmd(res, c);
         return;
     }
 
-    /* ── setpin <4 digits> ──────────────────────────────────────────────── */
-    if (!strcmp(cmd, "setpin")) {
+    /* ── setpin / pin <4 digits> ──────────────────────────────────────────── */
+    if (!strcmp(cmd, "setpin") || !strcmp(cmd, "pin")) {
+        if (!strcmp(cmd, "pin")) mark_german(res);
         if (strlen(arg) != 4) { add_error(res, "setpin: need 4 digits"); return; }
         for (int i = 0; i < 4; i++)
             if (arg[i] < '0' || arg[i] > '9') { add_error(res, "setpin: digits only"); return; }
@@ -208,44 +239,66 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         return;
     }
 
-    /* ── unit C/F ───────────────────────────────────────────────────────── */
-    if (!strcmp(cmd, "unit")) {
+    /* ── unit / einheit C/F ───────────────────────────────────────────────── */
+    if (!strcmp(cmd, "unit") || !strcmp(cmd, "einheit")) {
+        if (!strcmp(cmd, "einheit")) mark_german(res);
         if      (!strcmp(arg, "c")) { c.type = TL_CMD_UNIT; c.unit = TL_UNIT_C; add_cmd(res, c); }
         else if (!strcmp(arg, "f")) { c.type = TL_CMD_UNIT; c.unit = TL_UNIT_F; add_cmd(res, c); }
         else add_error(res, "unit: C or F");
         return;
     }
 
-    /* ── off — turn everything off ─────────────────────────────────────── */
+    /* ── off / aus — turn everything off ──────────────────────────────────── */
     if (!strcmp(cmd, "off")) {
         c.type = TL_CMD_OFF; add_cmd(res, c); return;
     }
+    if (!strcmp(cmd, "aus")) {
+        mark_german(res);
+        c.type = TL_CMD_OFF; add_cmd(res, c); return;
+    }
 
-    /* ── ack on/off ─────────────────────────────────────────────────────── */
-    if (!strcmp(cmd, "ack")) {
-        if (!parse_bool(arg, bval)) { add_error(res, "ack: on/off"); return; }
+    /* ── lang / sprache en/de — persisted default reply language ─────────── */
+    if (!strcmp(cmd, "lang") || !strcmp(cmd, "sprache")) {
+        if (!strcmp(cmd, "sprache")) mark_german(res);
+        if      (!strcmp(arg, "en")) { c.type = TL_CMD_LANG; c.langArg = TL_LANG_EN; add_cmd(res, c); }
+        else if (!strcmp(arg, "de")) { c.type = TL_CMD_LANG; c.langArg = TL_LANG_DE; add_cmd(res, c); }
+        else add_error(res, "lang: en or de");
+        return;
+    }
+
+    /* ── ack / bestaetigung on/off ────────────────────────────────────────────── */
+    if (!strcmp(cmd, "ack") || !strcmp(cmd, "bestaetigung")) {
+        if (!strcmp(cmd, "bestaetigung")) mark_german(res);
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "ack: on/off"); return; }
+        if (bde) mark_german(res);
         c.type = TL_CMD_ACK; c.boolVal = bval; add_cmd(res, c); return;
     }
 
-    /* ── burner on/off ──────────────────────────────────────────────────── */
-    if (!strcmp(cmd, "burner")) {
-        if (!parse_bool(arg, bval)) { add_error(res, "burner: on/off"); return; }
+    /* ── burner / brenner on/off ──────────────────────────────────────────── */
+    if (!strcmp(cmd, "burner") || !strcmp(cmd, "brenner")) {
+        if (!strcmp(cmd, "brenner")) mark_german(res);
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "burner: on/off"); return; }
+        if (bde) mark_german(res);
         c.type = TL_CMD_BURNER; c.boolVal = bval; add_cmd(res, c);
         return;
     }
 
-    /* ── element on/off ─────────────────────────────────────────────────── */
-    if (!strcmp(cmd, "element")) {
-        if (!parse_bool(arg, bval)) { add_error(res, "element: on/off"); return; }
+    /* ── element / heizstab on/off ────────────────────────────────────────── */
+    if (!strcmp(cmd, "element") || !strcmp(cmd, "heizstab")) {
+        if (!strcmp(cmd, "heizstab")) mark_german(res);
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "element: on/off"); return; }
+        if (bde) mark_german(res);
         c.type = TL_CMD_ELEMENT; c.boolVal = bval; add_cmd(res, c);
         return;
     }
 
-    /* ── floor on/off  |  floor 2..32 C / 36..90 F ───────────────────────── */
-    if (!strcmp(cmd, "floor")) {
+    /* ── floor/fussboden on/off  |  floor 2..32 C / 36..90 F ─────────────── */
+    if (!strcmp(cmd, "floor") || !strcmp(cmd, "fussboden")) {
+        if (!strcmp(cmd, "fussboden")) mark_german(res);
         int lo = (tempUnit == TL_UNIT_F) ? 36 : 2;
         int hi = (tempUnit == TL_UNIT_F) ? 90 : 32;
-        if (parse_bool(arg, bval)) {
+        if (parse_bool(arg, bval, bde)) {
+            if (bde) mark_german(res);
             c.type = TL_CMD_FLOOR_TOGGLE; c.boolVal = bval; add_cmd(res, c);
         } else if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
             c.type = TL_CMD_FLOOR_SETPOINT; c.intVal = (int8_t)toCelsius(ival, tempUnit); add_cmd(res, c);
@@ -255,13 +308,15 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         return;
     }
 
-    /* ── engine on/off  |  engine 1..80 C / 32..176 F ────────────────────── */
+    /* ── engine/motor on/off  |  engine 1..80 C / 32..176 F ──────────────── */
     /* Note: "engine 0" is interpreted as off (bool check first);
              setpoint range starts above 0 to avoid ambiguity.             */
-    if (!strcmp(cmd, "engine")) {
+    if (!strcmp(cmd, "engine") || !strcmp(cmd, "motor")) {
+        if (!strcmp(cmd, "motor")) mark_german(res);
         int lo = (tempUnit == TL_UNIT_F) ? 32 : 1;
         int hi = (tempUnit == TL_UNIT_F) ? 176 : 80;
-        if (parse_bool(arg, bval)) {
+        if (parse_bool(arg, bval, bde)) {
+            if (bde) mark_german(res);
             c.type = TL_CMD_ENGINE_TOGGLE; c.boolVal = bval; add_cmd(res, c);
         } else if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
             c.type = TL_CMD_ENGINE_SETPOINT; c.intVal = (int8_t)toCelsius(ival, tempUnit); add_cmd(res, c);
@@ -271,8 +326,9 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         return;
     }
 
-    /* ── systimer 1..100 ────────────────────────────────────────────────── */
-    if (!strcmp(cmd, "systimer")) {
+    /* ── systimer / systemzeit 1..100 ─────────────────────────────────────── */
+    if (!strcmp(cmd, "systimer") || !strcmp(cmd, "systemzeit")) {
+        if (!strcmp(cmd, "systemzeit")) mark_german(res);
         if (parse_uint(arg, ival) && ival >= 1 && ival <= 100) {
             c.type = TL_CMD_SYSTIMER; c.intVal = (int8_t)ival; add_cmd(res, c);
         } else {
@@ -286,8 +342,9 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         uint8_t znum;
         int     cmdlen = (int)strlen(cmd);
 
-        /* z#day <10..32 C / 50..90 F>   cmd = "z1day" (len 5) */
-        if (cmdlen == 5 && !strcmp(cmd + 2, "day") && parse_zone_char(cmd[1], znum)) {
+        /* z#day / z#tag <10..32 C / 50..90 F>   cmd = "z1day"/"z1tag" (len 5) */
+        if (cmdlen == 5 && (!strcmp(cmd + 2, "day") || !strcmp(cmd + 2, "tag")) && parse_zone_char(cmd[1], znum)) {
+            if (!strcmp(cmd + 2, "tag")) mark_german(res);
             int lo = (tempUnit == TL_UNIT_F) ? 50 : 10;
             int hi = (tempUnit == TL_UNIT_F) ? 90 : 32;
             if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
@@ -301,8 +358,9 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
             return;
         }
 
-        /* z#night <10..32 C / 50..90 F>  cmd = "z1night" (len 7) */
-        if (cmdlen == 7 && !strcmp(cmd + 2, "night") && parse_zone_char(cmd[1], znum)) {
+        /* z#night / z#nacht <10..32 C / 50..90 F>  cmd = "z1night"/"z1nacht" (len 7) */
+        if (cmdlen == 7 && (!strcmp(cmd + 2, "night") || !strcmp(cmd + 2, "nacht")) && parse_zone_char(cmd[1], znum)) {
+            if (!strcmp(cmd + 2, "nacht")) mark_german(res);
             int lo = (tempUnit == TL_UNIT_F) ? 50 : 10;
             int hi = (tempUnit == TL_UNIT_F) ? 90 : 32;
             if (parse_uint(arg, ival) && ival >= lo && ival <= hi) {
@@ -320,15 +378,20 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         if (cmdlen == 2 && parse_zone_char(cmd[1], znum)) {
             c.zone.num = znum;
 
-            if      (!strcmp(arg, "off") || !strcmp(arg, "0")) {
+            if      (!strcmp(arg, "off") || !strcmp(arg, "0") || !strcmp(arg, "aus")) {
+                if (!strcmp(arg, "aus")) mark_german(res);
                 c.type = TL_CMD_ZONE_STATE;    c.zone.state   = TL_ZONE_OFF;
-            } else if (!strcmp(arg, "heat") || !strcmp(arg, "on") || !strcmp(arg, "1")) {
+            } else if (!strcmp(arg, "heat") || !strcmp(arg, "on") || !strcmp(arg, "1") ||
+                       !strcmp(arg, "heizen") || !strcmp(arg, "ein")) {
+                if (!strcmp(arg, "heizen") || !strcmp(arg, "ein")) mark_german(res);
                 c.type = TL_CMD_ZONE_STATE;    c.zone.state   = TL_ZONE_HEAT;
-            } else if (!strcmp(arg, "vent")) {
+            } else if (!strcmp(arg, "vent") || !strcmp(arg, "lueften")) {
+                if (!strcmp(arg, "lueften")) mark_german(res);
                 c.type = TL_CMD_ZONE_STATE;    c.zone.state   = TL_ZONE_VENT;
             } else if (!strcmp(arg, "auto")) {
                 c.type = TL_CMD_ZONE_FAN_MODE; c.zone.fanMode = TL_FAN_AUTO;
-            } else if (!strcmp(arg, "manual")) {
+            } else if (!strcmp(arg, "manual") || !strcmp(arg, "manuell")) {
+                if (!strcmp(arg, "manuell")) mark_german(res);
                 c.type = TL_CMD_ZONE_FAN_MODE; c.zone.fanMode = TL_FAN_MANUAL;
             } else if (parse_uint(arg, ival) && ival >= 10 && ival <= 100) {
                 c.type = TL_CMD_ZONE_FAN_PERCENT; c.zone.percent = (uint8_t)ival;

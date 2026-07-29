@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Timberline control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f2f3f5;
+    --card: #ffffff;
+    --border: #e2e4e8;
+    --text: #1c1e21;
+    --muted: #767a82;
+    --accent: #1fa971;
+    --accent-text: #ffffff;
+    --heat: #ea8a3c;
+    --vent: #3d97dd;
+    --danger: #e5484d;
+    --shadow: 0 1px 3px rgba(20,20,30,0.06), 0 1px 2px rgba(20,20,30,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131417;
+      --card: #1d1f23;
+      --border: #303338;
+      --text: #eceef0;
+      --muted: #92969e;
+      --accent: #29c07f;
+      --accent-text: #06231a;
+      --heat: #ef9a52;
+      --vent: #5aacea;
+      --danger: #f2686c;
+      --shadow: 0 1px 3px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 480px; margin: 32px auto; padding: 0 16px;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { font-size: 22px; letter-spacing: -0.02em; margin: 8px 0 20px; }
+  h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+       color: var(--muted); margin: 20px 0 8px; }
+  .hidden { display: none; }
+  input {
+    display: block; width: 100%; margin-bottom: 8px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+    color: var(--text); font-size: 15px;
+  }
+  input::placeholder { color: var(--muted); }
+  button {
+    padding: 9px 16px; margin: 4px 4px 4px 0; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+    color: var(--text); font-size: 14px; font-weight: 500;
+  }
+  #loginBtn, #registerBtn { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .btn-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .btn-row button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+
+  .switch {
+    position: relative; width: 46px; height: 26px; padding: 0; margin: 0;
+    border: none; border-radius: 999px; background: var(--border); flex-shrink: 0;
+  }
+  .switch.on { background: var(--accent); }
+  .switch-thumb {
+    position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    transition: transform 0.15s ease; pointer-events: none;
+  }
+  .switch.on .switch-thumb { transform: translateX(20px); }
+
+  .conn-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .conn-dot.connected { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+  .conn-dot.connecting { background: var(--heat); animation: conn-pulse 1s ease-in-out infinite; }
+  .conn-dot.disconnected { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
+  @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .conn-sep { color: var(--border); }
+  /* Floor/engine settings "spoilers" (see FLOOR_SETTINGS/ENGINE_SETTINGS in
+     app.js) — collapsed by default, card-styled like the other widgets. */
+  .settings-group {
+    display: block; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); box-shadow: var(--shadow); padding: 2px 12px 10px; margin: 0 0 8px;
+  }
+  .settings-group > summary { margin: 8px 0; }
+  .setting-row { margin: 10px 0; }
+  .setting-row label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .setting-row .setting-value { color: var(--text); font-weight: 600; }
+  .setting-row input[type=range] { width: 100%; accent-color: var(--accent); }
+
+  #statusPre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 200px; overflow: auto; color: var(--text); }
+  #err { color: var(--danger); font-size: 14px; }
+  #smsCommand { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; white-space: pre-wrap; color: var(--text); }
+
+  .icon-row { display: flex; gap: 8px; margin: 16px 0; }
+  .icon-btn {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 14px 4px; margin: 0; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
+  }
+  .icon-btn svg { width: 26px; height: 26px; }
+  .icon-btn .icon-label { font-size: 12px; }
+  .icon-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+
+  .drum-row { display: flex; gap: 8px; margin: 0 0 8px; }
+  .drum {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+    padding: 6px 0 8px; user-select: none; -webkit-user-select: none; box-shadow: var(--shadow);
+  }
+  .drum-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* The spinning reel: a tall column of value rows behind a short window,
+     dragged/flung with inertia (see renderDrums() in app.js) and masked
+     top/bottom so it visually fades rather than hard-cropping. */
+  .drum-reel-mask {
+    position: relative; width: 100%; overflow: hidden; cursor: ns-resize;
+    touch-action: none;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
+            mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
+  }
+  .drum-reel { position: absolute; left: 0; right: 0; will-change: transform; }
+  .reel-item {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 600; color: var(--text);
+  }
+  /* Selection window indicator — a thin top/bottom rule through the
+     vertical center, independent of how many rows happen to be visible. */
+  .drum-highlight {
+    position: absolute; left: 8%; right: 8%; top: 50%; transform: translateY(-50%);
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    pointer-events: none;
+  }
+  .drum-static {
+    font-size: 16px; font-weight: 600; padding: 14px 4px; color: var(--muted);
+    cursor: pointer; touch-action: none;
+  }
+
+  .zone-row { display: flex; gap: 8px; margin: 0 0 16px; }
+  .zone-btn {
+    position: relative; flex: 1; display: flex; flex-direction: column; align-items: center;
+    padding: 8px 0; margin: 0; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
+  }
+  .zone-btn .zone-temp { font-size: 13px; color: var(--muted); }
+  /* Background = current zone state (color-coded), at a glance. */
+  .zone-btn.state-off  { background: var(--card); color: var(--muted); }
+  .zone-btn.state-heat { background: var(--heat); color: #fff; }
+  .zone-btn.state-vent { background: var(--vent); color: #fff; }
+  .zone-btn.state-heat .zone-temp,
+  .zone-btn.state-vent .zone-temp { color: rgba(255,255,255,0.85); }
+  /* Selected = which zone the drums below are showing — a separate concept
+     from state, so it can't reuse background color anymore; an outline
+     reads fine against any of the state colors above. */
+  .zone-btn.selected { outline: 3px solid var(--text); outline-offset: -3px; }
+
+  .zone-menu-btn {
+    position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
+    padding: 2px 6px; margin: 0; border: none; background: none;
+    font-size: 14px; line-height: 1.4; color: inherit; cursor: pointer;
+  }
+  .zone-menu {
+    position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2); z-index: 10; overflow: hidden;
+  }
+  .zone-menu-item {
+    display: block; width: 100%; margin: 0; padding: 9px; border: none;
+    border-bottom: 1px solid var(--border); background: var(--card); color: var(--text);
+    text-align: center; cursor: pointer; border-radius: 0;
+  }
+  .zone-menu-item:last-child { border-bottom: none; }
+  .zone-menu-item.active { font-weight: bold; background: var(--bg); }
+
+  #statusTable { width: 100%; border-collapse: collapse; margin: 12px 0;
+                 background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+                 box-shadow: var(--shadow); overflow: hidden; }
+  #statusTable td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  #statusTable tr:last-child td { border-bottom: none; }
+  #statusTable td:first-child { color: var(--muted); }
+  #statusTable td:last-child { text-align: right; font-weight: 600; }
+  #statusTable .errors-row td { color: var(--danger); font-weight: bold; text-align: left; }
+
+  details > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 8px 0; }
+</style>
+</head>
+<body>
+  <h1>Timberline</h1>
+
+  <div id="authBox">
+    <h3>Log in</h3>
+    <input id="loginLogin" placeholder="login">
+    <input id="loginPassword" type="password" placeholder="password">
+    <button id="loginBtn">Log in</button>
+    <button id="showRegisterBtn">Register</button>
+    <p id="err"></p>
+  </div>
+
+  <div id="registerBox" class="hidden">
+    <h3>Register</h3>
+    <input id="regLogin" placeholder="login (this is also your MQTT username)">
+    <input id="regPassword" type="password" placeholder="password">
+    <input id="regEmail" placeholder="email (optional)">
+    <button id="registerBtn">Create account</button>
+    <button id="showLoginBtn">Back to login</button>
+  </div>
+
+  <div id="smsBox" class="hidden">
+    <h3>Configure your device</h3>
+    <p>Send this SMS to your device to point it at this server and get a
+       link to the control page back:</p>
+    <pre id="smsCommand"></pre>
+    <button id="copySmsBtn">Copy</button>
+    <button id="smsContinueBtn">Continue to login</button>
+  </div>
+
+  <div id="controlBox" class="hidden">
+    <div class="conn-status">
+      <span id="connDot" class="conn-dot"></span>
+      <span id="connLabel"></span>
+      <span class="conn-sep">·</span>
+      <span id="deviceDot" class="conn-dot"></span>
+      <span id="deviceLabel"></span>
+    </div>
+    <div id="iconRow" class="icon-row"></div>
+    <div id="drumRow" class="drum-row"></div>
+    <details id="floorSettings" class="settings-group hidden">
+      <summary>Floor heating</summary>
+    </details>
+    <details id="engineSettings" class="settings-group hidden">
+      <summary>Engine heater</summary>
+    </details>
+    <div id="zoneRow" class="zone-row"></div>
+    <div id="buttons"></div>
+    <table id="statusTable"></table>
+    <details>
+      <summary>Raw</summary>
+      <pre id="statusPre"></pre>
+    </details>
+    <button id="logoutBtn">Log out</button>
+  </div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

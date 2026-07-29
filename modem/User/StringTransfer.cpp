@@ -85,26 +85,42 @@ void StringTransfer::sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8
         0xFF, 0xFF, 0xFF, 0xFF);
 }
 
-void StringTransfer::beginRequest(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
+StringTransfer::RxSlot* StringTransfer::findRxSlot(uint16_t stringId)
 {
-    rx.id           = stringId;
-    rx.active       = true;
-    rx.packetsTotal = 0;
-    rx.receivedMask = 0;
-    rx.fromType     = fromType;
-    rx.fromAddress  = fromAddress;
-    rx.requestTick  = core.getTick();
-    rx.retries      = 0;
+    for (uint8_t i = 0; i < RX_SLOTS; i++)
+        if (rx[i].active && rx[i].id == stringId)
+            return &rx[i];
+    return 0;
+}
+
+StringTransfer::RxSlot* StringTransfer::freeRxSlot(void)
+{
+    for (uint8_t i = 0; i < RX_SLOTS; i++)
+        if (!rx[i].active)
+            return &rx[i];
+    return 0;
+}
+
+void StringTransfer::beginRequest(RxSlot* slot, uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
+{
+    slot->id           = stringId;
+    slot->active       = true;
+    slot->packetsTotal = 0;
+    slot->receivedMask = 0;
+    slot->fromType     = fromType;
+    slot->fromAddress  = fromAddress;
+    slot->requestTick  = core.getTick();
+    slot->retries      = 0;
 
     sendRequestFrame(stringId, fromType, fromAddress);
 }
 
-void StringTransfer::advanceRxQueue(void)
+void StringTransfer::advanceRxQueue(RxSlot* freedSlot)
 {
     if (pendingRxCount == 0)
         return;
 
-    beginRequest(pendingRx[0].id, pendingRx[0].fromType, pendingRx[0].fromAddress);
+    beginRequest(freedSlot, pendingRx[0].id, pendingRx[0].fromType, pendingRx[0].fromAddress);
     for (uint8_t i = 1; i < pendingRxCount; i++)
         pendingRx[i-1] = pendingRx[i];
     pendingRxCount--;
@@ -112,18 +128,19 @@ void StringTransfer::advanceRxQueue(void)
 
 void StringTransfer::requestString(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
 {
-    if (!rx.active)
-    {
-        beginRequest(stringId, fromType, fromAddress);
-        return;
-    }
-
-    if (rx.id == stringId)
+    if (findRxSlot(stringId))
         return; /* already being fetched */
 
     for (uint8_t i = 0; i < pendingRxCount; i++)
         if (pendingRx[i].id == stringId)
             return; /* already queued */
+
+    RxSlot* slot = freeRxSlot();
+    if (slot)
+    {
+        beginRequest(slot, stringId, fromType, fromAddress);
+        return;
+    }
 
     if (pendingRxCount >= MAX_PENDING_RX)
         return; /* queue full — drop, caller can retry later (e.g. re-visit the screen) */
@@ -148,77 +165,108 @@ void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_
 
     if (D[0] == 1) /* someone is (about to) push us a string — requested or not */
     {
-        if (rx.active)
+        RxSlot* slot = findRxSlot(id);
+        if (!slot)
         {
-            if (id != rx.id)
-                return; /* mid-receive of something else — sender is serialized, so this is rare */
-        }
-        else
-        {
-            /* Not something we're waiting on — accept it anyway if we own a
-               buffer for this id (unsolicited push, e.g. an on-arrival/periodic
-               update), so state doesn't go stale until the next explicit pull. */
+            /* Not something we're already fetching. Accept it anyway if we
+               own a buffer for this id (unsolicited push, e.g. an on-arrival/
+               periodic update), so state doesn't go stale until the next
+               explicit pull. */
             if (!findEntry(id))
                 return;
-            rx.id     = id;
-            rx.active = true;
-            rx.retries = 0;
+
+            slot = freeRxSlot();
+            if (!slot)
+            {
+                /* All RX_SLOTS busy with other transfers right now. An
+                   unsolicited push has no retry of its own — dropping it
+                   here would lose the update for good until something else
+                   happens to re-request this id (e.g. re-opening a screen).
+                   Queue an explicit follow-up request instead, so it still
+                   arrives once a slot frees up, via the same retry-safe
+                   path as any other request. */
+                requestString(id, fromType, fromAddress);
+                return;
+            }
+            slot->id      = id;
+            slot->active  = true;
+            slot->retries = 0;
         }
 
-        rx.length = (uint16_t)D[4] | ((uint16_t)D[5]<<8);
-        if (rx.length > MAX_LEN-1)
-            rx.length = MAX_LEN-1;
+        slot->length = (uint16_t)D[4] | ((uint16_t)D[5]<<8);
+        if (slot->length > MAX_LEN-1)
+            slot->length = MAX_LEN-1;
 
-        rx.packetsTotal = (uint16_t)((rx.length + 4) / 5);
-        rx.receivedMask = 0;
-        rx.fromType     = fromType;
-        rx.fromAddress  = fromAddress;
-        rx.requestTick  = core.getTick();
+        slot->packetsTotal = (uint16_t)((slot->length + 4) / 5);
+        slot->receivedMask = 0;
+        slot->fromType     = fromType;
+        slot->fromAddress  = fromAddress;
+        slot->requestTick  = core.getTick();
 
-        if (rx.packetsTotal == 0)
+        if (slot->packetsTotal == 0)
         {
             /* Empty string — no data packets will ever follow, so there's
                nothing for onPgn62 to complete on. Finish right here. */
             RegEntry* e = findEntry(id);
             if (e && e->buffer && e->size > 0)
                 e->buffer[0] = 0;
-            rx.active = false;
-            advanceRxQueue();
+            slot->active = false;
+            advanceRxQueue(slot);
         }
     }
 }
 
 void StringTransfer::onPgn62(const uint8_t* D)
 {
-    if (!rx.active || rx.packetsTotal == 0)
-        return;
-
     uint16_t id = (uint16_t)D[0] | ((uint16_t)D[1]<<8);
-    if (id != rx.id)
+
+    RxSlot* slot = findRxSlot(id);
+    if (!slot || slot->packetsTotal == 0)
         return;
 
     uint8_t packetNum = D[2];
-    if (packetNum >= rx.packetsTotal || packetNum >= 32)
+    if (packetNum >= slot->packetsTotal || packetNum >= 32)
         return;
-
-    RegEntry* e = findEntry(id);
 
     for (uint8_t i = 0; i < 5; i++)
     {
         uint16_t idx = (uint16_t)(packetNum*5 + i);
-        if (idx >= rx.length)
+        if (idx >= slot->length)
             break;
-        if (e && e->buffer && idx < (uint16_t)(e->size-1))
-            e->buffer[idx] = (char)D[3+i];
+        slot->data[idx] = (char)D[3+i];
     }
-    rx.receivedMask |= (uint32_t)1u << packetNum;
+    slot->receivedMask |= (uint32_t)1u << packetNum;
 
-    if (rx.receivedMask == (((uint32_t)1u << rx.packetsTotal) - 1))
+    if (slot->receivedMask == (((uint32_t)1u << slot->packetsTotal) - 1))
     {
-        if (e && e->buffer && rx.length < e->size)
-            e->buffer[rx.length] = 0;
-        rx.active = false;
-        advanceRxQueue();
+        /* Whole string is in — copy it into the real buffer in one shot
+           (same truncate-to-e->size behavior as before, just applied as a
+           single bounded block instead of per-byte during reception) so
+           nothing outside ever observes a half-written value.
+
+           On the modem this runs straight off the CAN RX interrupt (see
+           can.cpp's processCanRxMessage()), so the copy itself can't be
+           preempted by main-loop code — but a main-loop reader (e.g.
+           DataActualizator::ActualizeInternalData()) mid-copy of this same
+           buffer *can* be preempted by this very interrupt. __disable_irq()
+           here doesn't protect this write (it's already atomic w.r.t. the
+           main loop by virtue of running in the ISR) — it protects whoever
+           is reading e->buffer from observing a torn mix of pre/post bytes
+           if this fires mid-read. The matching guard is on the read side;
+           see ActualizeInternalData(). */
+        RegEntry* e = findEntry(id);
+        if (e && e->buffer && e->size > 0)
+        {
+            uint16_t n = slot->length;
+            if (n > (uint16_t)(e->size - 1))
+                n = (uint16_t)(e->size - 1);
+            __disable_irq();
+            memcpy(e->buffer, slot->data, n);
+            e->buffer[n] = 0;
+            __enable_irq();
+        }
+        slot->active = false;
+        advanceRxQueue(slot);
     }
 }
 
@@ -275,27 +323,31 @@ void StringTransfer::handler(void)
         }
     }
 
-    if (rx.active)
+    for (uint8_t i = 0; i < RX_SLOTS; i++)
     {
+        RxSlot& slot = rx[i];
+        if (!slot.active)
+            continue;
+
         /* No timeout defined yet (still waiting for the "announce") — poll every
            200ms; once packetsTotal is known, wait out the expected transfer time. */
-        uint32_t timeout = rx.packetsTotal > 0 ? (uint32_t)(rx.packetsTotal*5*2) : 200;
-        if ((core.getTick() - rx.requestTick) > timeout)
+        uint32_t timeout = slot.packetsTotal > 0 ? (uint32_t)(slot.packetsTotal*5*2) : 200;
+        if ((core.getTick() - slot.requestTick) > timeout)
         {
-            if (rx.retries < 5)
+            if (slot.retries < 5)
             {
-                rx.retries++;
-                rx.requestTick  = core.getTick();
-                rx.packetsTotal = 0;
-                rx.receivedMask = 0;
-                sendRequestFrame(rx.id, rx.fromType, rx.fromAddress);
+                slot.retries++;
+                slot.requestTick  = core.getTick();
+                slot.packetsTotal = 0;
+                slot.receivedMask = 0;
+                sendRequestFrame(slot.id, slot.fromType, slot.fromAddress);
             }
             else
             {
                 /* Nobody answered after several tries — give up on this id so a
                    stuck request can't block everything queued behind it forever. */
-                rx.active = false;
-                advanceRxQueue();
+                slot.active = false;
+                advanceRxQueue(&slot);
             }
         }
     }

@@ -17,6 +17,7 @@ class Flash_C
         void handler(void);
         void writeSetup(void);
         void readSetup(void);
+        void factoryReset(void);
         void writeSerial(void);
         void readSerial(void);
         uint8_t getHardwareVersion(void);

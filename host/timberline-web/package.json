@@ -1,0 +1,14 @@
+{
+  "name": "timberline-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2",
+    "mqtt": "^5.15.2"
+  }
+}

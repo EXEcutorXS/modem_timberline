@@ -10,6 +10,7 @@
 #include "hw_config.h"
 #include "usb_lib.h"
 #include "usb_pwr.h"
+#include "DataActualizator.h"
 
 const uint8_t _CRC[11] __attribute__((at(0x803C000))) =
 {
@@ -24,6 +25,7 @@ int main(void)
     core.initialize();
     flash.readSetup();
     flash.readSerial();
+    dataActualizator.init();
 
     modem.initialize();
     can.initialize();

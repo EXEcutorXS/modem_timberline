@@ -145,7 +145,10 @@ static void mark_german(TlSmsParseResult& res) { res.lang = TL_LANG_DE; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Single command parser
-   Receives lowercase, trimmed cmd token and arg string.
+   Receives lowercase, trimmed cmd token and arg string. origArg is the same
+   argument with its original case preserved (cmd/arg are lowercased for
+   case-insensitive keyword matching, which would mangle a case-sensitive
+   value like an MQTT password — only SERVER/PASSWORD use origArg).
 
    German support: every command keyword accepts an umlaut-free German
    synonym alongside the English one (e.g. "brenner" for "burner", "ein"/
@@ -154,7 +157,7 @@ static void mark_german(TlSmsParseResult& res) { res.lang = TL_LANG_DE; }
    reply language. Umlauts are intentionally avoided (ae/oe/ue/ss) since the
    modem talks to the network in the IRA/7-bit charset, which has no umlauts.
    ═══════════════════════════════════════════════════════════════════════════*/
-static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResult& res)
+static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit tempUnit, TlSmsParseResult& res)
 {
     TlSmsCmd c;
     memset(&c, 0, sizeof(c));
@@ -264,6 +267,63 @@ static void parse_one(char* cmd, char* arg, TlTempUnit tempUnit, TlSmsParseResul
         else if (!strcmp(arg, "de")) { c.type = TL_CMD_LANG; c.langArg = TL_LANG_DE; add_cmd(res, c); }
         else add_error(res, "lang: en or de");
         return;
+    }
+
+    /* ── server <host> — MQTT broker address ──────────────────────────────── */
+    if (!strcmp(cmd, "server")) {
+        int len = (int)strlen(origArg);
+        if (len < 1 || len > 31) { add_error(res, "server: 1-31 chars"); return; }
+        c.type = TL_CMD_SERVER;
+        strncpy(c.strArg, origArg, 31); c.strArg[31] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
+    /* ── login <username> — MQTT username (case preserved via origArg) ────── */
+    if (!strcmp(cmd, "login")) {
+        int len = (int)strlen(origArg);
+        if (len < 1 || len > 15) { add_error(res, "login: 1-15 chars"); return; }
+        c.type = TL_CMD_LOGIN;
+        strncpy(c.strArg, origArg, 15); c.strArg[15] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
+    /* ── password <pass> — MQTT password (case preserved via origArg) ─────── */
+    if (!strcmp(cmd, "password") || !strcmp(cmd, "passwort")) {
+        if (!strcmp(cmd, "passwort")) mark_german(res);
+        int len = (int)strlen(origArg);
+        if (len < 1 || len > 23) { add_error(res, "password: 1-23 chars"); return; }
+        c.type = TL_CMD_PASSWORD;
+        strncpy(c.strArg, origArg, 23); c.strArg[23] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
+    /* ── internet on/off — use mobile internet/MQTT, or SMS only ──────────── */
+    if (!strcmp(cmd, "internet")) {
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "internet: on/off"); return; }
+        if (bde) mark_german(res);
+        c.type = TL_CMD_INTERNET; c.boolVal = bval; add_cmd(res, c); return;
+    }
+
+    /* ── getlink — reply with a magic-link URL to the web control page ────── */
+    if (!strcmp(cmd, "getlink")) {
+        c.type = TL_CMD_GETLINK; add_cmd(res, c); return;
+    }
+
+    /* ── roaming on/off — allow mobile internet/MQTT while roaming ────────── */
+    if (!strcmp(cmd, "roaming")) {
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "roaming: on/off"); return; }
+        if (bde) mark_german(res);
+        c.type = TL_CMD_ROAMING; c.boolVal = bval; add_cmd(res, c); return;
+    }
+
+    /* ── 2g on/off — force GSM-only radio (no 4G) vs. automatic 2G/4G ─────── */
+    if (!strcmp(cmd, "2g")) {
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "2g: on/off"); return; }
+        if (bde) mark_german(res);
+        c.type = TL_CMD_FORCE_2G; c.boolVal = bval; add_cmd(res, c); return;
     }
 
     /* ── ack / bestaetigung on/off ────────────────────────────────────────────── */
@@ -475,12 +535,19 @@ void tl_sms_parse(const char*       senderPhone,
         str_trim(segs[i]);
         if (!segs[i][0]) continue;
 
+        /* Case-preserved copy, taken before lowering — SERVER/PASSWORD need
+           their argument's original case (hostnames/passwords), everything
+           else matches lowercase keywords as before. */
+        char orig[160];
+        strncpy(orig, segs[i], sizeof(orig) - 1); orig[sizeof(orig) - 1] = '\0';
+
         str_lower(segs[i]);
 
         char* cmd;
         char* arg;
         split_cmd_arg(segs[i], &cmd, &arg);
+        const char* origArg = orig + (arg - segs[i]);
 
-        parse_one(cmd, arg, tempUnit, result);
+        parse_one(cmd, arg, origArg, tempUnit, result);
     }
 }

@@ -19,30 +19,59 @@ extern "C" void USART1_IRQHandler(void) {
 /* ── Constructor ─────────────────────────────────────────────────────── */
 Modem::Modem()
     : isRegistered(false), isRoaming(false), csq(0xFF),
-      lac(0xFFFF), cellId(0xFFFFFFFF),
-      isOnlySmsMode(true),
+      lac(0xFFFF), cellId(0xFFFFFFFF), networkAcT(0xFF),
+      isInternetConnected(false),
+      mqttConnected(false),
+      onMqttCommand(0),
+      useInternet(false),
       tempUnit(0),
+      allowRoaming(false),
       faultReport(true),
       cmdAck(true),
       onSmsReceived(0),
       smsDebugMode(false),
       answer(0), capture(CAP_NONE),
       state(ST_POWER_ON), step(0),
-      smsPending(false), smsSlot(0),
+      smsPending(false), smsSlot(0), smsNotifySlot(0), smsNotifyPending(false),
       ussdPending(false),
-      timerCsq(0), timerCreg(0),
+      timerCsq(0), timerCreg(0), timerNet(0), timerMqttRetry(0), timerSmsPoll(0), httpStatus(0),
+      mqttUrcResult(0), mqttTeardownThenNet(false), netTeardownThenReinit(false),
+      mqttReconnectRequested(false),
       rxCursor(0), lineLen(0)
 {
     imei[0] = iccid[0] = ownNumber[0] = operatorCode[0] = operatorName[0] = 0;
     smsPhone[0] = smsText[0] = cmgrPhone[0] = cmgrBody[0] = ussdReq[0] = 0;
+    ipAddress[0] = 0;
+    strncpy(internetCheckUrl, "http://google.com", sizeof(internetCheckUrl) - 1);
+    internetCheckUrl[sizeof(internetCheckUrl) - 1] = 0;
+    /* No baked-in default here on purpose — a real broker/account's
+       credentials don't belong compiled into firmware that could end up
+       on any device; must be set explicitly (SMS/CAN) before MQTT is
+       usable. */
+    mqttBroker[0] = 0;
+    mqttUsername[0] = 0;
+    mqttPassword[0] = 0;
+    mqttRxName[0] = 0; mqttRxPayload[0] = 0;
+    for (int i = 0; i < MQTT_PUB_MAX; i++) {
+        mqttPubQueue[i].name[0] = 0;
+        mqttPubQueue[i].value[0] = 0;
+        mqttPubQueue[i].dirty = false;
+    }
+    for (int i = 0; i < SMS_QUEUE_MAX; i++) {
+        smsQueue[i].phone[0] = 0;
+        smsQueue[i].text[0] = 0;
+        smsQueue[i].pending = false;
+    }
     for (int i = 0; i < 5; i++) phones[i][0] = 0;
     pin[0]='1'; pin[1]='2'; pin[2]='3'; pin[3]='4'; pin[4]='\0';
+		
 }
 
 void Modem::txIsr(void) { usart.transmitNextByte(); }
 
 /* ── initialize ──────────────────────────────────────────────────────── */
 void Modem::initialize(void) {
+		useInternet = true;
     usart.initialize(1, 115200);
     PowergoodPin.Initialize(GPIOA, GPIO_PIN_3, GPIO_Mode_IPU);
     DTRPin.Initialize(GPIOB, GPIO_PIN_1, GPIO_Mode_Out_PP);
@@ -84,7 +113,15 @@ void Modem::handler(void) {
         case ST_SEND_SMS:   doSendSms();   break;
         case ST_POLL_CSQ:   doPollCsq();   break;
         case ST_POLL_CREG:  doPollCreg();  break;
+        case ST_POLL_SMS_UNREAD: doPollSmsUnread(); break;
         case ST_USSD:       doUssd();      break;
+        case ST_INIT_NET:      doInitNet();      break;
+        case ST_CHECK_INTERNET: doCheckInternet(); break;
+        case ST_NET_TEARDOWN:  doNetTeardown();  break;
+        case ST_MQTT_START:    doMqttStart();    break;
+        case ST_MQTT_SUB:      doMqttSub();      break;
+        case ST_MQTT_PUB:      doMqttPub();      break;
+        case ST_MQTT_TEARDOWN: doMqttTeardown(); break;
     }
 }
 
@@ -98,15 +135,52 @@ void Modem::sendSms(const char* phone, const char* text) {
 
     if (smsDebugMode) return;
 
-    if (smsPending) return;
-    strncpy(smsPhone, phone, sizeof(smsPhone) - 1); smsPhone[sizeof(smsPhone)-1] = 0;
-    strncpy(smsText,  text,  sizeof(smsText)  - 1); smsText[sizeof(smsText) -1] = 0;
-    smsPending = true;
+    if (!smsPending) {
+        strncpy(smsPhone, phone, sizeof(smsPhone) - 1); smsPhone[sizeof(smsPhone)-1] = 0;
+        strncpy(smsText,  text,  sizeof(smsText)  - 1); smsText[sizeof(smsText) -1] = 0;
+        smsPending = true;
+        return;
+    }
+
+    /* Active slot busy — queue it instead of silently dropping (see
+       SmsQueueEntry comment in Modem.h). Never calls setState(): sendSms()
+       can be invoked reentrantly from inside onSmsReceived (itself called
+       from doReadSms()), same constraint as mqttForceReconnect(). */
+    for (int i = 0; i < SMS_QUEUE_MAX; i++) {
+        if (!smsQueue[i].pending) {
+            strncpy(smsQueue[i].phone, phone, sizeof(smsQueue[i].phone) - 1);
+            smsQueue[i].phone[sizeof(smsQueue[i].phone) - 1] = 0;
+            strncpy(smsQueue[i].text, text, sizeof(smsQueue[i].text) - 1);
+            smsQueue[i].text[sizeof(smsQueue[i].text) - 1] = 0;
+            smsQueue[i].pending = true;
+            return;
+        }
+    }
+    /* Queue also full — drop (same defensive behavior as before, just far
+       less likely to actually happen now). */
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
    AT engine
    ═══════════════════════════════════════════════════════════════════════*/
+
+/* Lower 6 decimal digits of the millisecond tick, zero-padded — enough to
+   read AT round-trip time straight off the log (wraps every 1000s, but a
+   wrap mid-command is obvious from context and not worth extra bytes to
+   handle). Written to log_at only, not the other log_* streams. */
+static void logAtTimestamp(void) {
+    uint32_t v = core.getTick() % 1000000;
+    char buf[10];
+    buf[0] = '[';
+    buf[1] = (char)('0' + (v / 100000) % 10);
+    buf[2] = (char)('0' + (v / 10000)  % 10);
+    buf[3] = (char)('0' + (v / 1000)   % 10);
+    buf[4] = (char)('0' + (v / 100)    % 10);
+    buf[5] = (char)('0' + (v / 10)     % 10);
+    buf[6] = (char)('0' + (v)          % 10);
+    buf[7] = ']'; buf[8] = ' '; buf[9] = 0;
+    log_at(buf);
+}
 
 void Modem::transmit(const char* s) {
     static char buf[512];
@@ -115,6 +189,7 @@ void Modem::transmit(const char* s) {
     if (!n) return;
     buf[n] = 0;                  /* null-terminate for log_at */
     usart.send((uint8_t*)buf, n);
+    logAtTimestamp();
     log_at(">> "); log_at(buf);
 }
 
@@ -140,12 +215,20 @@ bool Modem::atCmd(const char* cmd, uint32_t ms) {
 
 /* ── drainRx ─────────────────────────────────────────────────────────── */
 void Modem::drainRx(void) {
+    static bool atLineStart = true;   /* only the log_at path uses this */
+
     while (rxCursor != usart.getBufferPos()) {
         char c = (char)usart.getByte(rxCursor++);
         if (rxCursor >= Usart_C::BUFFER_SIZE) rxCursor = 0;
 
         char dbg[2] = {c, 0};
-        if (bridgeMode) log_info(dbg); else log_at(dbg);
+        if (bridgeMode) {
+            log_info(dbg);
+        } else {
+            if (atLineStart) { logAtTimestamp(); atLineStart = false; }
+            log_at(dbg);
+            if (c == '\n') atLineStart = true;
+        }
 
         /* SMS prompt arrives as "> " without newline */
         if (c == '>' && lineLen == 0) { answer |= ANS_PROMPT; continue; }
@@ -165,6 +248,15 @@ void Modem::drainRx(void) {
 static bool starts(const char* s, const char* pre) {
     while (*pre) if (*s++ != *pre++) return false;
     return true;
+}
+
+/* Append the decimal digits of v to buf starting at n, return new n. */
+static int appendUint(char* buf, int n, uint16_t v) {
+    char tmp[6]; int t = 0;
+    if (v == 0) { buf[n++] = '0'; return n; }
+    while (v > 0 && t < 6) { tmp[t++] = (char)('0' + v % 10); v /= 10; }
+    while (t > 0) buf[n++] = tmp[--t];
+    return n;
 }
 
 /* Extract the Nth (0-based) quoted field from s into out. */
@@ -200,6 +292,30 @@ void Modem::parseLine(void) {
     if (capture == CAP_CMGR_BODY) {
         capture = CAP_NONE;
         strncpy(cmgrBody, s, sizeof(cmgrBody)-1); cmgrBody[sizeof(cmgrBody)-1] = 0;
+        return;
+    }
+    if (capture == CAP_MQTT_TOPIC) {
+        capture = CAP_NONE;
+        /* Keep everything after the 3rd '/' (i.e. past "<user>/cmd/desired/") —
+           most names are a single segment ("btnHtr"), but grouped zone names
+           carry one more level ("zn1/state"), so we can't just take the last
+           segment like other capture modes do. */
+        const char* rest = s;
+        int slashes = 0;
+        for (const char* p = s; *p; p++) {
+            if (*p == '/') { slashes++; if (slashes == 3) { rest = p + 1; break; } }
+        }
+        strncpy(mqttRxName, rest, sizeof(mqttRxName)-1); mqttRxName[sizeof(mqttRxName)-1] = 0;
+        /* Defensively trim trailing whitespace — some MQTT clients/UIs are
+           prone to a stray trailing space in a hand-typed topic. */
+        for (int i = (int)strlen(mqttRxName) - 1; i >= 0 && mqttRxName[i] == ' '; i--) mqttRxName[i] = 0;
+        return;
+    }
+    if (capture == CAP_MQTT_PAYLOAD) {
+        capture = CAP_NONE;
+        strncpy(mqttRxPayload, s, sizeof(mqttRxPayload)-1); mqttRxPayload[sizeof(mqttRxPayload)-1] = 0;
+        for (int i = (int)strlen(mqttRxPayload) - 1; i >= 0 && mqttRxPayload[i] == ' '; i--) mqttRxPayload[i] = 0;
+        if (onMqttCommand) onMqttCommand(mqttRxName, mqttRxPayload);
         return;
     }
 
@@ -262,15 +378,78 @@ void Modem::parseLine(void) {
             if (name) { strncpy(operatorName, name, sizeof(operatorName)-1); operatorName[sizeof(operatorName)-1] = 0; }
             else operatorName[0] = 0;
         }
+
+        /* <AcT> is the optional 4th field, right after oper's closing quote:
+           +COPS: <mode>,<format>,"<oper>"[,<AcT>] — plain (unquoted) integer,
+           real network tech (0=GSM,2=UTRAN,7=E-UTRAN,...), sent to the panel
+           as-is; it buckets it into 2G/3G/4G for display. */
+        {
+            const char* p = s + 7;
+            int quotes = 0;
+            while (*p && quotes < 2) { if (*p == '"') quotes++; p++; }
+            networkAcT = (*p == ',') ? (uint8_t)strtol(p + 1, NULL, 10) : 0xFF;
+        }
         answer |= ANS_COPS;
     }
+    else if (starts(s,"+CGPADDR: ")) {
+        /* +CGPADDR: 1,<addr> — cid is 1st field, IP is 2nd field. Some modems
+           quote the address ("10.23.45.67"), this one doesn't (10.23.45.67) —
+           handle both instead of relying on nthQuoted(). */
+        const char* p = s + 10;
+        while (*p && *p != ',') p++;   /* skip cid */
+        if (*p == ',') p++;
+        if (*p == '"') p++;            /* tolerate an optional quote */
+        uint16_t i = 0;
+        while (*p && *p != ',' && *p != '"' && i < sizeof(ipAddress)-1) ipAddress[i++] = *p++;
+        ipAddress[i] = 0;
+        answer |= ANS_CGPADDR;
+    }
+    else if (starts(s,"+HTTPACTION: ")) {
+        /* +HTTPACTION: <method>,<status>,<datalen> — status is 2nd field */
+        const char* p = s + 13;
+        while (*p && *p != ',') p++;
+        httpStatus = (*p == ',') ? (uint16_t)atoi(p + 1) : 0;
+        answer |= ANS_HTTPACTION;
+    }
+    else if (starts(s,"+CMQTTCONNECT: ") || starts(s,"+CMQTTSUB: ") || starts(s,"+CMQTTPUB: ")) {
+        /* All three share "<client_index>,<result>" — 0 = success */
+        const char* p = s;
+        while (*p && *p != ',') p++;
+        mqttUrcResult = (*p == ',') ? (uint8_t)atoi(p + 1) : 0xFF;
+        answer |= ANS_MQTT_URC;
+    }
+    else if (starts(s,"+CMQTTCONNLOST: ")) {
+        mqttConnected = false;
+    }
+    else if (starts(s,"+CMQTTRXTOPIC: ")) {
+        capture = CAP_MQTT_TOPIC;
+    }
+    else if (starts(s,"+CMQTTRXPAYLOAD: ")) {
+        capture = CAP_MQTT_PAYLOAD;
+    }
     else if (starts(s,"+CMTI: ")) {
-        /* +CMTI: "SM",3 */
+        /* +CMTI: "SM",3 — only touches smsNotifySlot, never the live
+           smsSlot doReadSms() might currently be mid-read on (see the field
+           comments in Modem.h for why that distinction matters). */
         const char* p = s + 7;
         while (*p && *p != ',') p++;
-        smsSlot = (*p == ',') ? (uint8_t)(*(p+1) - '0') : 1;
-        if (smsSlot == 0) smsSlot = 1;
+        smsNotifySlot = (*p == ',') ? (uint8_t)(*(p+1) - '0') : 1;
+        if (smsNotifySlot == 0) smsNotifySlot = 1;
         answer |= ANS_CMTI;
+        smsNotifyPending = true;
+    }
+    else if (starts(s,"+CMGL: ")) {
+        /* +CMGL: <idx>,"REC UNREAD",... — periodic fallback poll only (see
+           ST_POLL_SMS_UNREAD); just need an index here, not the body/phone —
+           the existing CMGR-based doReadSms() fetches those properly once
+           doIdle() copies smsNotifySlot into smsSlot. If more than one
+           unread message is sitting in storage, whichever index lands last
+           just means the others get caught on a later poll after this one
+           is read+deleted. */
+        const char* p = s + 7;
+        uint8_t idx = 0;
+        while (*p >= '0' && *p <= '9') { idx = (uint8_t)(idx * 10 + (*p - '0')); p++; }
+        if (idx > 0) { smsNotifySlot = idx; answer |= ANS_CMGL; }
     }
     else if (starts(s,"+CMGR:")) {
         /* +CMGR: "REC UNREAD","+79001234567",, ... — phone is 2nd quoted field */
@@ -394,18 +573,123 @@ void Modem::doInit(void) {
         log_info(" SIM=");              log_info(ownNumber[0]   ? ownNumber  : "?");
         log_info("\r\n");
         timerCsq = timerCreg = core.getTick();
-        setState(ST_IDLE);
+        setState(useInternet ? ST_INIT_NET : ST_IDLE);
         break;
     }
 }
 
 void Modem::doIdle(void) {
     uint32_t now = core.getTick();
-    if (answer & ANS_CMTI)          { answer &= ~ANS_CMTI; setState(ST_READ_SMS);  return; }
+
+    /* React to useInternet being flipped at runtime (e.g. PGN60 write from a
+       panel, or the "internet" SMS command), roaming status changing (CREG
+       polling), or allowRoaming being flipped (the "roaming" SMS command) —
+       without waiting for a modem reboot. internetAllowed folds all three
+       into one condition so the same teardown/init handling covers all of
+       them; seed from the current value on first entry (doInit() already
+       handled the boot-time case). */
+    bool internetAllowed = useInternet && (!isRoaming || allowRoaming);
+    static bool first = true;
+    static bool prevInternetAllowed;
+    static bool prevForce2gOnly;
+    if (first) { first = false; prevInternetAllowed = internetAllowed; prevForce2gOnly = force2gOnly; }
+    if (prevInternetAllowed != internetAllowed) {
+        prevInternetAllowed = internetAllowed;
+        if (!internetAllowed) {
+            isInternetConnected = false;
+            if (mqttConnected) { mqttTeardownThenNet = true; setState(ST_MQTT_TEARDOWN); return; }
+            setState(ST_NET_TEARDOWN);
+            return;
+        } else {
+            prevForce2gOnly = force2gOnly;  /* doInitNet() below reads it fresh anyway */
+            setState(ST_INIT_NET);
+            return;
+        }
+    }
+
+    /* React to force2gOnly being flipped at runtime (PGN60 write from a
+       panel, or the "2g" SMS command) while internet is already up — tear
+       down and re-init the PDP context so the new AT+CNMP value actually
+       takes effect now, instead of waiting for the next reboot/reconnect
+       (doInitNet()'s step 0 only runs as part of that init sequence). Only
+       meaningful while internetAllowed: if internet isn't up at all, the
+       next time it comes up above already reads force2gOnly fresh. */
+    if (internetAllowed && prevForce2gOnly != force2gOnly) {
+        prevForce2gOnly = force2gOnly;
+        isInternetConnected = false;
+        netTeardownThenReinit = true;
+        if (mqttConnected) { mqttTeardownThenNet = true; setState(ST_MQTT_TEARDOWN); return; }
+        setState(ST_NET_TEARDOWN);
+        return;
+    } else if (!internetAllowed) {
+        prevForce2gOnly = force2gOnly;
+    }
+
+    /* Internet dropped out from under an active MQTT session — tear it down;
+       doCheckInternet()'s own self-heal will bring the PDP context back, and
+       the retry timer below will restart MQTT once isInternetConnected again. */
+    if (mqttConnected && !isInternetConnected) { mqttTeardownThenNet = true; setState(ST_MQTT_TEARDOWN); return; }
+
+    /* mqttForceReconnect() was called (e.g. broker/password changed via SMS) —
+       safe to act on now since doIdle() only ever runs from a clean top-level
+       dispatch, never nested inside another state's handler. */
+    if (mqttReconnectRequested) {
+        mqttReconnectRequested = false;
+        if (mqttConnected) { mqttTeardownThenNet = false; setState(ST_MQTT_TEARDOWN); return; }
+        timerMqttRetry = now - 45000;  /* let the retry check below fire immediately */
+    }
+
+    if (smsNotifyPending) { smsNotifyPending = false; smsSlot = smsNotifySlot; setState(ST_READ_SMS); return; }
+
+    /* Promote the oldest queued outgoing SMS into the active slot once it's
+       free — safe here since doIdle() only ever runs from a clean top-level
+       dispatch (see SmsQueueEntry comment in Modem.h). */
+    if (!smsPending) {
+        for (int i = 0; i < SMS_QUEUE_MAX; i++) {
+            if (smsQueue[i].pending) {
+                strncpy(smsPhone, smsQueue[i].phone, sizeof(smsPhone) - 1); smsPhone[sizeof(smsPhone)-1] = 0;
+                strncpy(smsText,  smsQueue[i].text,  sizeof(smsText)  - 1); smsText[sizeof(smsText) -1] = 0;
+                smsQueue[i].pending = false;
+                smsPending = true;
+                break;
+            }
+        }
+    }
     if (smsPending)                  { setState(ST_SEND_SMS);  return; }
     if (ussdPending)                 { setState(ST_USSD);       return; }
     if ((now - timerCsq)  >= 30000) { setState(ST_POLL_CSQ);   return; }
     if ((now - timerCreg) >= 60000) { setState(ST_POLL_CREG);  return; }
+    if (internetAllowed && (now - timerNet) >= 60000) { setState(ST_CHECK_INTERNET); return; }
+
+    /* Safety net, not the primary path (that's smsNotifyPending, set
+       directly off the +CMTI: URC) — every couple of minutes, ask the SIM
+       directly whether anything unread is sitting in storage that we
+       somehow never got notified about. Rare/cheap enough not to matter;
+       see doPollSmsUnread(). */
+    if ((now - timerSmsPoll) >= 120000) { setState(ST_POLL_SMS_UNREAD); return; }
+
+    /* No point even trying without all three — CMQTTACCQ/CMQTTCONNECT just
+       fail immediately on an empty client id/host anyway (confirmed on real
+       hardware: "" client id gets a flat ERROR from the module, empty host
+       gives a "tcp://:1883" URL that can never connect), so this would
+       otherwise retry every 30s forever on a device that's simply never
+       been configured yet — wasted airtime/CPU and, worse, extra time spent
+       off ST_IDLE for no possible benefit. */
+    bool mqttConfigured = mqttBroker[0] && mqttUsername[0] && mqttPassword[0];
+
+    /* 45s, not 30 — confirmed on real hardware that 30s after the PDP
+       context/internet genuinely came up wasn't always enough for the
+       module's own TCP/DNS stack to settle: CMQTTCONNECT failed at the 30s
+       mark but succeeded cleanly the next time, ~60s in. 45s split the
+       difference; the retry-on-failure path below still covers it if this
+       still isn't quite enough on a given attempt. */
+    if (internetAllowed && isInternetConnected && !mqttConnected && mqttConfigured &&
+        (now - timerMqttRetry) >= 45000) {
+        timerMqttRetry = now;
+        setState(ST_MQTT_START);
+        return;
+    }
+    if (mqttConnected && mqttQueueHasPending()) { setState(ST_MQTT_PUB); return; }
 }
 
 /* ── sendUssd ────────────────────────────────────────────────────────── */
@@ -481,9 +765,11 @@ void Modem::doReadSms(void) {
 void Modem::doSendSms(void) {
     static char cmd[36];
     static uint32_t t = 0;
+    static uint8_t retries = 0;
 
     switch (step) {
     case 0:
+        retries = 0;
         if (atCmd("AT+CSCS=\"IRA\"\r\n", 300)) step++;
         break;
     case 1:
@@ -519,7 +805,35 @@ void Modem::doSendSms(void) {
     }
     case 4:
         drainRx();
-        if ((answer & (ANS_OK | ANS_ERROR)) || (core.getTick()-t) >= 10000) {
+        if (answer & ANS_OK) {
+            smsPending = false;
+            setState(ST_IDLE);
+        } else if (answer & ANS_ERROR) {
+            /* CMGS occasionally fails right after MQTT connects and starts
+               publishing heavily — confirmed on real hardware ("+CMS ERROR:
+               unknown error" on every send attempt while MQTT was actively
+               busy, none before it connected). Likely the module's own
+               CS/PS contention, not a firmware logic bug — but this is a
+               user-facing confirmation reply, worth retrying a few times
+               rather than dropping it silently the way a single ANS_ERROR
+               used to.
+
+               Loop back through case 1 (AT+CMGF=1), not straight back to
+               case 2 — atCmd() dedupes by comparing the command string's
+               hash against the last one it sent; re-issuing the exact same
+               AT+CMGS="..." right after a failure would just replay the
+               stale ANS_ERROR instead of actually retransmitting, since as
+               far as atCmd() can tell nothing changed. Routing through a
+               genuinely different command first forces a real resend when
+               we get back to case 2. */
+            if (retries < 3) {
+                retries++;
+                step = 1;
+            } else {
+                smsPending = false;
+                setState(ST_IDLE);
+            }
+        } else if ((core.getTick()-t) >= 10000) {
             smsPending = false;
             setState(ST_IDLE);
         }
@@ -543,6 +857,490 @@ void Modem::doPollCreg(void) {
     default:
         timerCreg = core.getTick();
         setState(ST_IDLE);
+        break;
+    }
+}
+
+void Modem::doPollSmsUnread(void) {
+    /* Safety net for the CMTI-loss scenario smsNotifyPending already covers —
+       in case a notification is ever missed for some other reason (garbled
+       URC, module quirk), ask the SIM directly whether anything unread is
+       still sitting in storage instead of relying solely on the module
+       telling us proactively. AT+CMGF=1 re-asserted defensively, same as
+       doReadSms() — cheap, and this runs rarely enough not to matter. */
+    switch (step) {
+    case 0: if (atCmd("AT+CMGF=1\r\n", 500)) step++; break;
+    case 1:
+        if (atCmd("AT+CMGL=\"REC UNREAD\"\r\n", 5000)) {
+            /* answer is read here, before setState() below clears it. Just
+               routes into the existing smsNotifyPending -> ST_READ_SMS ->
+               doReadSms() path — that already fetches the message properly
+               by index and cleans up read messages via CMGD=1,2. */
+            if (answer & ANS_CMGL) smsNotifyPending = true;
+            timerSmsPoll = core.getTick();
+            setState(ST_IDLE);
+        }
+        break;
+    }
+}
+
+/* ── Mobile internet (active only when useInternet) ──────────────────────── */
+
+void Modem::doInitNet(void) {
+    /* Bring up a PDP context on whatever radio access is available — auto
+       2G/4G (AT+CNMP=2) normally, or GSM-only (AT+CNMP=13) if force2gOnly
+       is set (see the "2g" SMS command) — with a network-assigned APN, no
+       APN/login/password needed for the SIM cards this device uses.
+       Errors/timeouts on any step don't block the sequence (same policy as
+       doInit()); the real result is confirmed afterwards by
+       doCheckInternet(). CNMP values are module-specific (A7682E); verified
+       against its AT command set, not yet against real hardware. */
+    switch (step) {
+    case 0: if (atCmd(force2gOnly ? "AT+CNMP=13\r\n" : "AT+CNMP=2\r\n", 300)) step++; break;
+    case 1: if (atCmd("AT+CGDCONT=1,\"IP\",\"\"\r\n",  300)) step++; break;
+    case 2: if (atCmd("AT+CGATT=1\r\n",               10000)) step++; break;
+    case 3: if (atCmd("AT+CGACT=1,1\r\n",             15000)) step++; break;
+    default:
+        timerNet = core.getTick();
+        setState(ST_CHECK_INTERNET);
+        break;
+    }
+}
+
+void Modem::doCheckInternet(void) {
+    static char    cmd[96];
+    static uint32_t t = 0;
+
+    switch (step) {
+    case 0:
+        if (atCmd("AT+CGPADDR=1\r\n", 3000)) {
+            /* Only trust ipAddress if +CGPADDR: actually arrived this round —
+               on a timeout/error it would otherwise still hold a stale value
+               from a previous successful check. */
+            bool hasIp = (answer & ANS_CGPADDR) && ipAddress[0]
+                       && strcmp(ipAddress, "0.0.0.0") != 0;
+            if (!hasIp) {
+                /* PDP context is down — self-heal by re-running doInitNet() */
+                isInternetConnected = false;
+                setState(ST_INIT_NET);
+                return;
+            }
+            if (!internetCheckUrl[0]) {
+                /* No check URL configured yet — PDP up is the best signal we have */
+                if (!isInternetConnected) {
+                    /* First time up (not just re-confirming on a later 60s
+                       poll) — see the case 5 comment below for why this
+                       matters. */
+                    timerMqttRetry = core.getTick();
+                }
+                isInternetConnected = true;
+                timerNet = core.getTick();
+                setState(ST_IDLE);
+                return;
+            }
+            step++;
+        }
+        break;
+    case 1: if (atCmd("AT+HTTPINIT\r\n",         2000)) step++; break;
+    case 2: {
+        /* No AT+HTTPPARA="CID",... — this modem rejects it (ERROR) and uses
+           whatever PDP context is already active regardless. */
+        int n = 0;
+        const char* pre = "AT+HTTPPARA=\"URL\",\"";
+        while (*pre) cmd[n++] = *pre++;
+        for (int i = 0; internetCheckUrl[i] && n < 90; i++) cmd[n++] = internetCheckUrl[i];
+        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 500)) step++;
+        break;
+    }
+    case 3:
+        /* This only confirms the command was accepted — the actual result
+           arrives later as an asynchronous +HTTPACTION: URC (case 4). */
+        if (atCmd("AT+HTTPACTION=0\r\n", 3000)) {
+            if (answer & ANS_ERROR) { httpStatus = 0; step = 5; }
+            else { answer &= ~ANS_HTTPACTION; t = core.getTick(); step++; }
+        }
+        break;
+    case 4:
+        if (answer & ANS_HTTPACTION) step++;
+        else if ((core.getTick() - t) >= 20000) { httpStatus = 0; step++; }
+        break;
+    case 5:
+        if (atCmd("AT+HTTPTERM\r\n", 2000)) {
+            /* timerMqttRetry starts at 0 (see the constructor) and doIdle()
+               gates the very first MQTT connect attempt on
+               (now - timerMqttRetry) >= 45000 — without resetting it here,
+               that window counts from raw power-on, not from when the PDP
+               context actually came up. Confirmed on real hardware: when
+               credentials got configured (via SMS) fast enough that a
+               fixed delay-since-boot mark landed only ~10s after CGACT/
+               CGPADDR succeeded, CMQTTSTART/CMQTTACCQ/CMQTTCONNECT all
+               failed on the first attempt — but when credentials arrived
+               much later (well past that mark), the same delay-since-boot
+               gate had long since elapsed, so MQTT started immediately
+               once configured, with the PDP context already settled for a
+               while, and connected cleanly every time. Resetting here
+               means the delay always counts from the moment internet
+               genuinely became reachable, giving the module's stack the
+               same settling time regardless of how soon credentials get
+               configured after boot. Only on the false->true transition —
+               a later periodic re-check succeeding again shouldn't push
+               out a pending MQTT retry after an unrelated MQTT-side
+               failure. */
+            bool wasConnected = isInternetConnected;
+            isInternetConnected = (httpStatus > 0 && httpStatus < 400);
+            if (!wasConnected && isInternetConnected) timerMqttRetry = core.getTick();
+            timerNet = core.getTick();
+            setState(ST_IDLE);
+        }
+        break;
+    }
+}
+
+void Modem::doNetTeardown(void) {
+    if (atCmd("AT+CGACT=0,1\r\n", 15000)) {
+        bool reinit = netTeardownThenReinit;
+        netTeardownThenReinit = false;
+        setState(reinit ? ST_INIT_NET : ST_IDLE);
+    }
+}
+
+/* ── MQTT control channel (active only when useInternet && isInternetConnected) ── */
+
+/* Enqueue "<mqttUsername>/cmd/actual/<name>" = payload for the next doMqttPub() pass.
+   Coalescing: a name already queued just gets its value overwritten — only the
+   latest value per name matters, there's no point re-sending stale intermediate
+   ones. Safe to call regardless of mqttConnected; it'll drain once connected. */
+void Modem::mqttPublish(const char* name, const char* payload) {
+    for (uint8_t i = 0; i < MQTT_PUB_MAX; i++) {
+        if (mqttPubQueue[i].name[0] && !strcmp(mqttPubQueue[i].name, name)) {
+            strncpy(mqttPubQueue[i].value, payload, sizeof(mqttPubQueue[i].value)-1);
+            mqttPubQueue[i].value[sizeof(mqttPubQueue[i].value)-1] = 0;
+            mqttPubQueue[i].dirty = true;
+            return;
+        }
+    }
+    for (uint8_t i = 0; i < MQTT_PUB_MAX; i++) {
+        if (!mqttPubQueue[i].name[0]) {
+            strncpy(mqttPubQueue[i].name, name, sizeof(mqttPubQueue[i].name)-1);
+            mqttPubQueue[i].name[sizeof(mqttPubQueue[i].name)-1] = 0;
+            strncpy(mqttPubQueue[i].value, payload, sizeof(mqttPubQueue[i].value)-1);
+            mqttPubQueue[i].value[sizeof(mqttPubQueue[i].value)-1] = 0;
+            mqttPubQueue[i].dirty = true;
+            return;
+        }
+    }
+    /* queue full (all MQTT_PUB_MAX names in use) — drop silently */
+}
+
+bool Modem::mqttQueueHasPending(void) {
+    for (uint8_t i = 0; i < MQTT_PUB_MAX; i++)
+        if (mqttPubQueue[i].dirty) return true;
+    return false;
+}
+
+/* Call after changing mqttBroker/mqttUsername/mqttPassword at runtime (e.g.
+   the "server"/"password" SMS commands) so the new values take effect right
+   away instead of waiting for the connection to drop on its own. Only sets a
+   flag — see the mqttReconnectRequested comment in Modem.h for why this
+   can't safely call setState() directly (may be invoked re-entrantly from
+   inside onSmsReceived, itself called from doReadSms()). */
+void Modem::mqttForceReconnect(void) {
+    mqttReconnectRequested = true;
+}
+
+void Modem::doMqttStart(void) {
+    static char     cmdBuf[144];
+    static char     willTopicBuf[48];
+    static uint32_t t = 0;
+    const  int      cmdMax = (int)sizeof(cmdBuf) - 1;
+
+    switch (step) {
+    case 0: if (atCmd("AT+CMQTTSTART\r\n", 5000)) step++; break;
+    case 1: {
+        int n = 0;
+        const char* pre = "AT+CMQTTACCQ=0,\"";
+        while (*pre) cmdBuf[n++] = *pre++;
+        for (const char* p = mqttUsername; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
+        cmdBuf[n++] = '"'; cmdBuf[n++] = '\r'; cmdBuf[n++] = '\n'; cmdBuf[n] = 0;
+        if (atCmd(cmdBuf, 3000)) step++;
+        break;
+    }
+    /* Last Will and Testament — "<username>/cmd/actual/online" = "0",
+       registered with the broker before CONNECT so that if this session
+       ever drops without a clean DISCONNECT (crashed, lost signal, power
+       loss — not caught by anything else in this firmware), the broker
+       publishes it on our behalf. See mqtt-topic-scheme memory for why
+       this beats a polled timestamp. Length-prefixed-then-raw-bytes, same
+       proven pattern as CMQTTTOPIC/CMQTTPAYLOAD in doMqttPub() below — NOT
+       verified against real hardware yet, unlike the rest of this
+       sequence; if it errors out here, CMQTTCONNECT below still runs
+       regardless (atCmd() advances on ERROR same as OK), just without a
+       registered will. */
+    case 2: {
+        int n = 0;
+        const int topicMax = (int)sizeof(willTopicBuf) - 1;
+        for (const char* p = mqttUsername; *p && n < topicMax; ) willTopicBuf[n++] = *p++;
+        const char* mid = "/cmd/actual/online";
+        for (const char* p = mid; *p && n < topicMax; ) willTopicBuf[n++] = *p++;
+        willTopicBuf[n] = 0;
+
+        int cn = 0;
+        const char* pre = "AT+CMQTTWILLTOPIC=0,";
+        while (*pre) cmdBuf[cn++] = *pre++;
+        cn = appendUint(cmdBuf, cn, (uint16_t)n);
+        cmdBuf[cn++] = '\r'; cmdBuf[cn++] = '\n'; cmdBuf[cn] = 0;
+        if (atCmd(cmdBuf, 2000)) step++;
+        break;
+    }
+    case 3:
+        if (atCmd(willTopicBuf, 3000)) step++;
+        break;
+    case 4:
+        /* len=1, qos=1, retain=1 — without retain, a client that (re)subscribes
+           after the will already fired just gets the stale last retained "1"
+           instead of the will's "0", masking the outage for anyone whose
+           connection wasn't live at the exact moment the will published. */
+        if (atCmd("AT+CMQTTWILLMSG=0,1,1,1\r\n", 2000)) step++;
+        break;
+    case 5:
+        if (atCmd("0", 3000)) step++;
+        break;
+    case 6: {
+        int n = 0;
+        const char* pre = "AT+CMQTTCONNECT=0,\"tcp://";
+        while (*pre) cmdBuf[n++] = *pre++;
+        for (const char* p = mqttBroker; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
+        const char* mid = ":1883\",60,1,\"";
+        while (*mid) cmdBuf[n++] = *mid++;
+        for (const char* p = mqttUsername; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
+        cmdBuf[n++] = '"'; cmdBuf[n++] = ','; cmdBuf[n++] = '"';
+        for (const char* p = mqttPassword; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
+        cmdBuf[n++] = '"'; cmdBuf[n++] = '\r'; cmdBuf[n++] = '\n'; cmdBuf[n] = 0;
+        if (atCmd(cmdBuf, 3000)) { answer &= ~ANS_MQTT_URC; t = core.getTick(); step++; }
+        break;
+    }
+    case 7:
+        /* AT+CMQTTCONNECT is accepted immediately (OK); the real result
+           arrives later as an asynchronous +CMQTTCONNECT: URC. */
+        if (answer & ANS_MQTT_URC) step++;
+        else if ((core.getTick() - t) >= 20000) { mqttUrcResult = 0xFF; step++; }
+        break;
+    default:
+        if (mqttUrcResult == 0) {
+            mqttPublish("online", "1");  /* announce ourselves once connected/subscribed */
+            setState(ST_MQTT_SUB);
+        } else {
+            /* Connect failed — reset the modem's MQTT client state (DISC/REL/STOP)
+               before retrying, otherwise the next CMQTTSTART/ACCQ/CONNECT just
+               errors out forever because the old session is still considered live. */
+            mqttTeardownThenNet = false;
+            setState(ST_MQTT_TEARDOWN);
+        }
+        break;
+    }
+}
+
+void Modem::doMqttSub(void) {
+    static char     topicBuf[48];
+    static char     cmdBuf[32];
+    static uint32_t t = 0;
+
+    switch (step) {
+    case 0: {
+        /* AT+CMQTTSUB, like AT+CMQTTTOPIC/PAYLOAD, takes a length and then
+           expects exactly that many raw topic bytes — not an inline quoted
+           string (that form returned a synchronous ERROR on this modem). */
+        int n = 0;
+        const int topicMax = (int)sizeof(topicBuf) - 1;
+        for (const char* p = mqttUsername; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        const char* mid = "/cmd/desired/#";
+        for (const char* p = mid; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        topicBuf[n] = 0;
+
+        int cn = 0;
+        const char* pre = "AT+CMQTTSUB=0,";
+        while (*pre) cmdBuf[cn++] = *pre++;
+        cn = appendUint(cmdBuf, cn, (uint16_t)n);
+        cmdBuf[cn++] = ','; cmdBuf[cn++] = '1';  /* QoS 1 */
+        cmdBuf[cn++] = '\r'; cmdBuf[cn++] = '\n'; cmdBuf[cn] = 0;
+        if (atCmd(cmdBuf, 2000)) step++;
+        break;
+    }
+    case 1:
+        if (atCmd(topicBuf, 3000)) { answer &= ~ANS_MQTT_URC; t = core.getTick(); step++; }
+        break;
+    case 2:
+        if (answer & ANS_MQTT_URC) step++;
+        else if ((core.getTick() - t) >= 10000) { mqttUrcResult = 0xFF; step++; }
+        break;
+    default:
+        if (mqttUrcResult == 0) { mqttConnected = true; setState(ST_IDLE); }
+        else {
+            mqttTeardownThenNet = false;
+            setState(ST_MQTT_TEARDOWN);
+        }
+        break;
+    }
+}
+
+void Modem::doMqttPub(void) {
+    static uint8_t  pubIdx = 0;
+    static char     topicBuf[64];
+    static char     cmdBuf[32];
+    static uint32_t t = 0;
+    static bool     pubFailed = false;   /* any step this attempt hit ANS_ERROR */
+    static uint8_t  pubFailStreak = 0;   /* consecutive failed attempts */
+
+    switch (step) {
+    case 0: {
+        bool found = false;
+        for (uint8_t i = 0; i < MQTT_PUB_MAX; i++)
+            if (mqttPubQueue[i].dirty) { pubIdx = i; found = true; break; }
+        if (!found) { setState(ST_IDLE); return; }
+
+        pubFailed = false;
+
+        int n = 0;
+        const int topicMax = (int)sizeof(topicBuf) - 1;
+        for (const char* p = mqttUsername; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        const char* mid = "/cmd/actual/";
+        for (const char* p = mid; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        for (const char* p = mqttPubQueue[pubIdx].name; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        topicBuf[n] = 0;
+
+        int cn = 0;
+        const char* pre = "AT+CMQTTTOPIC=0,";
+        while (*pre) cmdBuf[cn++] = *pre++;
+        cn = appendUint(cmdBuf, cn, (uint16_t)n);
+        cmdBuf[cn++] = '\r'; cmdBuf[cn++] = '\n'; cmdBuf[cn] = 0;
+        if (atCmd(cmdBuf, 2000)) { if (answer & ANS_ERROR) pubFailed = true; step++; }
+        break;
+    }
+    case 1:
+        /* Raw topic bytes, no line terminator — the modem is waiting for
+           exactly the byte count declared above, not an AT command line. */
+        if (atCmd(topicBuf, 3000)) { if (answer & ANS_ERROR) pubFailed = true; step++; }
+        break;
+    case 2: {
+        int n = (int)strlen(mqttPubQueue[pubIdx].value);
+        int cn = 0;
+        const char* pre = "AT+CMQTTPAYLOAD=0,";
+        while (*pre) cmdBuf[cn++] = *pre++;
+        cn = appendUint(cmdBuf, cn, (uint16_t)n);
+        cmdBuf[cn++] = '\r'; cmdBuf[cn++] = '\n'; cmdBuf[cn] = 0;
+        if (atCmd(cmdBuf, 2000)) { if (answer & ANS_ERROR) pubFailed = true; step++; }
+        break;
+    }
+    case 3:
+        if (atCmd(mqttPubQueue[pubIdx].value, 3000)) { if (answer & ANS_ERROR) pubFailed = true; step++; }
+        break;
+    case 4:
+        /* <client_index>,<qos>,<pub_timeout>,<retained> — retained=1 so a late
+           subscriber (or one that just reconnected) immediately gets the last
+           known actual value instead of waiting for the next change. */
+        if (atCmd("AT+CMQTTPUB=0,1,60,1\r\n", 3000)) {
+            if (answer & ANS_ERROR) pubFailed = true;
+            answer &= ~ANS_MQTT_URC; t = core.getTick(); step++;
+        }
+        break;
+    case 5:
+        if (answer & ANS_MQTT_URC) step++;
+        else if ((core.getTick() - t) >= 15000) { pubFailed = true; step++; }
+        break;
+    default:
+        /* Published (or gave up) — clear dirty regardless; a real change will
+           re-mark it dirty and retry next pass rather than looping forever
+           on one stuck entry. */
+        mqttPubQueue[pubIdx].dirty = false;
+
+        /* Track consecutive publish failures — 5 in a row means the MQTT
+           session is actually dead even though we never got a clean
+           disconnect notice (e.g. the transport blipped silently, seen on
+           real hardware: mosquitto itself logged nothing, yet publishes
+           errored for a while). One success proves it's alive again right
+           away. This doesn't itself force a reconnect — it just corrects
+           mqttConnected to match reality — but doIdle()'s existing
+           "!mqttConnected && internetAllowed && isInternetConnected, retry
+           after 30s" check reacts to the same flag, so a real ST_MQTT_START
+           retry does follow if the streak hits 5 and nothing else clears it
+           first. That's the same recovery path any other disconnect already
+           goes through, not new behavior introduced here. */
+        if (pubFailed) {
+            if (pubFailStreak < 5) pubFailStreak++;
+            if (pubFailStreak >= 5) mqttConnected = false;
+        } else {
+            pubFailStreak = 0;
+            mqttConnected = true;
+        }
+        setState(ST_IDLE);
+        break;
+    }
+}
+
+void Modem::doMqttTeardown(void) {
+    static char topicBuf[64];
+    static char cmdBuf[32];
+    static uint32_t t = 0;
+
+    /* Only announce "online"="0" if we actually had a live session to
+       announce from (mqttConnected still reflects that — only cleared in
+       this function's own final step below). If we're here to reset a
+       failed/stuck connect attempt instead, there's nothing to say
+       goodbye from — skip straight to the DISC/REL/STOP reset, same as
+       before this feature existed. The Last Will (see doMqttStart) covers
+       the case this function *doesn't* run at all — a crash/power-loss
+       with no chance to tear down gracefully. */
+    if (step == 0 && !mqttConnected) step = 3;
+
+    switch (step) {
+    case 0: {
+        int n = 0;
+        const int topicMax = (int)sizeof(topicBuf) - 1;
+        for (const char* p = mqttUsername; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        const char* mid = "/cmd/actual/online";
+        for (const char* p = mid; *p && n < topicMax; ) topicBuf[n++] = *p++;
+        topicBuf[n] = 0;
+
+        int cn = 0;
+        const char* pre = "AT+CMQTTTOPIC=0,";
+        while (*pre) cmdBuf[cn++] = *pre++;
+        cn = appendUint(cmdBuf, cn, (uint16_t)n);
+        cmdBuf[cn++] = '\r'; cmdBuf[cn++] = '\n'; cmdBuf[cn] = 0;
+        if (atCmd(cmdBuf, 2000)) step++;
+        break;
+    }
+    case 1:
+        if (atCmd(topicBuf, 3000)) step++;
+        break;
+    case 2: {
+        if (atCmd("AT+CMQTTPAYLOAD=0,1\r\n", 2000)) step++;
+        break;
+    }
+    case 3:
+        /* Reached directly (step forced to 3 above) when there was no live
+           session to announce from — "0" is otherwise the 1-byte payload
+           for the announcement started in case 0. */
+        if (!mqttConnected || atCmd("0", 3000)) step++;
+        break;
+    case 4:
+        if (!mqttConnected) { step++; break; }
+        if (atCmd("AT+CMQTTPUB=0,1,60,1\r\n", 3000)) { answer &= ~ANS_MQTT_URC; t = core.getTick(); step++; }
+        break;
+    case 5:
+        if (!mqttConnected || (answer & ANS_MQTT_URC) || (core.getTick() - t) >= 15000) step++;
+        break;
+    case 6: if (atCmd("AT+CMQTTDISC=0,60\r\n", 5000)) step++; break;
+    case 7: if (atCmd("AT+CMQTTREL=0\r\n",      3000)) step++; break;
+    case 8: if (atCmd("AT+CMQTTSTOP\r\n",       3000)) step++; break;
+    default:
+        mqttConnected = false;
+        /* mqttTeardownThenNet: true when called because useInternet was cleared
+           or internet was lost (also tear down the PDP context); false when
+           called to reset a stuck/failed MQTT session — internet stays up
+           and timerMqttRetry will bring MQTT back on its own. */
+        if (mqttTeardownThenNet) setState(ST_NET_TEARDOWN);
+        else                     setState(ST_IDLE);
         break;
     }
 }

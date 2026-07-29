@@ -145,8 +145,7 @@ void log_at(const char* mess)
 {
     if (logTypeMess == LOG_TYPE_AT){
         while (*mess){
-            if (*mess != '\r')          /* skip CR — terminal handles LF alone */
-                USART_To_USB_Send_Data(*mess);
+            USART_To_USB_Send_Data(*mess);
             mess++;
         }
     }

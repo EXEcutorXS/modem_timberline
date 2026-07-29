@@ -35,6 +35,7 @@ void Button::handler(void)
             /* Press edge */
             pressTick = core.getTick();
             longFired = false;
+            veryLongFired = false;
             debugState = BTN_PRESSED;
         } else {
             /* Release edge — short press, unless this hold already fired long */
@@ -51,6 +52,13 @@ void Button::handler(void)
         debugState = BTN_LONG_FIRED;
         log_info("\r\nBUTTON: LONG HOLD\r\n");
         if (onLongPress) onLongPress();
+    }
+
+    if (debounced && !veryLongFired && (core.getTick() - pressTick) >= TIME_VERY_LONG_HOLD) {
+        veryLongFired = true;
+        debugState    = BTN_VERY_LONG_FIRED;
+        log_info("\r\nBUTTON: VERY LONG HOLD (factory reset)\r\n");
+        if (onVeryLongPress) onVeryLongPress();
     }
 }
 //-----------------------------------------------------

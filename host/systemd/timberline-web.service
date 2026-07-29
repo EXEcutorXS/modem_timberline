@@ -1,0 +1,21 @@
+[Unit]
+Description=Timberline web control (Node.js)
+After=network.target mosquitto.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/timberline-web
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+Environment=PORT=3000
+# MQTT_HOST/MQTT_WS_PORT/MQTT_BROKER_URL are optional — only needed if the
+# broker ever ends up on a different host than this app. Left unset, the
+# app derives mqttHost from each request's own Host header, and connects
+# to the broker at mqtt://localhost:1883 for its own link-observer client.
+# Environment=MQTT_HOST=broker.example.com
+# Environment=MQTT_WS_PORT=8083
+# Environment=MQTT_BROKER_URL=mqtt://broker.example.com:1883
+User=root
+
+[Install]
+WantedBy=multi-user.target

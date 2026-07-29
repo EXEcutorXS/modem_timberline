@@ -17,10 +17,13 @@ class Button
         /* Set by Timberline::init() — called on short/long press */
         void (*onShortPress)(void);
         void (*onLongPress)(void);
+        /* Fires once at 10s of continuous hold (factory reset) — in addition
+           to onLongPress, which still fires at 1.5s on the way there. */
+        void (*onVeryLongPress)(void);
 
         /* Debug-only: watch this in the debugger to see what handler() is
            doing without instrumenting it with logging. */
-        enum DebugState { BTN_IDLE, BTN_PRESSED, BTN_LONG_FIRED };
+        enum DebugState { BTN_IDLE, BTN_PRESSED, BTN_LONG_FIRED, BTN_VERY_LONG_FIRED };
         DebugState debugState;
         bool       gpioState;        /* live GPIO read, updated every handler() call */
         bool       rawPrev;         /* previous raw reading, for debounce edge */
@@ -28,10 +31,12 @@ class Button
         uint32_t   rawChangeTick;
         uint32_t   pressTick;       /* when the debounced press started */
         bool       longFired;       /* long-press already fired for this hold */
+        bool       veryLongFired;   /* very-long-press already fired for this hold */
 
     private:
-        static const uint16_t TIME_DEBOUNCE  = 30;
-        static const uint16_t TIME_LONG_HOLD = 1500;
+        static const uint16_t TIME_DEBOUNCE       = 30;
+        static const uint16_t TIME_LONG_HOLD      = 1500;
+        static const uint16_t TIME_VERY_LONG_HOLD = 10000;
 };
 extern Button button;
 

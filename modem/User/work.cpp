@@ -26,13 +26,15 @@ void Work_C::handler(void) {
     faultManager.handler();
     canBroadcast();
     dataActualizator.handler();
+    timberline.mqttActualizerHandler();
+    timberline.mqttTelemetryHandler();
     stringTransfer.handler();
 }
 
 /* ── canBroadcast ─────────────────────────────────────────────────────────
  * PGN 18 — version/presence announcement (every 5 s)
  * PGN 60 — GSM status, multi-packet: D[0] selects the sub-packet:
- *   0 — registration/roaming + CSQ                  (every 5 s, fast-changing)
+ *   0 — registration/roaming + internet + CSQ        (every 5 s, fast-changing)
  *   1 — settings flags — sent on change by DataActualizator, plus resent
  *       here every 10 s in case a panel missed the change-triggered one
  *   2 — operator code (numeric MCC+MNC, ASCII digits) — only when the
@@ -59,11 +61,17 @@ void Work_C::canBroadcast(void) {
             0xFF, 0xFF, 0xFF, 0xFF);
 
         /* Sub-packet 0: D[1] = 2 bits/bool (00=off,01=on,11=no data):
-         *   bits0-1 registered, bits2-3 roaming. D[2]=CSQ */
+         *   bits0-1 registered, bits2-3 roaming, bits4-5 internet connected
+         *   (only meaningful when useInternet), bits6-7 MQTT connected
+         *   (only meaningful when useInternet && isInternetConnected). D[2]=CSQ.
+         *   D[3] = networkAcT, raw <AcT> from the last +COPS? poll (real
+         *   network tech — the panel buckets it into 2G/3G/4G for display). */
         uint8_t d1 = (uint8_t)(  (modem.isRegistered ? 1u : 0u)
-                                | ((modem.isRoaming   ? 1u : 0u) << 2));
+                                | ((modem.isRoaming   ? 1u : 0u) << 2)
+                                | ((modem.isInternetConnected ? 1u : 0u) << 4)
+                                | ((modem.mqttConnected ? 1u : 0u) << 6));
         can.SendMessage(id60,
-            0, d1, modem.csq, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+            0, d1, modem.csq, modem.networkAcT, 0xFF, 0xFF, 0xFF, 0xFF);
     }
 
     if ((core.getTick() - timerSlow) >= 10000) {

@@ -23,6 +23,12 @@ class Led
 
         void initialize(void);
         void handler(void);
+        /* Blocking — call right before a reset, not from the main loop.
+           Green is otherwise kept off unconditionally (see
+           handlerButtonLed()); this is the one deliberate exception, used
+           only after the button has already been released long enough that
+           nothing needs to read its GPIO state anymore. */
+        void blinkGreenFactoryReset(void);
 
         uint8_t modeGsm;
 

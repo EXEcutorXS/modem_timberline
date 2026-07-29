@@ -44,6 +44,13 @@ enum TlCmdType {
     TL_CMD_OFF,             /* no params              — turn everything off      */
     TL_CMD_ACK,             /* boolVal                — enable/disable device command confirmations */
     TL_CMD_LANG,            /* langArg (TlLang)       — set default reply language (en/de)     */
+    TL_CMD_SERVER,          /* strArg (1-31 chars)    — MQTT broker host                       */
+    TL_CMD_LOGIN,           /* strArg (1-15 chars)    — MQTT username (case preserved)         */
+    TL_CMD_PASSWORD,        /* strArg (1-23 chars)    — MQTT password (case preserved)         */
+    TL_CMD_INTERNET,        /* boolVal                — use mobile internet/MQTT (1) or SMS-only (0) */
+    TL_CMD_GETLINK,         /* no params              — request a magic-link URL via SMS reply */
+    TL_CMD_ROAMING,         /* boolVal                — allow mobile internet/MQTT while roaming (1) or not (0) */
+    TL_CMD_FORCE_2G,        /* boolVal                — force 2G/GSM-only radio (1) or auto 2G/4G (0)         */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/
@@ -67,6 +74,7 @@ struct TlSmsCmd {
     char         pin[5];     /* SETPIN                                                   */
     TlZonePayload zone;    /* ZONE_* commands                                            */
     TlLang       langArg;    /* LANG — requested default reply language                  */
+    char         strArg[32]; /* SERVER, LOGIN, PASSWORD — case preserved (see origArg in .cpp) */
 };
 
 /* ── Parse result ───────────────────────────────────────────────────────────*/

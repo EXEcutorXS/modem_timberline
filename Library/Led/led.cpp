@@ -81,6 +81,16 @@ void Led::handler(void)
     handlerButtonLed();
 }
 //-----------------------------------------------------
+void Led::blinkGreenFactoryReset(void)
+{
+    for (uint8_t i = 0; i < 3; i++) {
+        LedGreen.Set();
+        core.delayMs(200);
+        LedGreen.Reset();
+        core.delayMs(200);
+    }
+}
+//-----------------------------------------------------
 void Led::handlerGsm(void)
 {
     static uint32_t timer = 0;

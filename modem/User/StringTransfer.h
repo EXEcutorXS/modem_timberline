@@ -51,10 +51,10 @@ enum StringId
     STRID_TRUSTED_PHONE2     = 5,
     STRID_TRUSTED_PHONE3     = 6,
     STRID_TRUSTED_PHONE4     = 7,
-    STRID_INTERNET_CHECK_URL = 8,   /* not implemented on the modem yet */
-    STRID_MQTT_BROKER        = 9,   /* not implemented on the modem yet */
-    STRID_MODEM_LOGIN        = 10,  /* not implemented on the modem yet */
-    STRID_MODEM_PASSWORD     = 11,  /* not implemented on the modem yet */
+    STRID_INTERNET_CHECK_URL = 8,   /* modem.internetCheckUrl — HTTP GET target used to verify real internet connectivity */
+    STRID_MQTT_BROKER        = 9,   /* modem.mqttBroker — broker host, port fixed at 1883 */
+    STRID_MODEM_LOGIN        = 10,  /* modem.mqttUsername — also the MQTT topic namespace */
+    STRID_MODEM_PASSWORD     = 11,  /* modem.mqttPassword */
     STRID_LAST_REC_SMS_TEXT  = 12,
     STRID_LAST_REC_SMS_NUM   = 13,
     STRID_LAST_SENT_SMS_TEXT = 14,
@@ -76,8 +76,15 @@ private:
     /* MAX_LEN=161 is the hard ceiling: onPgn62's 32-packet receivedMask bitmask
        allows at most 32*5=160 data bytes (+1 for the terminator) — enough for
        a full SMS body (STRID_LAST_*_SMS_TEXT). MAX_REGS covers every id the
-       modem/panel currently register plus headroom for the table's unused ids. */
-    enum { MAX_REGS = 16, MAX_LEN = 161 };
+       modem/panel currently register plus headroom for the table's unused ids.
+       Was 16 — exactly one short of the 17 actual registerString() calls in
+       Timberline::init() (IMEI, PIN, 4 phones, 4 SMS fields, operator name+
+       code, then internet URL/broker/login/password). registerString()'s
+       "table full" guard drops anything past the 16th silently — no error,
+       no log — so the 17th call (STRID_MODEM_PASSWORD, last in that list)
+       never got a slot, and the modem consequently never answered the
+       panel's request for it. Bumped with headroom for future fields. */
+    enum { MAX_REGS = 24, MAX_LEN = 161 };
 
     struct RegEntry
     {
@@ -115,10 +122,33 @@ private:
     PendingSend pending[MAX_PENDING];
     uint8_t     pendingCount;
 
-    struct
+    /* Up to RX_SLOTS strings can be received in parallel, each in its own
+       slot — claimed the moment its announce (or our own requestString())
+       reserves it, freed once that transfer completes. Interleaved data
+       packets for genuinely-simultaneous transfers (two ids' PGN62 packets
+       arriving mixed together) each land in the slot matching their id
+       instead of one clobbering/dropping the other.
+
+       Bytes land in the slot's own `data` scratch buffer as packets arrive,
+       NOT directly in the final registered buffer (see RegEntry) — the copy
+       into the real buffer (plus its null terminator) happens once, atomically,
+       only when the transfer completes. Writing straight into the live buffer
+       incrementally would let anyone reading it mid-transfer (e.g.
+       DataActualizator's per-loop change detection) see a half-written value:
+       at best that's spurious "changed" detections firing a flash write and a
+       StringTransfer echo of garbage for every packet that lands during the
+       ~packetsTotal*5ms transfer window; at worst, if the incoming string is
+       longer than whatever was there before, the old null terminator gets
+       overwritten before the new one is written, and anything that reads the
+       buffer with an unbounded scan (strlen-style, not a size-capped strncpy)
+       runs past the buffer into adjacent memory until it happens to hit a
+       stray zero byte somewhere else in RAM. */
+    enum { RX_SLOTS = 4 };
+    struct RxSlot
     {
         bool     active;
         uint16_t id;
+        char     data[MAX_LEN];
         uint16_t length;
         uint16_t packetsTotal;
         uint32_t receivedMask;
@@ -126,11 +156,12 @@ private:
         uint8_t  fromAddress;
         uint32_t requestTick;
         uint8_t  retries;
-    } rx;
+    };
+    RxSlot rx[RX_SLOTS];
 
-    /* Only one incoming request can be "active" at a time (see rx above).
-       requestString() queues here instead of clobbering an in-flight wait;
-       advanceRxQueue() starts the next queued one once rx finishes or gives up. */
+    /* Once all RX_SLOTS are busy, a new requestString() queues here instead
+       of being dropped; advanceRxQueue() claims the slot that just freed up
+       for the next queued one. */
     enum { MAX_PENDING_RX = 4 };
     struct PendingRequest
     {
@@ -142,11 +173,13 @@ private:
     uint8_t        pendingRxCount;
 
     RegEntry* findEntry(uint16_t stringId);
+    RxSlot*   findRxSlot(uint16_t stringId);
+    RxSlot*   freeRxSlot(void);
     uint32_t  buildId(uint8_t PGN, uint8_t toType, uint8_t toAddress) const;
     void      beginSend(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
     void      sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
-    void      beginRequest(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
-    void      advanceRxQueue(void);
+    void      beginRequest(RxSlot* slot, uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
+    void      advanceRxQueue(RxSlot* freedSlot);
     void      onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_t* D);
     void      onPgn62(const uint8_t* D);
 };

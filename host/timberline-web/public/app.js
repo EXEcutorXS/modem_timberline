@@ -25,6 +25,20 @@ const ICONS = {
     viewBox: '0 0 511.999 511.999', fill: true,
     path: '<path d="M494.32,196.801l-4.858-8.131h-85.516v39.564h-8.557v-57.371h-44.32l-28.138-24.95h-46.53v-22.695h14.966V89.827H172.742v33.391h14.966v22.695h-48.443l-28.138,24.95H55.791v16.696v66.236h-22.4v-42.616H0v118.625h33.391v-42.617h22.4v66.236v16.696h83.474l58.709,52.054h197.414v-58.444h8.557v39.565h85.516l4.858-8.132c1.81-3.027,17.68-31.537,17.68-99.181S496.13,199.829,494.32,196.801z M221.101,123.22h21.909v22.695h-21.909V123.22z M468.927,369.902h-31.59v-39.565h-75.34v58.444H210.646l-58.709-52.054H89.183V204.255h34.617l28.138-24.95h158.32l28.138,24.95h23.601v57.371h75.34v-39.564h31.59c3.873,11.386,9.681,34.956,9.681,73.921C478.609,334.947,472.801,358.516,468.927,369.902z"/>',
   },
+  /* fan-svgrepo-com.svg — zn<N>/connected==1 zones (have a fan). Corner
+     badge on the zone card, see renderZoneRow(); spins via CSS while the
+     zone's live fan speed (telemetry.zoneFanPwm) is nonzero. */
+  fan: {
+    viewBox: '0 0 24 24', fill: true,
+    path: '<path d="M12,11a1,1,0,1,0,1,1,1,1,0,0,0-1-1m.5-9C17,2,17.1,5.57,14.73,6.75a3.36,3.36,0,0,0-1.62,2.47,3.17,3.17,0,0,1,1.23.91C18,8.13,22,8.92,22,12.5c0,4.5-3.58,4.6-4.75,2.23a3.44,3.44,0,0,0-2.5-1.62,3.24,3.24,0,0,1-.91,1.23c2,3.69,1.2,7.66-2.38,7.66C7,22,6.89,18.42,9.26,17.24a3.46,3.46,0,0,0,1.62-2.45,3,3,0,0,1-1.25-.92C5.94,15.85,2,15.07,2,11.5,2,7,5.54,6.89,6.72,9.26A3.39,3.39,0,0,0,9.2,10.87a2.91,2.91,0,0,1,.92-1.22C8.13,6,8.92,2,12.48,2Z"/>',
+  },
+  /* radiator-svgrepo-com.svg — zn<N>/connected==3 zones (radiator, no fan).
+     Native fill="#000000" stripped so it inherits currentColor like the
+     other filled icons. */
+  radiator: {
+    viewBox: '0 0 491.6 491.6', fill: true,
+    path: '<path d="M153.6,0H92.2C80.9,0,71.7,9.2,71.7,20.5V41H30.8c-11.3,0-20.5,9.2-20.5,20.5v61.4c0,11.3,9.2,20.5,20.5,20.5h41v204.8h-41c-11.3,0-20.5,9.2-20.5,20.5v61.4c0,11.3,9.2,20.5,20.5,20.5h41v20.5c0,11.3,9.2,20.5,20.5,20.5h61.4c11.3,0,20.5-9.2,20.5-20.5V20.5C174.1,9.1,165,0,153.6,0z M71.7,102.4H51.2V81.9h20.5V102.4z M71.7,409.6H51.2v-20.5h20.5V409.6z"/><path d="M276.5,0h-61.4c-11.3,0-20.5,9.2-20.5,20.5v450.6c0,11.3,9.2,20.5,20.5,20.5h61.4c11.3,0,20.5-9.2,20.5-20.5V20.5C297,9.1,287.8,0,276.5,0z"/><path d="M460.8,143.3c11.3,0,20.5-9.2,20.5-20.5V61.4c0-11.3-9.2-20.5-20.5-20.5h-41V20.5c0-11.3-9.2-20.5-20.5-20.5h-61.4c-11.3,0-20.5,9.2-20.5,20.5v450.6c0,11.3,9.2,20.5,20.5,20.5h61.4c11.3,0,20.5-9.2,20.5-20.5v-20.5h41c11.3,0,20.5-9.2,20.5-20.5v-61.4c0-11.3-9.2-20.5-20.5-20.5h-41V143.3H460.8z M419.9,81.9h20.5v20.5h-20.5V81.9z M419.9,389.1h20.5v20.5h-20.5V389.1z"/>',
+  },
 };
 
 /* First row: icon toggle buttons. Floor/Engine carry a connectedKey — not
@@ -75,6 +89,16 @@ const ENGINE_SETTINGS = [
   { key: 'engineSp', label: 'Setpoint', min: 0, max: 80, step: 1, unit: '°' },
   { key: 'engineDur', label: 'Run time', min: 10, max: 1450, step: 10, unit: ' min',
     format: (v) => (Number(v) > 1440 ? 'Unlimited' : `${v} min`) },
+];
+/* Modem-level settings, not tied to any zone/hardware presence — always
+   shown, unlike FLOOR_SETTINGS/ENGINE_SETTINGS above (see
+   updateSettingsGroup()'s connectedKey === null case). Range mirrors the
+   firmware's own clamp in onMqttCommandReceived() (Timberline.cpp). */
+const MISC_SETTINGS = [
+  /* Key is "telemetryInt", not the more obvious "telemetryInterval" — the
+     modem's MQTT-desired-topic-name buffer (Modem::mqttRxName) is only 16
+     bytes, and the longer name silently truncated and never matched. */
+  { key: 'telemetryInt', label: 'Telemetry interval', min: 5, max: 60, step: 1, unit: ' s' },
 ];
 
 let mqttClient = null;
@@ -128,7 +152,15 @@ function showBox(id) {
 
 function publishToggle(name, isOn) {
   const next = isOn ? '0' : '1';
+  desiredValues[name] = next;
   mqttClient.publish(`${mqttUsername}/cmd/desired/${name}`, next);
+  renderButtons(); /* spin the pending indicator right away */
+}
+
+function makeSpinner() {
+  const spinner = document.createElement('div');
+  spinner.className = 'pending-spinner';
+  return spinner;
 }
 
 function renderIconRow() {
@@ -137,14 +169,29 @@ function renderIconRow() {
   ICON_BUTTONS.forEach(b => {
     if (b.connectedKey && connectedState[b.connectedKey] !== '1') return;
 
-    const isOn = buttonState[b.name] === '1';
+    const confirmed = buttonState[b.name];
+    let pending = desiredValues[b.name];
+    /* Device caught up — stop tracking it as pending. */
+    if (pending !== undefined && confirmed !== undefined && pending === confirmed) {
+      delete desiredValues[b.name];
+      pending = undefined;
+    }
+    /* Display stays at the confirmed state until the device actually
+       echoes the change back — only the spinner indicates "in flight".
+       effectiveOn (pending if there is one) is just for computing what a
+       second click toggles from, so clicking again before confirmation
+       flips the *requested* state, not the stale on-screen one. */
+    const effectiveOn = (pending !== undefined ? pending : confirmed) === '1';
+    const displayOn = confirmed === '1';
+
     const btn = document.createElement('button');
-    btn.className = 'icon-btn' + (isOn ? ' on' : '');
+    btn.className = 'icon-btn' + (displayOn ? ' on' : '');
     const svgAttrs = b.icon.fill
       ? 'fill="currentColor" stroke="none"'
       : 'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
     btn.innerHTML = `<svg viewBox="${b.icon.viewBox}" ${svgAttrs}>${b.icon.path}</svg><span class="icon-label">${b.label}</span>`;
-    btn.onclick = () => publishToggle(b.name, isOn);
+    btn.onclick = () => publishToggle(b.name, effectiveOn);
+    if (pending !== undefined) btn.appendChild(makeSpinner());
     container.appendChild(btn);
   });
 }
@@ -159,11 +206,23 @@ function renderOtherButtons() {
     const label = document.createElement('span');
     label.textContent = b.label;
 
-    const isOn = buttonState[b.name] === '1';
+    const confirmed = buttonState[b.name];
+    let pending = desiredValues[b.name];
+    if (pending !== undefined && confirmed !== undefined && pending === confirmed) {
+      delete desiredValues[b.name];
+      pending = undefined;
+    }
+    const effectiveOn = (pending !== undefined ? pending : confirmed) === '1';
+    /* Asymmetric on purpose: turning ON waits for confirmation (blue in the
+       meantime, thumb stays put — same "don't move until confirmed" rule as
+       the icon buttons/zones). Turning OFF just flips immediately, no
+       pending/blue treatment — matches the original pre-tracking behavior. */
+    const isPendingOn = pending === '1';
+    const displayOn = isPendingOn ? confirmed === '1' : effectiveOn;
     const btn = document.createElement('button');
-    btn.className = 'switch' + (isOn ? ' on' : '');
+    btn.className = 'switch' + (displayOn ? ' on' : '') + (isPendingOn ? ' pending' : '');
     btn.innerHTML = '<span class="switch-thumb"></span>';
-    btn.onclick = () => publishToggle(b.name, isOn);
+    btn.onclick = () => publishToggle(b.name, effectiveOn);
 
     row.appendChild(label);
     row.appendChild(btn);
@@ -219,15 +278,44 @@ function renderZoneRow() {
   zones.forEach((z) => {
     const temp = telemetry ? telemetry.zoneCurrentTemp[z - 1] : undefined;
     const zoneType = rawStatus[`zn${z}/connected`];
-    const state = rawStatus[`zn${z}/state`];
+    const stateTopic = `zn${z}/state`;
+    const confirmedState = rawStatus[stateTopic];
+    let pendingState = desiredValues[stateTopic];
+    /* Device caught up — stop tracking it as pending. */
+    if (pendingState !== undefined && confirmedState !== undefined && pendingState === confirmedState) {
+      delete desiredValues[stateTopic];
+      pendingState = undefined;
+    }
+    /* Card background stays at the confirmed state until the device
+       echoes the change back — matches the icon buttons (see
+       renderIconRow()): only the spinner indicates "in flight". */
+    const state = confirmedState;
     const stateOptions = zoneType === '3' ? ['off', 'heat'] : ['off', 'heat', 'vent'];
 
     const card = document.createElement('div');
     card.className = 'zone-btn' + (state ? ` state-${state}` : '') + (z === selectedZone ? ' selected' : '');
     card.onclick = () => { selectedZone = z; openZoneMenu = null; renderZoneRow(); renderDrums(); };
 
+    /* zoneType 1 = has a fan, 3 = radiator (no fan) — see connectedZones().
+       Fan spins while its live speed (telemetry) is nonzero; a radiator has
+       no speed concept, so it just sits static. */
+    const zoneIconDef = zoneType === '1' ? ICONS.fan : zoneType === '3' ? ICONS.radiator : null;
+    if (zoneIconDef) {
+      const fanPwm = zoneType === '1' && telemetry ? telemetry.zoneFanPwm[z - 1] : 0;
+      const icon = document.createElement('div');
+      icon.className = 'zone-icon' + (fanPwm > 0 ? ' spinning' : '');
+      icon.innerHTML = `<svg viewBox="${zoneIconDef.viewBox}" fill="currentColor" stroke="none">${zoneIconDef.path}</svg>`;
+      card.appendChild(icon);
+    }
+
     const info = document.createElement('div');
+    info.className = 'zone-info';
     info.innerHTML = `<span class="zone-temp">${temp !== undefined ? temp + '°' : '–'}</span>`;
+    if (pendingState !== undefined) {
+      const spinner = makeSpinner();
+      spinner.classList.add('zone-spinner');
+      info.appendChild(spinner);
+    }
     card.appendChild(info);
 
     const menuBtn = document.createElement('button');
@@ -249,7 +337,8 @@ function renderZoneRow() {
         item.textContent = ZONE_STATE_LABELS[opt];
         item.onclick = (e) => {
           e.stopPropagation();
-          mqttClient.publish(`${mqttUsername}/cmd/desired/zn${z}/state`, opt);
+          desiredValues[stateTopic] = opt;
+          mqttClient.publish(`${mqttUsername}/cmd/desired/${stateTopic}`, opt);
           openZoneMenu = null;
           renderZoneRow();
         };
@@ -311,6 +400,16 @@ function renderDrums() {
    and nudges .value from live data, skipping whichever slider the user is
    actively touching right now. */
 let settingsRowsBuilt = false;
+
+/* Tracks a value the user just set (slider drag or drum spin) that the
+   device hasn't echoed back yet via cmd/actual/<key> — see
+   updateSettingsGroup()/buildDrum() below for how this drives the
+   confirmed/pending color and pulse. Keyed by topic: plain setting key for
+   the non-zone sliders (floorSp, engineDur, ...), full "zn<N>/<key>" for
+   drums (daySp, nightSp, fanPct are per-zone). One flat map works for both
+   since the key spaces don't overlap. */
+const desiredValues = {};
+
 function buildSettingsRow(groupId, s) {
   const row = document.createElement('div');
   row.className = 'setting-row';
@@ -331,7 +430,11 @@ function buildSettingsRow(groupId, s) {
   input.max = String(s.max);
   input.step = String(s.step);
   input.addEventListener('input', () => { value.textContent = s.format ? s.format(input.value) : input.value + s.unit; });
-  input.addEventListener('change', () => publishValue(s.key, input.value));
+  input.addEventListener('change', () => {
+    desiredValues[s.key] = input.value;
+    publishValue(s.key, input.value);
+    renderSettings(); /* turn the slider blue right away, don't wait for the next unrelated message */
+  });
 
   row.appendChild(label);
   row.appendChild(input);
@@ -343,23 +446,40 @@ function buildSettingsPanels() {
   settingsRowsBuilt = true;
   FLOOR_SETTINGS.forEach((s) => $('floorSettings').appendChild(buildSettingsRow('floorSettings', s)));
   ENGINE_SETTINGS.forEach((s) => $('engineSettings').appendChild(buildSettingsRow('engineSettings', s)));
+  MISC_SETTINGS.forEach((s) => $('miscSettings').appendChild(buildSettingsRow('miscSettings', s)));
 }
 
 function updateSettingsGroup(groupId, connectedKey, settings) {
   const details = $(groupId);
-  const visible = connectedState[connectedKey] === '1';
+  /* connectedKey === null means "no hardware gate" — always shown (see
+     MISC_SETTINGS/miscSettings). */
+  const visible = connectedKey ? connectedState[connectedKey] === '1' : true;
   details.classList.toggle('hidden', !visible);
   if (!visible) return;
 
   settings.forEach((s) => {
-    const raw = rawStatus[s.key];
-    if (raw === undefined) return;
+    const raw = rawStatus[s.key]; /* last value the device itself confirmed */
     const input = $(`${groupId}-${s.key}`);
-    if (document.activeElement === input) return; /* mid-drag — don't fight the user */
-    if (input.value !== raw) {
-      input.value = raw;
-      $(`${groupId}-${s.key}-value`).textContent = s.format ? s.format(raw) : raw + s.unit;
+    const valueEl = $(`${groupId}-${s.key}-value`);
+    let pending = desiredValues[s.key];
+
+    /* Device caught up to what was requested — done, stop tracking it as
+       pending. String comparison: raw arrives as text off the wire, pending
+       was stored from input.value (also text) — no numeric coercion needed. */
+    if (pending !== undefined && raw !== undefined && pending === raw) {
+      delete desiredValues[s.key];
+      pending = undefined;
     }
+
+    const display = pending !== undefined ? pending : raw;
+    if (display === undefined) return;
+
+    if (document.activeElement !== input) {
+      if (input.value !== display) input.value = display;
+      valueEl.textContent = s.format ? s.format(display) : display + s.unit;
+    }
+
+    input.classList.toggle('pending', pending !== undefined);
   });
 }
 
@@ -367,6 +487,7 @@ function renderSettings() {
   buildSettingsPanels();
   updateSettingsGroup('floorSettings', 'floorConnected', FLOOR_SETTINGS);
   updateSettingsGroup('engineSettings', 'engineConnected', ENGINE_SETTINGS);
+  updateSettingsGroup('miscSettings', null, MISC_SETTINGS);
 }
 
 function wireLongPress(el, onLongPress) {
@@ -390,7 +511,15 @@ function wireLongPress(el, onLongPress) {
 function buildDrum(d) {
   const topicName = selectedZone ? `zn${selectedZone}/${d.key}` : null;
   const manualTopic = selectedZone ? `zn${selectedZone}/fanManual` : null;
-  const raw = topicName ? rawStatus[topicName] : undefined;
+  const confirmed = topicName ? rawStatus[topicName] : undefined;
+  let pending = topicName ? desiredValues[topicName] : undefined;
+  /* Device caught up to what was requested — stop tracking it as pending. */
+  if (pending !== undefined && confirmed !== undefined && pending === confirmed) {
+    delete desiredValues[topicName];
+    pending = undefined;
+  }
+  const isPending = pending !== undefined;
+  const raw = isPending ? pending : confirmed;
   const isAuto = !!d.isFan && !!selectedZone && rawStatus[manualTopic] !== '1';
 
   const drum = document.createElement('div');
@@ -429,7 +558,7 @@ function buildDrum(d) {
   if (baseIndex === -1) baseIndex = 0;
 
   const mask = document.createElement('div');
-  mask.className = 'drum-reel-mask';
+  mask.className = 'drum-reel-mask' + (isPending ? ' pending' : '');
   mask.style.height = `${REEL_ROW_H * REEL_VISIBLE}px`;
 
   const reel = document.createElement('div');
@@ -530,12 +659,13 @@ function buildDrum(d) {
     const newVal = values[idx];
     if (newVal !== currentVal) {
       publishValue(topicName, newVal);
-      /* Mirror the value locally before reconciling — rawStatus[topicName]
-         still holds the pre-drag value at this instant (the device's own
-         "actual" echo hasn't arrived yet), so without this the very next
-         line rebuilds the drum from stale data and it visibly snaps back
-         to the old value for a moment before the echo corrects it again. */
-      rawStatus[topicName] = String(newVal);
+      /* Track as pending rather than mirroring straight into rawStatus —
+         rawStatus[topicName] still holds the pre-drag value at this instant
+         (the device's own "actual" echo hasn't arrived yet). Marking it
+         pending (see buildDrum()) both shows the new value right away
+         *and* pulses it, instead of silently pretending it's already
+         confirmed. */
+      desiredValues[topicName] = String(newVal);
     }
     /* Reconcile with reality now, in case nothing else happens to arrive
        and re-render soon (e.g. the command silently fails). */

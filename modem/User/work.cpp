@@ -108,13 +108,20 @@ void Work_C::canBroadcast(void) {
             0xFF);
     }
 
-    /* Re-push the last received SMS every 30 s, in case a panel joined the
-       bus late or missed the on-arrival push in Timberline.cpp. */
-    static uint32_t timerSms = 0;
-    if (modem.cmgrBody[0] && (core.getTick() - timerSms) >= 30000) {
-        timerSms = core.getTick();
-        stringTransfer.sendString(modem.cmgrBody,  STRID_LAST_REC_SMS_TEXT, can.idType, can.idAddress);
-        stringTransfer.sendString(modem.cmgrPhone, STRID_LAST_REC_SMS_NUM,  can.idType, can.idAddress);
+    /* Round-robin push of every registered string (IMEI, PIN, phones, SMS
+       text/numbers, operator name/code, IP, mqtt/broker/login/password,
+       internetCheckUrl, connectionLink, ...), one per tick, cycling back to
+       the start once all are sent — including empty ones. On-demand
+       request/response alone proved unreliable in practice (a missed
+       request or a dropped mid-transfer packet just left a field stale
+       until the user reloaded the screen); this guarantees every field is
+       refreshed within one full cycle regardless. DataActualizator's own
+       sendString() on real changes (see DataActualizator.cpp) still fires
+       immediately on top of this for the "don't wait for the cycle" case. */
+    static uint32_t timerStr = 0;
+    if ((core.getTick() - timerStr) >= 2000) {
+        timerStr = core.getTick();
+        stringTransfer.broadcastNext(can.idType, can.idAddress);
     }
 }
 

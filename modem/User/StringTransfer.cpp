@@ -77,6 +77,21 @@ void StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t t
     p.toAddress = toAddress;
 }
 
+void StringTransfer::broadcastNext(uint8_t toType, uint8_t toAddress)
+{
+    if (regCount == 0)
+        return;
+
+    if (broadcastIdx >= regCount)
+        broadcastIdx = 0;
+
+    RegEntry& e = regs[broadcastIdx];
+    broadcastIdx = (uint8_t)((broadcastIdx + 1) % regCount);
+
+    if (e.buffer)
+        sendString(e.buffer, e.id, toType, toAddress);
+}
+
 void StringTransfer::sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
 {
     can.SendMessage(buildId(61, fromType, fromAddress),
@@ -210,6 +225,7 @@ void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_
             RegEntry* e = findEntry(id);
             if (e && e->buffer && e->size > 0)
                 e->buffer[0] = 0;
+            receivedCount++;
             slot->active = false;
             advanceRxQueue(slot);
         }
@@ -265,6 +281,7 @@ void StringTransfer::onPgn62(const uint8_t* D)
             e->buffer[n] = 0;
             __enable_irq();
         }
+        receivedCount++;
         slot->active = false;
         advanceRxQueue(slot);
     }

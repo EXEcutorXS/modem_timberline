@@ -326,6 +326,41 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         c.type = TL_CMD_FORCE_2G; c.boolVal = bval; add_cmd(res, c); return;
     }
 
+    /* ── apn <name> — explicit PDP context APN override ────────────────────
+       Empty arg ("apn" with nothing after it) clears the override and goes
+       back to auto (blank CGDCONT, or a recognized-operator default — see
+       doInitNet()). Takes effect on the next connect attempt, no live
+       teardown/reinit — same as the pattern used for testing on real
+       hardware where the correct APN isn't known ahead of time. */
+    if (!strcmp(cmd, "apn")) {
+        int len = (int)strlen(origArg);
+        if (len > 31) { add_error(res, "apn: 0-31 chars"); return; }
+        c.type = TL_CMD_APN;
+        strncpy(c.strArg, origArg, 31); c.strArg[31] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
+    /* ── apnuser / apnpass <value> — explicit PDP auth (AT+CGAUTH) override,
+       same empty-clears-to-auto convention as "apn". */
+    if (!strcmp(cmd, "apnuser")) {
+        int len = (int)strlen(origArg);
+        if (len > 31) { add_error(res, "apnuser: 0-31 chars"); return; }
+        c.type = TL_CMD_APN_USER;
+        strncpy(c.strArg, origArg, 31); c.strArg[31] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
+    if (!strcmp(cmd, "apnpass")) {
+        int len = (int)strlen(origArg);
+        if (len > 31) { add_error(res, "apnpass: 0-31 chars"); return; }
+        c.type = TL_CMD_APN_PASS;
+        strncpy(c.strArg, origArg, 31); c.strArg[31] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
     /* ── ack / bestaetigung on/off ────────────────────────────────────────────── */
     if (!strcmp(cmd, "ack") || !strcmp(cmd, "bestaetigung")) {
         if (!strcmp(cmd, "bestaetigung")) mark_german(res);

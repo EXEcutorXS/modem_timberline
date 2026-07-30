@@ -51,6 +51,9 @@ enum TlCmdType {
     TL_CMD_GETLINK,         /* no params              — request a magic-link URL via SMS reply */
     TL_CMD_ROAMING,         /* boolVal                — allow mobile internet/MQTT while roaming (1) or not (0) */
     TL_CMD_FORCE_2G,        /* boolVal                — force 2G/GSM-only radio (1) or auto 2G/4G (0)         */
+    TL_CMD_APN,             /* strArg (0-31 chars)    — explicit PDP context APN; empty = auto (see doInitNet()) */
+    TL_CMD_APN_USER,        /* strArg (0-31 chars)    — explicit PDP auth (AT+CGAUTH) username; empty = auto/none */
+    TL_CMD_APN_PASS,        /* strArg (0-31 chars)    — explicit PDP auth (AT+CGAUTH) password; empty = auto/none */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/

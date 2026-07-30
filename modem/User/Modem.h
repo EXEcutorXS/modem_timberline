@@ -36,7 +36,21 @@ public:
     bool     isInternetConnected; /* PDP up and (if configured) HTTP check passed */
     char     ipAddress[16];       /* from +CGPADDR, for diagnostics        */
     char     internetCheckUrl[64];/* HTTP GET target used to verify real connectivity;
-                                      STRID_INTERNET_CHECK_URL, RAM-only for now */
+                                      STRID_INTERNET_CHECK_URL, persisted (flash.cpp) */
+    char     connectionLink[96];  /* Last "getlink" URL (see TL_CMD_GETLINK in
+                                      Timberline.cpp) — STRID_CONNECTION_LINK, persisted
+                                      (flash.cpp) so it survives a reboot even though it's
+                                      only regenerated rarely (on demand, via SMS). */
+    char     apn[32];             /* Explicit PDP context APN override, set via the "apn"
+                                      SMS command; empty = auto (blank CGDCONT APN, or a
+                                      recognized-operator default — see doInitNet()).
+                                      Persisted in flash so a value found by trial on a
+                                      remote device survives a power cycle. */
+    char     apnUsername[32];     /* PDP auth username (AT+CGAUTH), set via "apnuser";
+                                      empty = no auth, unless a recognized operator needs
+                                      one (see doInitNet()). Persisted in flash. */
+    char     apnPassword[32];     /* PDP auth password (AT+CGAUTH), set via "apnpass".
+                                      Persisted in flash. */
 
     /* MQTT control channel, active only when useInternet && isInternetConnected.
        Broker/username/password are persisted in flash (flash.cpp) and can be
@@ -46,6 +60,14 @@ public:
     char     mqttBroker[32];     /* host only, port fixed at 1883; STRID_MQTT_BROKER */
     char     mqttUsername[16];  /* STRID_MODEM_LOGIN — also the topic namespace       */
     char     mqttPassword[24];  /* STRID_MODEM_PASSWORD                                */
+    uint8_t  telemetryIntervalSec; /* How often Timberline::mqttTelemetryHandler()
+                                      publishes, 5-60s, default 15. Modem-local
+                                      behavior (not a heater/CAN setting), so it lives
+                                      here, not in Timberline — set via cmd/desired/
+                                      telemetryInt (see onMqttCommandReceived() in
+                                      Timberline.cpp); RAM-only, not persisted in flash
+                                      (the web app/broker is the source of truth — a
+                                      retained MQTT message re-delivers it on reboot). */
 
     /* Called when "<mqttUsername>/cmd/desired/<name>" arrives (name = last path segment) */
     void (*onMqttCommand)(const char* name, const char* payload);

@@ -64,6 +64,11 @@ void Flash_C::writeSetup(void)
     for (x = 0; x < sizeof(modem.mqttPassword); x++) array[a++] = (uint8_t)modem.mqttPassword[x];
     array[a++] = modem.allowRoaming ? 1 : 0;
     array[a++] = modem.force2gOnly  ? 1 : 0;
+    for (x = 0; x < sizeof(modem.internetCheckUrl); x++) array[a++] = (uint8_t)modem.internetCheckUrl[x];
+    for (x = 0; x < sizeof(modem.connectionLink);    x++) array[a++] = (uint8_t)modem.connectionLink[x];
+    for (x = 0; x < sizeof(modem.apn);                x++) array[a++] = (uint8_t)modem.apn[x];
+    for (x = 0; x < sizeof(modem.apnUsername);        x++) array[a++] = (uint8_t)modem.apnUsername[x];
+    for (x = 0; x < sizeof(modem.apnPassword);        x++) array[a++] = (uint8_t)modem.apnPassword[x];
 
     x = 0;
     for (a = 0; a < 511; a++) x += array[a];
@@ -104,7 +109,11 @@ void Flash_C::readSetup(void)
     }
 
     if (x == *(__IO uint8_t*)(FLASH_SETUP_ADDR + 511)) {
-        uint8_t a = 0;
+        /* uint16_t, not uint8_t — total bytes tracked here now exceeds 255
+           (connectionLink alone pushes it past that), and a uint8_t index
+           would silently wrap and corrupt every field parsed after the
+           wrap point. */
+        uint16_t a = 0;
         for (i = 0; i < 5; i++)
             for (x = 0; x < 16; x++)
                 modem.phones[i][x] = array[a++];
@@ -123,6 +132,11 @@ void Flash_C::readSetup(void)
         modem.allowRoaming = (rawAllowRoaming == 1);
         uint8_t rawForce2gOnly = array[a++];
         modem.force2gOnly = (rawForce2gOnly == 1);
+        for (x = 0; x < sizeof(modem.internetCheckUrl); x++) modem.internetCheckUrl[x] = (char)array[a++];
+        for (x = 0; x < sizeof(modem.connectionLink);    x++) modem.connectionLink[x]    = (char)array[a++];
+        for (x = 0; x < sizeof(modem.apn);                x++) modem.apn[x]              = (char)array[a++];
+        for (x = 0; x < sizeof(modem.apnUsername);        x++) modem.apnUsername[x]      = (char)array[a++];
+        for (x = 0; x < sizeof(modem.apnPassword);        x++) modem.apnPassword[x]      = (char)array[a++];
 
         bool needRewrite = false;
         /* allowRoaming/force2gOnly didn't exist in older firmware images —
@@ -144,6 +158,20 @@ void Flash_C::readSetup(void)
         sanitizeString(modem.mqttBroker,   sizeof(modem.mqttBroker),   "", needRewrite);
         sanitizeString(modem.mqttUsername, sizeof(modem.mqttUsername), "", needRewrite);
         sanitizeString(modem.mqttPassword, sizeof(modem.mqttPassword), "", needRewrite);
+        /* internetCheckUrl didn't exist in older firmware images either —
+           same stale/erased-byte risk, but unlike mqttBroker/Username/
+           Password an empty value here isn't a sensible fallback (it's a
+           check URL, not a credential) — fall back to the same default the
+           constructor uses for a genuinely fresh device. */
+        sanitizeString(modem.internetCheckUrl, sizeof(modem.internetCheckUrl), "http://google.com", needRewrite);
+        /* connectionLink is brand new too — empty is a perfectly legitimate
+           "no getlink sent yet" state, same as mqttBroker/Username/Password. */
+        sanitizeString(modem.connectionLink, sizeof(modem.connectionLink), "", needRewrite);
+        /* apn/apnUsername/apnPassword: brand new fields, empty = auto —
+           same reasoning as connectionLink. */
+        sanitizeString(modem.apn, sizeof(modem.apn), "", needRewrite);
+        sanitizeString(modem.apnUsername, sizeof(modem.apnUsername), "", needRewrite);
+        sanitizeString(modem.apnPassword, sizeof(modem.apnPassword), "", needRewrite);
         if (needRewrite) writeSetup();
     } else {
         modem.useInternet = true;

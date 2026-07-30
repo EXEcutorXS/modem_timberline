@@ -120,7 +120,7 @@
         <SetRegEntry>
           <Number>0</Number>
           <Key>DLGUARM</Key>
-          <Name>d</Name>
+          <Name></Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -179,6 +179,11 @@
           <count>5</count>
           <WinNumber>1</WinNumber>
           <ItemText>dataActualizator</ItemText>
+        </Ww>
+        <Ww>
+          <count>6</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>telemetryIntervalSec</ItemText>
         </Ww>
       </WatchWindow1>
       <WatchWindow2>

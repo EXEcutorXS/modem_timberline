@@ -46,6 +46,16 @@ void DataActualizator::ActualizeInternalData(void) {
     newState.mqttUsername[sizeof(newState.mqttUsername) - 1] = 0;
     strncpy(newState.mqttPassword, modem.mqttPassword, sizeof(newState.mqttPassword) - 1);
     newState.mqttPassword[sizeof(newState.mqttPassword) - 1] = 0;
+    strncpy(newState.internetCheckUrl, modem.internetCheckUrl, sizeof(newState.internetCheckUrl) - 1);
+    newState.internetCheckUrl[sizeof(newState.internetCheckUrl) - 1] = 0;
+    strncpy(newState.connectionLink, modem.connectionLink, sizeof(newState.connectionLink) - 1);
+    newState.connectionLink[sizeof(newState.connectionLink) - 1] = 0;
+    strncpy(newState.apn, modem.apn, sizeof(newState.apn) - 1);
+    newState.apn[sizeof(newState.apn) - 1] = 0;
+    strncpy(newState.apnUsername, modem.apnUsername, sizeof(newState.apnUsername) - 1);
+    newState.apnUsername[sizeof(newState.apnUsername) - 1] = 0;
+    strncpy(newState.apnPassword, modem.apnPassword, sizeof(newState.apnPassword) - 1);
+    newState.apnPassword[sizeof(newState.apnPassword) - 1] = 0;
     __enable_irq();
 
     newState.language = modem.language; /* single byte — already atomic, no guard needed */
@@ -140,6 +150,21 @@ void DataActualizator::handler(void) {
         stringTransfer.sendString(newState.mqttPassword, STRID_MODEM_PASSWORD, can.idType, can.idAddress);
         anyChanged = true;
     }
+    if (strcmp(oldState.internetCheckUrl, newState.internetCheckUrl) != 0) {
+        stringTransfer.sendString(newState.internetCheckUrl, STRID_INTERNET_CHECK_URL, can.idType, can.idAddress);
+        anyChanged = true;
+    }
+    if (strcmp(oldState.connectionLink, newState.connectionLink) != 0) {
+        stringTransfer.sendString(newState.connectionLink, STRID_CONNECTION_LINK, can.idType, can.idAddress);
+        anyChanged = true;
+    }
+
+    if (strcmp(oldState.apn, newState.apn) != 0) {
+        /* No STRID/echo — same as language, see the State comment. */
+        anyChanged = true;
+    }
+    if (strcmp(oldState.apnUsername, newState.apnUsername) != 0) anyChanged = true;
+    if (strcmp(oldState.apnPassword, newState.apnPassword) != 0) anyChanged = true;
 
     if (anyChanged) {
         oldState = newState;

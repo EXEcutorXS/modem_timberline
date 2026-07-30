@@ -61,6 +61,8 @@ enum StringId
     STRID_LAST_SENT_SMS_NUM  = 15,
     STRID_OPERATOR_NAME      = 16,
     STRID_OPERATOR_CODE      = 17,
+    STRID_IP_V4              = 18,  /* modem.ipAddress — from +CGPADDR, diagnostics only */
+    STRID_CONNECTION_LINK    = 19,  /* modem.connectionLink — last "getlink" URL, pushed to the panel when (re)generated */
 };
 
 class StringTransfer
@@ -69,8 +71,23 @@ public:
     void registerString(uint16_t stringId, char* buffer, uint16_t bufferSize);
     void sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
     void requestString(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
+    /* Pushes the next registered string (round-robin over regs[], one per
+       call) to toType/toAddress — including empty ones, so a receiver that
+       missed the original transfer (or a fresh panel that just joined the
+       bus) is guaranteed to catch up within one full cycle instead of
+       staying stale until something happens to re-request it. Call this on
+       a periodic timer (a few seconds apart); DataActualizator's own
+       immediate sendString() on real changes still covers the "I don't want
+       to wait for the cycle" case. */
+    void broadcastNext(uint8_t toType, uint8_t toAddress);
     void onCanMessage(uint32_t canId, const uint8_t* D);
     void handler(void);
+
+    /* Counts every string transfer that completed successfully — both the
+       normal multi-packet case (onPgn62) and the empty-string fast path
+       (onPgn61) — since boot. Plain counter, no per-id breakdown; watch it
+       in the debugger to see whether reception is actually progressing. */
+    uint32_t receivedCount;
 
 private:
     /* MAX_LEN=161 is the hard ceiling: onPgn62's 32-packet receivedMask bitmask
@@ -94,6 +111,7 @@ private:
     };
     RegEntry regs[MAX_REGS];
     uint8_t  regCount;
+    uint8_t  broadcastIdx; /* next regs[] slot broadcastNext() will push */
 
     struct
     {

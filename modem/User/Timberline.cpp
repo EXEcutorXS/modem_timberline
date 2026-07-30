@@ -603,6 +603,17 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
         D[3] = (uint8_t)ival;
         sendToHcu(41, D);
     }
+    else if (!strcmp(name, "telemetryInt")) {
+        /* Modem-local only — no HCU/CAN involved, just how often
+           mqttTelemetryHandler() below publishes. Lives on modem, not here
+           (see Modem::telemetryIntervalSec). Name is intentionally
+           "telemetryInt", not the more obvious "telemetryInterval" — that's
+           17 chars and silently truncates in Modem::mqttRxName[16] (only 15
+           usable chars), which made this compare always fail. */
+        ival = atoi(payload);
+        if (ival < 5 || ival > 60) return;
+        modem.telemetryIntervalSec = (uint8_t)ival;
+    }
     else {
         uint8_t     zoneNum;
         const char* prop;
@@ -1017,6 +1028,36 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
         }
 
+        case TL_CMD_APN: {
+            strncpy(modem.apn, cmd.strArg, sizeof(modem.apn) - 1);
+            modem.apn[sizeof(modem.apn) - 1] = '\0';
+            /* flash write handled centrally by dataActualizator.handler().
+               No forced teardown/reinit here — takes effect on the next
+               connect attempt, which happens within 60s if internet is
+               currently down (see doIdle()'s timerNet-gated retry). */
+            modem.sendSms(phone, de ? (modem.apn[0] ? "APN aktualisiert" : "APN zurückgesetzt (automatisch)")
+                                   : (modem.apn[0] ? "APN updated" : "APN reset (auto)"));
+            break;
+        }
+
+        case TL_CMD_APN_USER: {
+            strncpy(modem.apnUsername, cmd.strArg, sizeof(modem.apnUsername) - 1);
+            modem.apnUsername[sizeof(modem.apnUsername) - 1] = '\0';
+            /* flash write handled centrally by dataActualizator.handler(). */
+            modem.sendSms(phone, de ? (modem.apnUsername[0] ? "APN-Benutzer aktualisiert" : "APN-Benutzer zurückgesetzt")
+                                   : (modem.apnUsername[0] ? "APN username updated" : "APN username reset"));
+            break;
+        }
+
+        case TL_CMD_APN_PASS: {
+            strncpy(modem.apnPassword, cmd.strArg, sizeof(modem.apnPassword) - 1);
+            modem.apnPassword[sizeof(modem.apnPassword) - 1] = '\0';
+            /* flash write handled centrally by dataActualizator.handler(). */
+            modem.sendSms(phone, de ? (modem.apnPassword[0] ? "APN-Passwort aktualisiert" : "APN-Passwort zurückgesetzt")
+                                   : (modem.apnPassword[0] ? "APN password updated" : "APN password reset"));
+            break;
+        }
+
         case TL_CMD_GETLINK: {
             if (!modem.useInternet) {
                 modem.sendSms(phone, de ? "Erst Internet aktivieren: internet 1"
@@ -1027,9 +1068,9 @@ static void onSmsReceived(const char* phone, const char* text) {
             generateLinkToken(token, sizeof(token));
             modem.mqttPublish("linkToken", token);
 
-            char url[96];
-            int  n = 0;
-            const int urlMax = (int)sizeof(url) - 1;
+            char* url = modem.connectionLink;
+            int   n = 0;
+            const int urlMax = (int)sizeof(modem.connectionLink) - 1;
             /* https on the default port (443, terminated by nginx in front of
                the web app) — not ":3000", which is the app's own plain-HTTP
                port and has no TLS cert bound to it. Also requires mqttBroker
@@ -1045,6 +1086,10 @@ static void onSmsReceived(const char* phone, const char* text) {
             url[n] = '\0';
 
             modem.sendSms(phone, url);
+            /* Persisting + pushing to the panel (STRID_CONNECTION_LINK) is
+               handled centrally by dataActualizator.handler(), same as
+               every other field it tracks — no direct sendString()/
+               flash.writeSetup() call needed here. */
             break;
         }
 
@@ -1077,6 +1122,8 @@ void Timberline::init(void) {
     stringTransfer.registerString(STRID_MQTT_BROKER,     modem.mqttBroker,    sizeof(modem.mqttBroker));
     stringTransfer.registerString(STRID_MODEM_LOGIN,     modem.mqttUsername,  sizeof(modem.mqttUsername));
     stringTransfer.registerString(STRID_MODEM_PASSWORD,  modem.mqttPassword,  sizeof(modem.mqttPassword));
+    stringTransfer.registerString(STRID_IP_V4,           modem.ipAddress,     sizeof(modem.ipAddress));
+    stringTransfer.registerString(STRID_CONNECTION_LINK, modem.connectionLink, sizeof(modem.connectionLink));
 }
 
 /* ── mqttActualizerHandler ─────────────────────────────────────────────
@@ -1113,6 +1160,7 @@ void Timberline::mqttActualizerHandler(void) {
     static bool        prevEco;
     static uint8_t     prevFloorHyst, prevPumpForceDur;
     static uint8_t     prevDayStartHr, prevDayStartMin, prevNightStartHr, prevNightStartMin;
+    static uint8_t     prevTelemetryInterval;
     /* Hardware-presence mirrors, not user controls — lets the web UI hide
        btnFloor/btnEngine on systems that don't have that hardware. */
     static bool        prevFloorConnected, prevEngineConnected;
@@ -1246,6 +1294,11 @@ void Timberline::mqttActualizerHandler(void) {
         sprintf(buf, "%d", nightStartMinute);
         modem.mqttPublish("nightStartMin", buf);
     }
+    if (modem.telemetryIntervalSec != prevTelemetryInterval || justConnected) {
+        prevTelemetryInterval = modem.telemetryIntervalSec;
+        sprintf(buf, "%d", modem.telemetryIntervalSec);
+        modem.mqttPublish("telemetryInt", buf);
+    }
 
     bool errorsChanged = justConnected;
     for (int i = 0; i < 8; i++) {
@@ -1274,7 +1327,10 @@ void Timberline::mqttActualizerHandler(void) {
 /* ── mqttTelemetryHandler ────────────────────────────────────────────────
    Fast-changing status fields (temperatures, fan speeds, pump states, ...)
    packed into one 20-byte struct and base64-encoded into a single
-   "telemetry" topic, published unconditionally every 15s — unlike
+   "telemetry" topic, published unconditionally every
+   modem.telemetryIntervalSec seconds (5-60, default 15, settable live via
+   cmd/desired/telemetryInt — see onMqttCommandReceived() and
+   Modem::telemetryIntervalSec) — unlike
    mqttActualizerHandler's fields above, these change too often for
    diff-publishing to save anything, and the same interval × ~40 separate
    flat topics would mean ~40× the AT+CMQTT command round-trips every cycle
@@ -1300,7 +1356,7 @@ void Timberline::mqttActualizerHandler(void) {
 void Timberline::mqttTelemetryHandler(void) {
     static uint32_t timerTelemetry = 0;
     uint32_t now = core.getTick();
-    if (!modem.mqttConnected || (now - timerTelemetry) < 15000) return;
+    if (!modem.mqttConnected || (now - timerTelemetry) < (uint32_t)modem.telemetryIntervalSec * 1000) return;
     timerTelemetry = now;
 
     uint8_t raw[20];

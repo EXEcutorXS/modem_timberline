@@ -22,6 +22,7 @@ Modem::Modem()
       lac(0xFFFF), cellId(0xFFFFFFFF), networkAcT(0xFF),
       isInternetConnected(false),
       mqttConnected(false),
+      telemetryIntervalSec(15),
       onMqttCommand(0),
       useInternet(false),
       tempUnit(0),
@@ -51,6 +52,9 @@ Modem::Modem()
     mqttBroker[0] = 0;
     mqttUsername[0] = 0;
     mqttPassword[0] = 0;
+    apn[0] = 0;
+    apnUsername[0] = 0;
+    apnPassword[0] = 0;
     mqttRxName[0] = 0; mqttRxPayload[0] = 0;
     for (int i = 0; i < MQTT_PUB_MAX; i++) {
         mqttPubQueue[i].name[0] = 0;
@@ -659,7 +663,14 @@ void Modem::doIdle(void) {
     if (ussdPending)                 { setState(ST_USSD);       return; }
     if ((now - timerCsq)  >= 30000) { setState(ST_POLL_CSQ);   return; }
     if ((now - timerCreg) >= 60000) { setState(ST_POLL_CREG);  return; }
-    if (internetAllowed && (now - timerNet) >= 60000) { setState(ST_CHECK_INTERNET); return; }
+    if (internetAllowed && (now - timerNet) >= 60000) {
+        /* Already up — just re-verify (cheap: CGPADDR ± HTTP check). Down —
+           go through the full CNMP/CGDCONT/CGATT/CGACT sequence again
+           (ST_CHECK_INTERNET alone only re-checks CGPADDR; it can't bring a
+           torn-down PDP context back up by itself). */
+        setState(isInternetConnected ? ST_CHECK_INTERNET : ST_INIT_NET);
+        return;
+    }
 
     /* Safety net, not the primary path (that's smsNotifyPending, set
        directly off the +CMTI: URC) — every couple of minutes, ask the SIM
@@ -889,17 +900,66 @@ void Modem::doPollSmsUnread(void) {
 void Modem::doInitNet(void) {
     /* Bring up a PDP context on whatever radio access is available — auto
        2G/4G (AT+CNMP=2) normally, or GSM-only (AT+CNMP=13) if force2gOnly
-       is set (see the "2g" SMS command) — with a network-assigned APN, no
-       APN/login/password needed for the SIM cards this device uses.
-       Errors/timeouts on any step don't block the sequence (same policy as
-       doInit()); the real result is confirmed afterwards by
+       is set (see the "2g" SMS command). APN is blank (network-assigned
+       default) unless the "apn" SMS command set an explicit override, or
+       the operator is recognized (see case 1) — most SIMs this device uses
+       don't need one. Errors/timeouts on any step don't block the sequence
+       (same policy as doInit()); the real result is confirmed afterwards by
        doCheckInternet(). CNMP values are module-specific (A7682E); verified
        against its AT command set, not yet against real hardware. */
+    static char cmd[96];
+
+    /* Deutsche Telekom Germany (MCC/MNC 26201) is the only operator with a
+       baked-in guess right now — its commonly documented defaults are APN
+       "internet.telekom", username "telekom", password "tm", but none of
+       this is confirmed yet against this exact SIM/module combo. Any of the
+       three can be overridden individually via the "apn"/"apnuser"/"apnpass"
+       SMS commands if the guess turns out wrong; every other operator keeps
+       the original blank-APN, no-auth behavior, unchanged. */
+    bool isTelekomDe = !strcmp(operatorCode, "26201");
+    const char* apnToUse  = apn[0]         ? apn         : (isTelekomDe ? "internet.telekom" : "");
+    const char* userToUse = apnUsername[0] ? apnUsername : (isTelekomDe ? "telekom"          : "");
+    const char* passToUse = apnPassword[0] ? apnPassword : (isTelekomDe ? "tm"                : "");
+
     switch (step) {
     case 0: if (atCmd(force2gOnly ? "AT+CNMP=13\r\n" : "AT+CNMP=2\r\n", 300)) step++; break;
-    case 1: if (atCmd("AT+CGDCONT=1,\"IP\",\"\"\r\n",  300)) step++; break;
-    case 2: if (atCmd("AT+CGATT=1\r\n",               10000)) step++; break;
-    case 3: if (atCmd("AT+CGACT=1,1\r\n",             15000)) step++; break;
+    case 1: {
+        int n = 0;
+        const char* pre = "AT+CGDCONT=1,\"IP\",\"";
+        while (*pre) cmd[n++] = *pre++;
+        for (int i = 0; apnToUse[i] && n < 58; i++) cmd[n++] = apnToUse[i];
+        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 300)) step++;
+        break;
+    }
+    case 2:
+        if (!userToUse[0]) { step++; break; } /* no auth needed — skip CGAUTH entirely */
+        {
+            /* AT+CGAUTH=<cid>,<auth_type>,<user>,<pass> — auth_type 3 = "PAP
+               or CHAP", lets the module/network settle it rather than
+               guessing which one is actually required. */
+            int n = 0;
+            const char* pre = "AT+CGAUTH=1,3,\"";
+            while (*pre) cmd[n++] = *pre++;
+            for (int i = 0; userToUse[i] && n < 40; i++) cmd[n++] = userToUse[i];
+            cmd[n++] = '"'; cmd[n++] = ','; cmd[n++] = '"';
+            for (int i = 0; passToUse[i] && n < 88; i++) cmd[n++] = passToUse[i];
+            cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+            if (atCmd(cmd, 300)) step++;
+        }
+        break;
+    case 3: if (atCmd("AT+CGATT=1\r\n",               10000)) step++; break;
+    case 4:
+        if (atCmd("AT+CGACT=1,1\r\n", 15000))
+            step = (answer & ANS_ERROR) ? 5 : 6;
+        break;
+    case 5:
+        /* CGACT failed — AT+CEER reports the real reject cause instead of a
+           bare ERROR; purely diagnostic; doesn't change control flow. It's
+           logged automatically via the AT transcript (drainRx echoes every
+           raw line), no separate parsing needed. */
+        if (atCmd("AT+CEER\r\n", 2000)) step = 6;
+        break;
     default:
         timerNet = core.getTick();
         setState(ST_CHECK_INTERNET);
@@ -920,9 +980,27 @@ void Modem::doCheckInternet(void) {
             bool hasIp = (answer & ANS_CGPADDR) && ipAddress[0]
                        && strcmp(ipAddress, "0.0.0.0") != 0;
             if (!hasIp) {
-                /* PDP context is down — self-heal by re-running doInitNet() */
+                /* PDP context is down. Used to self-heal by jumping straight
+                   back into ST_INIT_NET — but that bypasses ST_IDLE forever
+                   while the network keeps rejecting CGACT (e.g. roaming with
+                   allowRoaming=false: the network correctly refuses data
+                   attach every time, and this node would hammer AT+CGACT in
+                   a tight loop indefinitely). ST_IDLE is the only place that
+                   re-checks internetAllowed (see doIdle()) and CREG/CSQ get
+                   polled — going there first lets a no-longer-allowed
+                   condition (roaming, useInternet toggled off, ...) actually
+                   stop the retries instead of being permanently starved.
+                   timerNet is refreshed here so doIdle()'s 60s gate paces
+                   from *this* failure, not some earlier stale mark — without
+                   it the gate could read as already-expired and refire on
+                   every doIdle() pass instead of waiting a real 60s. doIdle()
+                   itself now routes back into ST_INIT_NET (not straight into
+                   ST_CHECK_INTERNET) when isInternetConnected is false, so
+                   the PDP context actually gets re-provisioned instead of
+                   just being re-polled forever. */
                 isInternetConnected = false;
-                setState(ST_INIT_NET);
+                timerNet = core.getTick();
+                setState(ST_IDLE);
                 return;
             }
             if (!internetCheckUrl[0]) {

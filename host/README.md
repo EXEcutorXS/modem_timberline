@@ -58,6 +58,44 @@ password, MQTT topic scheme, the `getlink` magic-link flow) is documented in
 the firmware itself (`Library/Sms/timberline_sms.cpp`,
 `modem/User/Timberline.cpp`) — this README only covers the server half.
 
+## Web control panel
+
+`public/index.html` + `public/app.js` — no build step, edit and `scp` the two
+files straight to `/opt/timberline-web/public/` on the VPS (static, served by
+Express — no service restart needed). Besides the zone/button controls,
+there are two collapsible "spoilers" (native `<details>`, collapsed by
+default) for settings that aren't per-zone: **Floor heating** (setpoint,
+hysteresis) and **Engine heater** (setpoint, run time). Each is only shown
+once the matching hardware reports present (`floorConnected`/
+`engineConnected` — same gate the Floor/Engine icon buttons use).
+
+Slider ranges (`FLOOR_SETTINGS`/`ENGINE_SETTINGS` in `app.js`) are meant to
+mirror the firmware's own validation in `Timberline.cpp`'s
+`onMqttCommandReceived()` exactly — **if one changes, the other must too**,
+or the slider will happily let the user pick a value the modem silently
+rejects. `engineDur` (engine run time) is a real gotcha here: it's a
+2-byte field on the wire (`D[4]*256+D[5]`, up to 1450 minutes, >1440 reads
+as "unlimited" — same convention as `SystemTimeLimitHours`), so
+`engineDurationMinutes` in `Timberline.h` has to stay a `uint16_t`, not
+`uint8_t` — it silently wrapped before this was caught.
+
+**Desired vs. confirmed, and why the UI tracks both**: publishing to
+`cmd/desired/<topic>` doesn't mean the device applied it — the message
+could get dropped, or the device could reject it. Early versions of this
+UI updated the slider/drum optimistically and had no way to show the user
+when a change silently didn't take effect. Now every setting slider and
+zone drum (day/night/fan) tracks the value the user just set (`desiredValues`
+in `app.js`) separately from the last confirmed value the device actually
+echoed back over `cmd/actual/<topic>`:
+- Sliders: green `accent-color` once confirmed, blue while only "desired"
+  (pending) — see `.setting-row input[type=range].pending` in
+  `index.html`.
+- Drums: the reel window pulses (reuses the `conn-dot`'s `conn-pulse`
+  keyframes) while pending, holds steady once confirmed.
+
+Both clear back to normal the moment the device's echoed value matches what
+was requested — there's no timeout, just "confirmed" vs "not yet."
+
 ## TLS (Let's Encrypt)
 
 Requires a domain name whose DNS A record points at the VPS — Let's Encrypt

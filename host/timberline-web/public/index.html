@@ -70,6 +70,10 @@
     transition: transform 0.15s ease; pointer-events: none;
   }
   .switch.on .switch-thumb { transform: translateX(20px); }
+  /* Overrides .switch.on's background while a change is in flight (see
+     desiredValues in app.js) — thumb position is untouched (still driven
+     by .on alone above), only the color hints "not confirmed yet". */
+  .switch.pending { background: var(--vent); }
 
   .conn-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
@@ -88,7 +92,11 @@
   .setting-row { margin: 10px 0; }
   .setting-row label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
   .setting-row .setting-value { color: var(--text); font-weight: 600; }
+  /* Green = confirmed by the device (cmd/actual echo matches), blue = still
+     just what was requested (cmd/desired sent, no matching echo yet) — see
+     desiredValues in app.js. */
   .setting-row input[type=range] { width: 100%; accent-color: var(--accent); }
+  .setting-row input[type=range].pending { accent-color: var(--vent); }
 
   #statusPre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 200px; overflow: auto; color: var(--text); }
   #err { color: var(--danger); font-size: 14px; }
@@ -96,13 +104,24 @@
 
   .icon-row { display: flex; gap: 8px; margin: 16px 0; }
   .icon-btn {
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
     padding: 14px 4px; margin: 0; border: 1px solid var(--border); border-radius: 12px;
     background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
   }
   .icon-btn svg { width: 26px; height: 26px; }
   .icon-btn .icon-label { font-size: 12px; }
   .icon-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+
+  /* Desired-but-not-yet-confirmed indicator — see desiredValues in app.js.
+     Used on the 4 main icon buttons and zone state changes; sliders/drums
+     have their own color/pulse treatment instead (see .setting-row input
+     and .drum-reel-mask.pending above). */
+  .pending-spinner {
+    position: absolute; top: 6px; right: 6px; width: 14px; height: 14px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: pending-spin 0.7s linear infinite; pointer-events: none;
+  }
+  @keyframes pending-spin { to { transform: rotate(360deg); } }
 
   .drum-row { display: flex; gap: 8px; margin: 0 0 8px; }
   .drum {
@@ -121,6 +140,10 @@
     -webkit-mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
             mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
   }
+  /* Pulses while the drum shows a value the user just set but the device
+     hasn't echoed back yet (see desiredValues in app.js) — steady once
+     confirmed. Reuses the same conn-dot pulse keyframes. */
+  .drum-reel-mask.pending { animation: conn-pulse 1.2s ease-in-out infinite; }
   .drum-reel { position: absolute; left: 0; right: 0; will-change: transform; }
   .reel-item {
     display: flex; align-items: center; justify-content: center;
@@ -145,6 +168,10 @@
     background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
   }
   .zone-btn .zone-temp { font-size: 13px; color: var(--muted); }
+  /* Sits inline right after the temperature digit — between it and the "⋮"
+     menu button — instead of a corner badge; see renderZoneRow(). */
+  .zone-info { display: flex; align-items: center; gap: 4px; }
+  .zone-info .pending-spinner { position: static; width: 13px; height: 13px; }
   /* Background = current zone state (color-coded), at a glance. */
   .zone-btn.state-off  { background: var(--card); color: var(--muted); }
   .zone-btn.state-heat { background: var(--heat); color: #fff; }
@@ -155,6 +182,18 @@
      from state, so it can't reuse background color anymore; an outline
      reads fine against any of the state colors above. */
   .zone-btn.selected { outline: 3px solid var(--text); outline-offset: -3px; }
+
+  /* Fan/radiator badge — zoneType 1 vs 3, see renderZoneRow(). Height spans
+     the card (aspect-ratio keeps width proportional, so it isn't stretched)
+     — sized to match the temperature digit rather than a tiny corner mark.
+     Muted so it reads as a secondary cue, not competing with the digit. */
+  .zone-icon {
+    position: absolute; top: 6px; bottom: 6px; left: 6px; aspect-ratio: 1 / 1;
+    opacity: 0.5; pointer-events: none;
+  }
+  .zone-icon svg { width: 100%; height: 100%; }
+  .zone-icon.spinning svg { animation: zone-fan-spin 1.4s linear infinite; transform-origin: 50% 50%; }
+  @keyframes zone-fan-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
   .zone-menu-btn {
     position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
@@ -231,6 +270,9 @@
     </details>
     <details id="engineSettings" class="settings-group hidden">
       <summary>Engine heater</summary>
+    </details>
+    <details id="miscSettings" class="settings-group">
+      <summary>Misc</summary>
     </details>
     <div id="zoneRow" class="zone-row"></div>
     <div id="buttons"></div>

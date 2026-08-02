@@ -12,13 +12,13 @@ static uint32_t Pgn60Id(void) {
 
 void DataActualizator::ActualizeInternalData(void) {
     /* Wire/struct field keeps the old "onlySmsMode" polarity (1=SMS-only) —
-       modem.useInternet uses the opposite sense, invert here at the boundary. */
-    newState.onlySmsMode = !modem.useInternet;
-    newState.faultReport = modem.faultReport;
-    newState.cmdAck       = modem.cmdAck;
-    newState.tempUnit     = modem.tempUnit;
-    newState.force2gOnly  = modem.force2gOnly;
-    newState.allowRoaming = modem.allowRoaming;
+       modem.config.useInternet uses the opposite sense, invert here at the boundary. */
+    newState.onlySmsMode = !modem.config.useInternet;
+    newState.faultReport = modem.config.faultReport;
+    newState.cmdAck       = modem.config.cmdAck;
+    newState.tempUnit     = modem.config.tempUnit;
+    newState.force2gOnly  = modem.config.force2gOnly;
+    newState.allowRoaming = modem.config.allowRoaming;
 
     /* Not on CAN yet — see the State comment — but SMS can already change
        these, and a future panel/CAN write path will too, so they're
@@ -37,28 +37,28 @@ void DataActualizator::ActualizeInternalData(void) {
        out; nothing here is slow enough for the brief interrupt latency hit
        to matter. */
     __disable_irq();
-    memcpy(newState.phones, modem.phones, sizeof(newState.phones));
-    strncpy(newState.pin, modem.pin, sizeof(newState.pin) - 1);
+    memcpy(newState.phones, modem.config.phones, sizeof(newState.phones));
+    strncpy(newState.pin, modem.config.pin, sizeof(newState.pin) - 1);
     newState.pin[sizeof(newState.pin) - 1] = 0;
-    strncpy(newState.mqttBroker, modem.mqttBroker, sizeof(newState.mqttBroker) - 1);
+    strncpy(newState.mqttBroker, modem.mqtt.broker, sizeof(newState.mqttBroker) - 1);
     newState.mqttBroker[sizeof(newState.mqttBroker) - 1] = 0;
-    strncpy(newState.mqttUsername, modem.mqttUsername, sizeof(newState.mqttUsername) - 1);
+    strncpy(newState.mqttUsername, modem.mqtt.username, sizeof(newState.mqttUsername) - 1);
     newState.mqttUsername[sizeof(newState.mqttUsername) - 1] = 0;
-    strncpy(newState.mqttPassword, modem.mqttPassword, sizeof(newState.mqttPassword) - 1);
+    strncpy(newState.mqttPassword, modem.mqtt.password, sizeof(newState.mqttPassword) - 1);
     newState.mqttPassword[sizeof(newState.mqttPassword) - 1] = 0;
-    strncpy(newState.internetCheckUrl, modem.internetCheckUrl, sizeof(newState.internetCheckUrl) - 1);
+    strncpy(newState.internetCheckUrl, modem.internet.internetCheckUrl, sizeof(newState.internetCheckUrl) - 1);
     newState.internetCheckUrl[sizeof(newState.internetCheckUrl) - 1] = 0;
-    strncpy(newState.connectionLink, modem.connectionLink, sizeof(newState.connectionLink) - 1);
+    strncpy(newState.connectionLink, modem.internet.connectionLink, sizeof(newState.connectionLink) - 1);
     newState.connectionLink[sizeof(newState.connectionLink) - 1] = 0;
-    strncpy(newState.apn, modem.apn, sizeof(newState.apn) - 1);
+    strncpy(newState.apn, modem.internet.apn, sizeof(newState.apn) - 1);
     newState.apn[sizeof(newState.apn) - 1] = 0;
-    strncpy(newState.apnUsername, modem.apnUsername, sizeof(newState.apnUsername) - 1);
+    strncpy(newState.apnUsername, modem.internet.apnUsername, sizeof(newState.apnUsername) - 1);
     newState.apnUsername[sizeof(newState.apnUsername) - 1] = 0;
-    strncpy(newState.apnPassword, modem.apnPassword, sizeof(newState.apnPassword) - 1);
+    strncpy(newState.apnPassword, modem.internet.apnPassword, sizeof(newState.apnPassword) - 1);
     newState.apnPassword[sizeof(newState.apnPassword) - 1] = 0;
     __enable_irq();
 
-    newState.language = modem.language; /* single byte — already atomic, no guard needed */
+    newState.language = modem.config.language; /* single byte — already atomic, no guard needed */
 }
 
 /* Sub-packet 1: D[1] = 4 флага x 2 бита/bool (00=off,01=on,11=нет данных):

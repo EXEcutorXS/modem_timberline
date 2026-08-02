@@ -1,11 +1,15 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const Database = require('better-sqlite3');
 const mqtt = require('mqtt');
+const http = require('http');
+const { WebSocketServer } = require('ws');
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 
 /* MQTT_HOST is deliberately NOT hardcoded: the broker and this app are
@@ -53,7 +57,75 @@ const upsertSessionStmt = db.prepare(`
 `);
 
 app.use(express.json());
+
+/* ── Firmware slice endpoint ──────────────────────────────────────────────
+   The modem stages an OTA firmware.bin page by page (2048 bytes each) but
+   its AT+HTTP command set turned out not to support HTTP Range requests on
+   real hardware (AT+HTTPPARA="USERDATA" — the usual SIMCOM way to inject a
+   custom header — came back ERROR). Rather than depend on the module
+   supporting Range at all, offset/len are handled server-side: the modem
+   just asks for firmware.bin?offset=X&len=Y and gets back a plain 200
+   response containing exactly those bytes, same as any other small file it
+   already knows how to fetch. Registered before express.static below so it
+   intercepts requests carrying the query params; a plain request with
+   neither falls through to static's normal full-file serving (browsers
+   downloading the whole image, the CRC-sidecar fetch, etc). */
+const FIRMWARE_SLICE_TYPE_RE = /^[a-z0-9_-]+$/i;
+const FIRMWARE_SLICE_VERSION_RE = /^[0-9.]+$/;
+const FIRMWARE_SLICE_MAX_LEN = 4096;
+app.get('/firmware/:type/:version/firmware.bin', (req, res, next) => {
+    if (req.query.offset === undefined || req.query.len === undefined) return next();
+    if (!FIRMWARE_SLICE_TYPE_RE.test(req.params.type) || !FIRMWARE_SLICE_VERSION_RE.test(req.params.version)) {
+        return res.status(400).end();
+    }
+    const offset = Number(req.query.offset);
+    const len = Number(req.query.len);
+    if (!Number.isInteger(offset) || !Number.isInteger(len) || offset < 0 || len <= 0 || len > FIRMWARE_SLICE_MAX_LEN) {
+        return res.status(400).end();
+    }
+    const filePath = path.join(__dirname, 'public', 'firmware', req.params.type, req.params.version, 'firmware.bin');
+    fs.open(filePath, 'r', (openErr, fd) => {
+        if (openErr) return res.status(404).end();
+        const buf = Buffer.alloc(len);
+        fs.read(fd, buf, 0, len, offset, (readErr, bytesRead) => {
+            fs.close(fd, () => {});
+            if (readErr) return res.status(500).end();
+            res.set('Content-Type', 'application/octet-stream');
+            res.status(200).send(buf.subarray(0, bytesRead));
+        });
+    });
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
+
+/* ── Firmware OTA listing ──────────────────────────────────────────────────
+   The actual .bin/.crc32 files are served by express.static above (they
+   just live under public/firmware/<type>/<version>/) — this is only the
+   directory-listing piece static serving doesn't provide on its own.
+   Version directory names follow this org's device version scheme: 4
+   dot-separated bytes matching what the CAN bootloader itself reports
+   (VER_PRODUCT_TYPE.VER_VOLTAGE.VER_PRODUCT_SUBTYPE.VER_ASSEMBLAGE_NUMBER —
+   see the OmniProtocol PGN=6 param 18 query), e.g. "125.0.0.15" for MBC-2
+   (type 125; VER_VOLTAGE unused for this device, always 0). No auth — same
+   as the firmware files themselves and the rest of public/. */
+const FIRMWARE_TYPE_RE = /^[a-z0-9_-]+$/i;
+app.get('/firmware/:type/versions', (req, res) => {
+    if (!FIRMWARE_TYPE_RE.test(req.params.type)) return res.status(400).json({ error: 'invalid type' });
+    const typeDir = path.join(__dirname, 'public', 'firmware', req.params.type);
+    let entries;
+    try {
+        entries = fs.readdirSync(typeDir, { withFileTypes: true });
+    } catch (e) {
+        return res.json({ versions: [] }); /* type not published yet — not an error */
+    }
+    const versions = entries
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .filter((name) => fs.existsSync(path.join(typeDir, name, 'firmware.bin'))
+                        && fs.existsSync(path.join(typeDir, name, 'firmware.crc32')))
+        .sort();
+    res.json({ versions });
+});
 
 /* ── getlink / magic-link support ─────────────────────────────────────────
    The modem publishes a token to "<username>/cmd/actual/linkToken" (retained)
@@ -156,22 +228,29 @@ app.get('/go/:username/:token', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+/* Shared by /auth/user below and the AT-bridge WebSocket handshake — same
+   two things count as valid: the account's real password, or a still-valid
+   magic-link session password (see /api/go/:username/:token above). */
+async function verifyCredentials(username, password) {
+    if (!username || !password) return false;
+
+    const user = getUserStmt.get(username);
+    if (user && await bcrypt.compare(password, user.password_hash)) return true;
+
+    const session = getSessionStmt.get(username);
+    if (session && session.expires_at > Date.now() && await bcrypt.compare(password, session.session_hash)) {
+        return true;
+    }
+    return false;
+}
+
 /* ── mosquitto-go-auth HTTP backend ───────────────────────────────────────
    Called by the broker itself (auth_opt_http_response_mode "status" — a
    2xx/4xx status code is the whole answer, no body needed) on every MQTT
    CONNECT/SUBSCRIBE/PUBLISH. */
 app.post('/auth/user', async (req, res) => {
-    const { username, password } = req.body || {};
-    if (!username || !password) return res.sendStatus(403);
-
-    const user = getUserStmt.get(username);
-    if (user && await bcrypt.compare(password, user.password_hash)) return res.sendStatus(200);
-
-    const session = getSessionStmt.get(username);
-    if (session && session.expires_at > Date.now() && await bcrypt.compare(password, session.session_hash)) {
-        return res.sendStatus(200);
-    }
-    res.sendStatus(403);
+    const ok = await verifyCredentials(req.body?.username, req.body?.password);
+    res.sendStatus(ok ? 200 : 403);
 });
 
 app.post('/auth/acl', (req, res) => {
@@ -190,4 +269,60 @@ app.post('/auth/acl', (req, res) => {
     res.sendStatus(403);
 });
 
-app.listen(PORT, () => console.log(`timberline-web listening on :${PORT}`));
+/* ── AT-bridge relay ───────────────────────────────────────────────────────
+   Raw byte pipe between a "relay" (the small script a dealer/technician runs
+   next to the physical modem, forwarding its USB-CDC COM port) and one or
+   more "viewers" (a browser tab open on /at-console.html) — for sending AT
+   commands to a modem that's physically somewhere else, over its own
+   independent internet connection rather than through the cellular modem
+   itself (which may be exactly what's broken and needs debugging). This
+   server only relays bytes; it doesn't parse or store anything.
+
+   One room per account (same login used for the main site), so two
+   different accounts' sessions can never see each other's traffic. Auth
+   reuses verifyCredentials() — same credentials as the site login, checked
+   once at connect time (WebSocket has no per-message auth, unlike HTTP). */
+const atBridgeRooms = new Map(); /* username -> { relay: ws|null, viewers: Set<ws> } */
+
+function atBridgeRoom(username) {
+    let room = atBridgeRooms.get(username);
+    if (!room) {
+        room = { relay: null, viewers: new Set() };
+        atBridgeRooms.set(username, room);
+    }
+    return room;
+}
+
+const wss = new WebSocketServer({ server, path: '/at-bridge' });
+
+wss.on('connection', async (ws, req) => {
+    const url = new URL(req.url, 'http://localhost');
+    const username = url.searchParams.get('username');
+    const password = url.searchParams.get('password');
+    const role = url.searchParams.get('role'); /* "relay" or "viewer" */
+
+    if ((role !== 'relay' && role !== 'viewer') || !(await verifyCredentials(username, password))) {
+        ws.close(4001, 'unauthorized');
+        return;
+    }
+
+    const room = atBridgeRoom(username);
+
+    if (role === 'relay') {
+        /* Only one relay per account at a time — a second one connecting
+           (e.g. a dealer restarting their script) replaces the stale one
+           rather than fighting over who's authoritative. */
+        if (room.relay) room.relay.close(4002, 'replaced by a new relay connection');
+        room.relay = ws;
+        ws.on('message', (data) => {
+            for (const viewer of room.viewers) viewer.send(data);
+        });
+        ws.on('close', () => { if (room.relay === ws) room.relay = null; });
+    } else {
+        room.viewers.add(ws);
+        ws.on('message', (data) => { if (room.relay) room.relay.send(data); });
+        ws.on('close', () => room.viewers.delete(ws));
+    }
+});
+
+server.listen(PORT, () => console.log(`timberline-web listening on :${PORT}`));

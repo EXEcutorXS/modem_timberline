@@ -106,6 +106,11 @@ void Can::SendMessage(uint32_t AID, uint8_t AD0, uint8_t AD1, uint8_t AD2, uint8
 }
 
 
+bool Can::txReady(void) const
+{
+    return (CAN2->TSTS & (CAN_TSTS_TMEM0 | CAN_TSTS_TMEM1 | CAN_TSTS_TMEM2)) != 0;
+}
+
 void Can::sendRaw(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data)
 {
     TxMessage.StdId = ext ? 0 : (uint16_t)id;

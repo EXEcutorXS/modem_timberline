@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AT Console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+    background: #111; color: #ddd; font-family: system-ui, sans-serif;
+  }
+  header {
+    padding: 10px 14px; border-bottom: 1px solid #333;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; color: #eee; }
+  #status { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+  #status.disconnected { background: #3a1414; color: #ff8a8a; }
+  #status.connected { background: #143a1e; color: #7ee08a; }
+  #loginBox {
+    margin: auto; padding: 20px; max-width: 320px; width: 100%;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #loginBox input {
+    padding: 8px 10px; border-radius: 6px; border: 1px solid #333;
+    background: #1a1a1a; color: #eee; font-size: 14px;
+  }
+  #loginBox button, #terminalBox button {
+    padding: 8px 10px; border-radius: 6px; border: none;
+    background: #2a5; color: #fff; font-size: 14px; cursor: pointer;
+  }
+  #loginError { color: #ff8a8a; font-size: 13px; min-height: 1em; }
+  #terminalBox { display: none; flex: 1; flex-direction: column; padding: 10px; gap: 8px; min-height: 0; }
+  #log {
+    flex: 1; overflow-y: auto; background: #000; border-radius: 6px;
+    padding: 10px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 13px; white-space: pre-wrap; word-break: break-all;
+  }
+  #inputRow { display: flex; gap: 8px; align-items: center; }
+  #cmdInput {
+    flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid #333;
+    background: #1a1a1a; color: #eee; font-family: ui-monospace, Consolas, monospace; font-size: 14px;
+  }
+  .hint { font-size: 12px; color: #888; }
+  .autoscroll {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 12px; color: #999; white-space: nowrap; cursor: pointer; user-select: none;
+  }
+  .autoscroll input { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AT Console</h1>
+  <span id="status" class="disconnected">disconnected</span>
+</header>
+
+<div id="loginBox">
+  <div class="hint">Same login/password as the main control panel.</div>
+  <input id="loginUser" placeholder="Login" autocomplete="username">
+  <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
+  <button id="loginBtn">Connect</button>
+  <div id="loginError"></div>
+</div>
+
+<div id="terminalBox">
+  <div id="log"></div>
+  <div id="inputRow">
+    <input id="cmdInput" placeholder="AT+CSQ" autocomplete="off">
+    <button id="sendBtn">Send</button>
+    <button id="ctrlZBtn" title="Ctrl+Z (0x1A) — ends an SMS body, no CR">^Z</button>
+    <button id="escBtn" title="ESC (0x1B) — cancels an AT+CMGS &gt; prompt">ESC</button>
+    <label class="autoscroll">
+      <input type="checkbox" id="autoscrollToggle" checked>
+      Auto-scroll
+    </label>
+  </div>
+  <div class="hint">
+    First line should be <code>b</code> (enter bridge mode on the modem's USB console) —
+    <code>+++</code> exits it. Raw bytes both ways; nothing here parses AT syntax.
+    To send an SMS: <code>AT+CMGS="+phone"</code>, wait for the <code>&gt;</code> prompt, type the
+    body, then hit <b>^Z</b> (or Ctrl+Z in the input box) — not Enter.
+  </div>
+</div>
+
+<script>
+let ws = null;
+
+function setStatus(connected) {
+  const el = document.getElementById('status');
+  el.textContent = connected ? 'connected' : 'disconnected';
+  el.className = connected ? 'connected' : 'disconnected';
+}
+
+function appendLog(text) {
+  const log = document.getElementById('log');
+  log.textContent += text;
+  if (document.getElementById('autoscrollToggle').checked) {
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function connect(username, password) {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/at-bridge?role=viewer&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setStatus(true);
+    document.getElementById('loginBox').style.display = 'none';
+    document.getElementById('terminalBox').style.display = 'flex';
+    document.getElementById('cmdInput').focus();
+  };
+  ws.onmessage = async (ev) => {
+    const text = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(await ev.data.arrayBuffer());
+    appendLog(text);
+  };
+  ws.onclose = (ev) => {
+    setStatus(false);
+    if (ev.code === 4001) {
+      document.getElementById('loginError').textContent = 'Invalid login or password.';
+      document.getElementById('loginBox').style.display = 'flex';
+      document.getElementById('terminalBox').style.display = 'none';
+    } else {
+      appendLog('\n[disconnected]\n');
+    }
+  };
+  ws.onerror = () => setStatus(false);
+}
+
+document.getElementById('loginBtn').addEventListener('click', () => {
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  if (!username || !password) return;
+  document.getElementById('loginError').textContent = '';
+  connect(username, password);
+});
+
+function sendLine() {
+  const input = document.getElementById('cmdInput');
+  const line = input.value;
+  if (!line || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(line + '\r');
+  appendLog(line + '\r\n');
+  input.value = '';
+}
+
+/* Sends a single raw control byte with no CR — for AT+CMGS's "type the body,
+   then Ctrl+Z" prompt (0x1A ends and sends it; 0x1B/ESC cancels). A normal
+   text <input> can't produce these itself: the browser's own Ctrl+Z (undo)
+   handling gets in the way, and there's no "type a literal 0x1A" key. */
+function sendRawByte(byte, label) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(String.fromCharCode(byte));
+  appendLog(label);
+}
+document.getElementById('ctrlZBtn').addEventListener('click', () => sendRawByte(0x1A, '^Z'));
+document.getElementById('escBtn').addEventListener('click', () => sendRawByte(0x1B, '[ESC]'));
+
+document.getElementById('sendBtn').addEventListener('click', sendLine);
+document.getElementById('cmdInput').addEventListener('keydown', (e) => {
+  if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+    e.preventDefault(); /* stop the browser's own undo-in-textbox handling */
+    sendRawByte(0x1A, '^Z');
+    return;
+  }
+  if (e.key === 'Escape') {
+    sendRawByte(0x1B, '[ESC]');
+    return;
+  }
+  if (e.key === 'Enter') sendLine();
+});
+document.getElementById('loginPass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('loginBtn').click();
+});
+</script>
+
+</body>
+</html>

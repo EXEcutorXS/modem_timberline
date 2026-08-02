@@ -51,18 +51,18 @@ enum StringId
     STRID_TRUSTED_PHONE2     = 5,
     STRID_TRUSTED_PHONE3     = 6,
     STRID_TRUSTED_PHONE4     = 7,
-    STRID_INTERNET_CHECK_URL = 8,   /* modem.internetCheckUrl — HTTP GET target used to verify real internet connectivity */
-    STRID_MQTT_BROKER        = 9,   /* modem.mqttBroker — broker host, port fixed at 1883 */
-    STRID_MODEM_LOGIN        = 10,  /* modem.mqttUsername — also the MQTT topic namespace */
-    STRID_MODEM_PASSWORD     = 11,  /* modem.mqttPassword */
+    STRID_INTERNET_CHECK_URL = 8,   /* modem.internet.internetCheckUrl — HTTP GET target used to verify real internet connectivity */
+    STRID_MQTT_BROKER        = 9,   /* modem.mqtt.broker — broker host, port fixed at 1883 */
+    STRID_MODEM_LOGIN        = 10,  /* modem.mqtt.username — also the MQTT topic namespace */
+    STRID_MODEM_PASSWORD     = 11,  /* modem.mqtt.password */
     STRID_LAST_REC_SMS_TEXT  = 12,
     STRID_LAST_REC_SMS_NUM   = 13,
     STRID_LAST_SENT_SMS_TEXT = 14,
     STRID_LAST_SENT_SMS_NUM  = 15,
     STRID_OPERATOR_NAME      = 16,
     STRID_OPERATOR_CODE      = 17,
-    STRID_IP_V4              = 18,  /* modem.ipAddress — from +CGPADDR, diagnostics only */
-    STRID_CONNECTION_LINK    = 19,  /* modem.connectionLink — last "getlink" URL, pushed to the panel when (re)generated */
+    STRID_IP_V4              = 18,  /* modem.internet.ipAddress — from +CGPADDR, diagnostics only */
+    STRID_CONNECTION_LINK    = 19,  /* modem.internet.connectionLink — last "getlink" URL, pushed to the panel when (re)generated */
 };
 
 class StringTransfer

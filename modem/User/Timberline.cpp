@@ -14,12 +14,12 @@
 /* Convert °C to display unit — setpoints are stored internally in °C
    (the SMS parser converts on the way in; see toCelsius() there). */
 static int16_t dispTemp(int8_t c) {
-    if (modem.tempUnit == 1 /* TL_UNIT_F */)
+    if (modem.config.tempUnit == 1 /* TL_UNIT_F */)
         return (int16_t)c * 9 / 5 + 32;
     return c;
 }
 
-static const char* UNIT_STR(void) { return modem.tempUnit == 1 ? "\xb0""F" : "\xb0""C"; }
+static const char* UNIT_STR(void) { return modem.config.tempUnit == 1 ? "\xb0""F" : "\xb0""C"; }
 
 #include "Heaters.h"
 #include "unix_time.h"
@@ -123,13 +123,13 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             //2 бита на bool (00=off,01=on,11=без изменений), как в canBroadcast()
             /* Wire bit keeps the old "onlySmsMode" polarity (1=SMS-only) —
                invert on the way into useInternet, which uses the opposite sense. */
-            if (((D[1]>>0)&3)<2) modem.useInternet = !((D[1]>>0)&1);
-            if (((D[1]>>2)&3)<2) modem.faultReport   = (D[1]>>2)&1;
-            if (((D[1]>>4)&3)<2) modem.cmdAck         = (D[1]>>4)&1;
-            if (((D[1]>>6)&3)<2) modem.tempUnit       = (D[1]>>6)&1;
+            if (((D[1]>>0)&3)<2) modem.config.useInternet = !((D[1]>>0)&1);
+            if (((D[1]>>2)&3)<2) modem.config.faultReport   = (D[1]>>2)&1;
+            if (((D[1]>>4)&3)<2) modem.config.cmdAck         = (D[1]>>4)&1;
+            if (((D[1]>>6)&3)<2) modem.config.tempUnit       = (D[1]>>6)&1;
             //D[2] = force2gOnly, D[3] = allowRoaming — plain bytes (0/1, 0xFF=без изменений)
-            if (D[2] <= 1) modem.force2gOnly  = D[2];
-            if (D[3] <= 1) modem.allowRoaming = D[3];
+            if (D[2] <= 1) modem.config.force2gOnly  = D[2];
+            if (D[3] <= 1) modem.config.allowRoaming = D[3];
             /* No flash.writeSetup() here — dataActualizator.handler() already
                runs every tick, compares these same 6 fields old-vs-new, and
                writes flash exactly once if (and only if) something actually
@@ -220,6 +220,9 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         case 126: //  HCU
             if (TransAddr==1)
                 memcpy(timberline.MbcVersion,D,4);
+            break;
+        case 123: //  Bootloader — see doCanRelay()'s bootloader-detection poll
+            canRelay.bootloaderSeen = true;
             break;
         }
         break;
@@ -427,6 +430,29 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
     case 46:
         memcpy(errors,D,8);
         break;
+    case 105: //  Bootloader flash sub-protocol responses — see doCanRelay()
+        if (TransType==123) {
+            switch (D[0]) {
+            case 1: //  echo of the set-address request (sub0)
+                canRelay.setAddrEcho = ((uint32_t)D[1]<<24)|((uint32_t)D[2]<<16)|((uint32_t)D[3]<<8)|D[4];
+                canRelay.setAddrGotResp = true;
+                break;
+            case 3: //  length+CRC of what's currently in the bootloader's RAM buffer (sub2 query)
+                canRelay.checkLen = ((uint32_t)D[1]<<16)|((uint32_t)D[2]<<8)|D[3];
+                canRelay.checkCrc = ((uint32_t)D[4]<<24)|((uint32_t)D[5]<<16)|((uint32_t)D[6]<<8)|D[7];
+                canRelay.checkGotResp = true;
+                break;
+            case 5: //  result of the RAM->flash commit (sub4)
+                canRelay.flashResult = D[1];
+                canRelay.flashGotResp = true;
+                break;
+            case 7: //  result of the erase-memory request (sub6)
+                canRelay.eraseResult = D[1];
+                canRelay.eraseGotResp = true;
+                break;
+            }
+        }
+        break;
     }//switch(PGN)
 
 }
@@ -434,6 +460,334 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
 void sendToHcu(uint16_t pgn,uint8_t* D)
 {
     can.SendMessage(pgn<<20 | timberline.hcuType<<13 | timberline.hcuAddress<<10 | can.idType | can.idAddress,D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+}
+
+/* ── CAN firmware relay (OTA part 4) ─────────────────────────────────────
+   MBC-2's own flash image starts at 0x08020000 (confirmed against its
+   scatter file, HCU-Timberline2/Objects/hcu.sct: LR_IROM1 0x08020000
+   0x0001FFC0 + LR_IROM2 0x0803FFC0 0x40 — together exactly the 128 KB
+   region Modem::ota's staging buffer mirrors byte-for-byte from offset 0),
+   and the bootloader always identifies itself as device type 123
+   regardless of the app's own type (125 for MBC-2) — see OmniProtocol.pdf's
+   device-type table and PGN=1/6/105/106 sections. */
+#define MBC2_APP_FLASH_BASE   0x08020000UL
+#define CAN_RELAY_FRAGMENT_SIZE 512
+
+/* Always-visible USB debug output for the relay, same idiom as Modem.cpp's
+   logOtaFail()/logOtaInfo() for the HTTP download side — log_error()/
+   log_info() are unconditional (unlike log_at(), not gated by the current
+   log-level debug command), and there's no printf here, so lines are
+   hand-built via appendUint()/appendHex(). */
+static int appendUint(char* buf, int n, uint32_t v) {
+    char tmp[10]; int t = 0;
+    if (v == 0) { buf[n++] = '0'; return n; }
+    while (v > 0 && t < 10) { tmp[t++] = (char)('0' + v % 10); v /= 10; }
+    while (t > 0) buf[n++] = tmp[--t];
+    return n;
+}
+static int appendHex(char* buf, int n, uint32_t v) {
+    buf[n++] = '0'; buf[n++] = 'x';
+    for (int8_t shift = 28; shift >= 0; shift -= 4) {
+        uint8_t nib = (uint8_t)((v >> shift) & 0xF);
+        buf[n++] = (char)(nib < 10 ? ('0' + nib) : ('A' + nib - 10));
+    }
+    return n;
+}
+static void logRelayInfo(const char* msg) {
+    log_info("[CANRELAY] ");
+    log_info(msg);
+    log_info("\r\n");
+}
+static void logRelayInfoNum(const char* label, uint32_t v) {
+    static char buf[64];
+    int n = 0;
+    const char* pre = "[CANRELAY] ";
+    while (*pre) buf[n++] = *pre++;
+    for (const char* p = label; *p; p++) buf[n++] = *p;
+    buf[n++] = '=';
+    n = appendUint(buf, n, v);
+    buf[n++] = '\r'; buf[n++] = '\n'; buf[n] = 0;
+    log_info(buf);
+}
+/* extraIsHex: addresses/CRCs read far better in hex than the decimal
+   appendUint() everywhere else in this codebase uses — worth the one-off
+   inconsistency here since address/CRC mismatches are exactly what this
+   is for diagnosing. */
+static void logRelayFail(uint8_t stepNum, const char* reason, uint32_t extra, bool extraIsHex) {
+    static char buf[112];
+    int n = 0;
+    const char* pre = "[CANRELAY] FAIL step ";
+    while (*pre) buf[n++] = *pre++;
+    n = appendUint(buf, n, stepNum);
+    buf[n++] = ' '; buf[n++] = '(';
+    for (const char* p = reason; *p && n < 90; p++) buf[n++] = *p;
+    buf[n++] = '=';
+    n = extraIsHex ? appendHex(buf, n, extra) : appendUint(buf, n, extra);
+    buf[n++] = ')'; buf[n++] = '\r'; buf[n++] = '\n'; buf[n] = 0;
+    log_error(buf);
+}
+
+static uint32_t canId(uint16_t pgn, uint8_t toType, uint8_t toAddress) {
+    return ((uint32_t)pgn<<20) | ((uint32_t)toType<<13) | ((uint32_t)toAddress<<10)
+         | ((uint32_t)can.idType<<3) | can.idAddress;
+}
+
+void Timberline::startCanRelay(void) {
+    canRelay.startRequested = true;
+}
+
+/* Replays Modem::ota's staged flash image onto MBC-2 over CAN. Steps:
+   0-1   switch the currently-connected app into the bootloader (PGN=1,
+         [0,22,0], addressed to its live hcuType/hcuAddress) and poll for
+         it reappearing as device type 123 (PGN=6 [0,18] version request,
+         answered by any device — see ProcessCanMessage's PGN=18 case).
+   2-3   erase all of MBC-2's flash (PGN=105 sub6, D[1]=255) — matches the
+         real PC tool's own flow (always erase-all up front, never
+         per-sector).
+   10-18 per-fragment loop, one CAN_RELAY_FRAGMENT_SIZE (512 byte) fragment
+         at a time: set the bootloader's write address (sub0/1), stream the
+         fragment as raw 8-byte PGN=106 frames (one per doCanRelay() tick —
+         never burst multiple sends in one call; see the SendMessage()
+         call sites elsewhere in this file and StringTransfer.cpp for why:
+         the CAN peripheral has a handful of TX mailboxes and SendMessage()
+         doesn't block or retry, so blasting frames in a tight loop would
+         silently drop the tail once mailboxes fill), verify what the
+         bootloader actually received via a length+CRC query (sub2/3 — the
+         CRC algorithm, crc += byte*170771; crc ^= (crc>>16)&0xFFFF, is
+         confirmed from the real PC tool's C# source, not reconstructed),
+         and only then commit it from the bootloader's RAM into its own
+         flash (sub4/5). A verify mismatch or missing response at any point
+         retries the whole fragment (re-send address included) rather than
+         just the failed piece, up to CAN_RELAY_MAX_RETRIES times.
+   20    switch MBC-2 back into its application (PGN=1, [0,22,1]). */
+#define CAN_RELAY_MAX_RETRIES 5
+void Timberline::doCanRelay(void) {
+    static int8_t   step = 0;
+    static uint32_t t = 0;
+    static uint32_t phaseStart = 0;
+    static uint16_t byteOffset = 0;     /* 0..CAN_RELAY_FRAGMENT_SIZE, within the current fragment */
+    static uint32_t fragCrc = 0;
+    static uint8_t  appType = 0, appAddress = 0; /* MBC-2's app-mode identity, captured before it switches away */
+    static uint32_t lastFrameTick = 0;  /* paces the PGN=106 burst below — see its comment */
+    static uint8_t  eraseSector = 5;    /* case 2/3 erase both 5 and 6 in turn, see case 2's comment */
+
+    if (canRelay.status != RELAY_STAGING) {
+        if (canRelay.startRequested) {
+            canRelay.startRequested = false;
+            if (!modem.ota.stagedValid || modem.ota.stagedBytes == 0
+                || (modem.ota.stagedBytes % CAN_RELAY_FRAGMENT_SIZE) != 0) {
+                canRelay.status = RELAY_ERROR;
+                return;
+            }
+            canRelay.status = RELAY_STAGING;
+            canRelay.failed = false;
+            canRelay.retries = 0;
+            canRelay.fragment = 0;
+            canRelay.fragmentTotal = (uint16_t)(modem.ota.stagedBytes / CAN_RELAY_FRAGMENT_SIZE);
+            appType = hcuType;
+            appAddress = hcuAddress;
+            eraseSector = 5;
+            step = 0;
+            logRelayInfo("start");
+            logRelayInfoNum("fragmentTotal", canRelay.fragmentTotal);
+            logRelayInfoNum("appType", appType);
+            logRelayInfoNum("appAddress", appAddress);
+        }
+        return;
+    }
+
+    switch (step) {
+    case 0:
+        can.SendMessage(canId(1, appType, appAddress), 0,22,0, 0xFF,0xFF,0xFF,0xFF,0xFF);
+        canRelay.bootloaderSeen = false;
+        t = core.getTick();
+        phaseStart = t;
+        step = 1;
+        logRelayInfo("switch-to-bootloader sent, waiting for type 123...");
+        break;
+    case 1:
+        if (canRelay.bootloaderSeen) { logRelayInfo("bootloader detected"); step = 2; break; }
+        if ((core.getTick() - phaseStart) >= 15000) { logRelayFail(1, "bootloader-timeout", 0, false); canRelay.failed = true; step = 30; break; }
+        if ((core.getTick() - t) >= 800) {
+            can.SendMessage(canId(6, 123, 0), 0,18, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+            t = core.getTick();
+        }
+        break;
+    case 2:
+        /* Sectors 5 AND 6, not D[1]=255 ("erase all" — confirmed in the
+           real bootloader source, messages.cpp, this wipes sectors 2-7,
+           not just the ones the app lives in). MBC-2's real flash layout
+           (confirmed by the user directly, not just inferred from
+           hcu.sct):
+             0-1  Bootloader              0x08000000  (2x16 KB)
+             2    BLE_ID (shifted 256B)   0x08008000  (16 KB)
+             3    Config                  0x0800C000  (16 KB)  <- settings live here
+             4    BB_Common               0x08010000  (64 KB)
+             5    Main Program + Version  0x08020000  (128 KB) <- this OTA image
+             6    Main Program (spare)    0x08040000  (128 KB) <- currently unused, erased pre-emptively
+             7    BB_Errors_1             0x08060000  (128 KB)
+           The 128 KB staged here (LR_IROM1+LR_IROM2, see hcu.sct) fits
+           entirely inside sector 5 for the current firmware, but "Main
+           Program" is a 256 KB budget spanning 5+6 — erasing 6 too now
+           (it's already empty) means a future image that grows past
+           128 KB doesn't inherit stale leftover bytes there, without
+           needing to touch this erase sequence again later. Doesn't write
+           anything into sector 6 yet — the fragment loop below only
+           covers however many bytes are actually staged (see
+           modem.ota.stagedBytes), still 128 KB today. Config and
+           everything else stays untouched either way. */
+        can.SendMessage(canId(105, 123, 0), 6,eraseSector, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+        canRelay.eraseGotResp = false;
+        t = core.getTick();
+        canRelay.retries = 0;
+        step = 3;
+        logRelayInfoNum("erase sector sent", eraseSector);
+        break;
+    case 3:
+        if (canRelay.eraseGotResp) {
+            if (canRelay.eraseResult != 0) {
+                logRelayFail(3, "erase-result", canRelay.eraseResult, false);
+                if (++canRelay.retries >= 3) { canRelay.failed = true; step = 30; }
+                else step = 2;
+                break;
+            }
+            logRelayInfoNum("erase ok, sector", eraseSector);
+            if (eraseSector == 5) { eraseSector = 6; step = 2; }
+            else step = 10;
+        } else if ((core.getTick() - t) >= 8000) {
+            logRelayFail(3, "erase-timeout-retries", canRelay.retries, false);
+            if (++canRelay.retries >= 3) { canRelay.failed = true; step = 30; }
+            else step = 2;
+        }
+        break;
+
+    /* ── per-fragment loop ────────────────────────────────────────────── */
+    case 10:
+        if (canRelay.fragment >= canRelay.fragmentTotal) { logRelayInfo("all fragments done"); step = 20; break; }
+        canRelay.retries = 0;
+        step = 11;
+        break;
+    case 11: {
+        uint32_t addr = MBC2_APP_FLASH_BASE + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
+        can.SendMessage(canId(105, 123, 0), 0,
+            (uint8_t)(addr>>24), (uint8_t)(addr>>16), (uint8_t)(addr>>8), (uint8_t)addr,
+            0xFF,0xFF,0xFF);
+        canRelay.setAddrGotResp = false;
+        t = core.getTick();
+        step = 12;
+        break;
+    }
+    case 12: {
+        uint32_t addr = MBC2_APP_FLASH_BASE + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
+        if (canRelay.setAddrGotResp) {
+            if (canRelay.setAddrEcho != addr) {
+                logRelayFail(12, "setaddr-echo-mismatch(want)", addr, true);
+                logRelayFail(12, "setaddr-echo-mismatch(got)", canRelay.setAddrEcho, true);
+                if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
+                else step = 11;
+                break;
+            }
+            byteOffset = 0;
+            fragCrc = 0;
+            step = 13;
+        } else if ((core.getTick() - t) >= 500) {
+            logRelayFail(12, "setaddr-timeout-frag", canRelay.fragment, false);
+            if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
+            else step = 11;
+        }
+        break;
+    }
+    case 13: {
+        /* Paced ~3ms apart, not fired every tick — confirmed on real
+           hardware that back-to-back sends with no gap easily outrun what
+           a 250 kbit/s bus can actually drain, the hardware only has 3 TX
+           mailboxes, and SendMessage() silently drops a frame instead of
+           queuing/blocking once all 3 are still busy (see Can::txReady(),
+           kept as a belt-and-suspenders check alongside the delay, not
+           instead of it). 2ms plus the mailbox check alone still lost
+           roughly 1 frame per fragment fairly often — bumped to 3ms and,
+           more importantly, Work_C::handler() now holds off the modem's
+           own other periodic CAN traffic (canBroadcast()/stringTransfer)
+           for the whole relay so it isn't competing for the same 3
+           mailboxes. */
+        if ((core.getTick() - lastFrameTick) < 3) break;
+        if (!can.txReady()) break;
+        const uint8_t* src = (const uint8_t*)(FLASH_OTA_BUF_ADDR
+            + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE + byteOffset);
+        for (uint8_t i = 0; i < 8; i++) {
+            fragCrc += (uint32_t)src[i] * 170771U;
+            fragCrc ^= (fragCrc >> 16) & 0xFFFFU;
+        }
+        can.SendMessage(canId(106, 123, 0), src[0],src[1],src[2],src[3],src[4],src[5],src[6],src[7]);
+        lastFrameTick = core.getTick();
+        byteOffset += 8;
+        if (byteOffset >= CAN_RELAY_FRAGMENT_SIZE) step = 14;
+        break;
+    }
+    case 14:
+        /* Same ~3ms gap after the last PGN=106 frame before sub2 — mailboxes
+           could still be draining right after the burst above. */
+        if ((core.getTick() - lastFrameTick) < 3) break;
+        if (!can.txReady()) break;
+        can.SendMessage(canId(105, 123, 0), 2, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+        canRelay.checkGotResp = false;
+        t = core.getTick();
+        step = 15;
+        break;
+    case 15:
+        if (canRelay.checkGotResp) {
+            if (canRelay.checkLen != CAN_RELAY_FRAGMENT_SIZE || canRelay.checkCrc != fragCrc) {
+                logRelayFail(15, "verify-len(got)", canRelay.checkLen, false);
+                logRelayFail(15, "verify-crc(want)", fragCrc, true);
+                logRelayFail(15, "verify-crc(got)", canRelay.checkCrc, true);
+                if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
+                else step = 11;
+                break;
+            }
+            step = 16;
+        } else if ((core.getTick() - t) >= 800) {
+            logRelayFail(15, "verify-timeout-frag", canRelay.fragment, false);
+            if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
+            else step = 11;
+        }
+        break;
+    case 16:
+        can.SendMessage(canId(105, 123, 0), 4, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+        canRelay.flashGotResp = false;
+        t = core.getTick();
+        step = 17;
+        break;
+    case 17:
+        if (canRelay.flashGotResp) {
+            if (canRelay.flashResult != 0) {
+                logRelayFail(17, "flash-result-frag", canRelay.fragment, false);
+                if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
+                else step = 11;
+                break;
+            }
+            canRelay.fragment++;
+            if ((canRelay.fragment % 16) == 0 || canRelay.fragment == canRelay.fragmentTotal)
+                logRelayInfoNum("fragment ok, done", canRelay.fragment);
+            step = 10;
+        } else if ((core.getTick() - t) >= 2000) {
+            logRelayFail(17, "flash-timeout-frag", canRelay.fragment, false);
+            if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
+            else step = 11;
+        }
+        break;
+
+    case 20:
+        can.SendMessage(canId(1, 123, 0), 0,22,1, 0xFF,0xFF,0xFF,0xFF,0xFF);
+        logRelayInfo("switch-to-app sent");
+        step = 30;
+        break;
+
+    case 30:
+        canRelay.status = canRelay.failed ? RELAY_ERROR : RELAY_DONE;
+        logRelayInfo(canRelay.failed ? "result=ERROR" : "result=DONE");
+        step = 0;
+        break;
+    }
 }
 
 /* Physical button: short press cycles burner -> element -> both -> burner...
@@ -475,7 +829,7 @@ static void onButtonFactoryReset(void)
 
 /* Send reply only if device-command confirmations are enabled */
 static void ack(const char* phone, const char* msg) {
-    if (modem.cmdAck) modem.sendSms(phone, msg);
+    if (modem.config.cmdAck) modem.sendSms(phone, msg);
 }
 
 /* zoneConnected: 0=not connected, 1=dependent heater (has a fan), 2=defrost
@@ -612,7 +966,30 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
            usable chars), which made this compare always fail. */
         ival = atoi(payload);
         if (ival < 5 || ival > 60) return;
-        modem.telemetryIntervalSec = (uint8_t)ival;
+        modem.mqtt.telemetryIntervalSec = (uint8_t)ival;
+    }
+    else if (!strcmp(name, "otaStart")) {
+        /* payload = MBC-2 firmware version string, becomes the
+           firmware/mbc2/<version>/ path segment the modem downloads from
+           (see Modem::startOta()/doOta() and host/README.md's "Firmware
+           OTA" section). Ignored while a download is already in progress —
+           re-publish the same otaStart value again once the current run
+           finishes (idle/done/error) to actually start a new one. */
+        if (modem.ota.status == Modem::OTA_STAGING) return;
+        modem.startOta(payload);
+    }
+    else if (!strcmp(name, "canRelayStart")) {
+        /* Relays whatever's already staged+verified in the modem's own
+           flash onto MBC-2 over CAN — see Timberline::doCanRelay(). A
+           deliberately separate trigger from otaStart: the user reviews
+           the staged version (otaStaged, see Modem::ota.stagedVersion)
+           before committing to actually flashing the device. Payload
+           ignored; refuses while a relay or a download is already
+           running, or nothing valid is staged. */
+        if (timberline.canRelay.status == Timberline::RELAY_STAGING) return;
+        if (modem.ota.status == Modem::OTA_STAGING) return;
+        if (!modem.ota.stagedValid) return;
+        timberline.startCanRelay();
     }
     else {
         uint8_t     zoneNum;
@@ -710,7 +1087,7 @@ static void generateLinkToken(char* out, int outLen) {
     uint32_t tick = core.getTick();
     for (int i = 0; i < 4; i++) mix[n++] = (char)(tick >> (i * 8));
     for (int i = 0; i < 4; i++) mix[n++] = (char)(counter >> (i * 8));
-    for (int i = 0; modem.imei[i] && n < 30; i++) mix[n++] = modem.imei[i];
+    for (int i = 0; modem.network.imei[i] && n < 30; i++) mix[n++] = modem.network.imei[i];
 
     uint32_t h1 = 5381, h2 = 52711;
     for (int i = 0; i < n; i++) {
@@ -733,7 +1110,7 @@ static void onSmsReceived(const char* phone, const char* text) {
 
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     TlSmsParseResult result;
-    tl_sms_parse(phone, text, modem.pin, modem.phones[0], &modem.phones[1], (TlTempUnit)modem.tempUnit, result);
+    tl_sms_parse(phone, text, modem.config.pin, modem.config.phones[0], &modem.config.phones[1], (TlTempUnit)modem.config.tempUnit, result);
 
     if (!result.authenticated) {
         log_info("SMS: auth failed\r\n");
@@ -744,7 +1121,7 @@ static void onSmsReceived(const char* phone, const char* text) {
        to the persisted default language (see the "lang"/"sprache" command) —
        needed for replies that carry no language cue of their own, such as a
        parse-error help text or a bare "?" status request. */
-    bool de = (result.lang == TL_LANG_DE) || (modem.language == TL_LANG_DE);
+    bool de = (result.lang == TL_LANG_DE) || (modem.config.language == TL_LANG_DE);
 
     bool hasUnknown = false;
     for (uint8_t e = 0; e < result.errCount; e++) {
@@ -772,8 +1149,8 @@ static void onSmsReceived(const char* phone, const char* text) {
 
         case TL_CMD_ADMIN: {
             const char* p = cmd.phone[0] ? cmd.phone : phone;
-            strncpy(modem.phones[0], p, 15);
-            modem.phones[0][15] = '\0';
+            strncpy(modem.config.phones[0], p, 15);
+            modem.config.phones[0][15] = '\0';
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? "Admin gesetzt" : "Admin set");
             break;
@@ -782,15 +1159,15 @@ static void onSmsReceived(const char* phone, const char* text) {
         case TL_CMD_PHONE:
             if (cmd.phoneNum >= 1 && cmd.phoneNum <= 4) {
                 const char* p = cmd.phone[0] ? cmd.phone : phone;
-                strncpy(modem.phones[cmd.phoneNum], p, 15);
-                modem.phones[cmd.phoneNum][15] = '\0';
+                strncpy(modem.config.phones[cmd.phoneNum], p, 15);
+                modem.config.phones[cmd.phoneNum][15] = '\0';
                 /* flash write handled centrally by dataActualizator.handler(). */
                 modem.sendSms(phone, de ? "Telefon aktualisiert." : "Phone updated.");
             }
             break;
 
         case TL_CMD_SETPIN:
-            memcpy(modem.pin, cmd.pin, 5);
+            memcpy(modem.config.pin, cmd.pin, 5);
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? "PIN aktualisiert." : "PIN updated.");
             break;
@@ -928,7 +1305,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_UNIT:
-            modem.tempUnit = cmd.unit;
+            modem.config.tempUnit = cmd.unit;
             /* flash write handled centrally by dataActualizator.handler() —
                see the comment on PGN60 case 60 above. */
             modem.sendSms(phone, de ? (cmd.unit == TL_UNIT_F ? "Einheit: F" : "Einheit: C")
@@ -936,7 +1313,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_FAULTREPORT:
-            modem.faultReport = cmd.boolVal;
+            modem.config.faultReport = cmd.boolVal;
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? (cmd.boolVal ? "Fehlermeldung: EIN" : "Fehlermeldung: AUS")
                                    : (cmd.boolVal ? "Fault report: ON"   : "Fault report: OFF"));
@@ -956,7 +1333,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_ACK:
-            modem.cmdAck = cmd.boolVal;
+            modem.config.cmdAck = cmd.boolVal;
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? (cmd.boolVal ? "Bestaetigung: EIN" : "Bestaetigung: AUS")
                                    : (cmd.boolVal ? "Ack: ON"       : "Ack: OFF"));
@@ -967,7 +1344,7 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_LANG: {
-            modem.language = cmd.langArg;
+            modem.config.language = cmd.langArg;
             /* flash write handled centrally by dataActualizator.handler(). */
             bool langDe = (cmd.langArg == TL_LANG_DE);
             modem.sendSms(phone, langDe ? "Sprache: Deutsch" : "Language: English");
@@ -975,8 +1352,8 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_SERVER: {
-            strncpy(modem.mqttBroker, cmd.strArg, sizeof(modem.mqttBroker) - 1);
-            modem.mqttBroker[sizeof(modem.mqttBroker) - 1] = '\0';
+            strncpy(modem.mqtt.broker, cmd.strArg, sizeof(modem.mqtt.broker) - 1);
+            modem.mqtt.broker[sizeof(modem.mqtt.broker) - 1] = '\0';
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.mqttForceReconnect();
             modem.sendSms(phone, de ? "MQTT-Server aktualisiert" : "MQTT server updated");
@@ -984,8 +1361,8 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_LOGIN: {
-            strncpy(modem.mqttUsername, cmd.strArg, sizeof(modem.mqttUsername) - 1);
-            modem.mqttUsername[sizeof(modem.mqttUsername) - 1] = '\0';
+            strncpy(modem.mqtt.username, cmd.strArg, sizeof(modem.mqtt.username) - 1);
+            modem.mqtt.username[sizeof(modem.mqtt.username) - 1] = '\0';
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.mqttForceReconnect();
             modem.sendSms(phone, de ? "MQTT-Login aktualisiert" : "MQTT login updated");
@@ -993,8 +1370,8 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_PASSWORD: {
-            strncpy(modem.mqttPassword, cmd.strArg, sizeof(modem.mqttPassword) - 1);
-            modem.mqttPassword[sizeof(modem.mqttPassword) - 1] = '\0';
+            strncpy(modem.mqtt.password, cmd.strArg, sizeof(modem.mqtt.password) - 1);
+            modem.mqtt.password[sizeof(modem.mqtt.password) - 1] = '\0';
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.mqttForceReconnect();
             modem.sendSms(phone, de ? "MQTT-Passwort aktualisiert" : "MQTT password updated");
@@ -1002,7 +1379,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_INTERNET: {
-            modem.useInternet = cmd.boolVal;
+            modem.config.useInternet = cmd.boolVal;
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? (cmd.boolVal ? "Internet: EIN" : "Internet: AUS")
                                    : (cmd.boolVal ? "Internet: ON"  : "Internet: OFF"));
@@ -1010,7 +1387,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_ROAMING: {
-            modem.allowRoaming = cmd.boolVal;
+            modem.config.allowRoaming = cmd.boolVal;
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? (cmd.boolVal ? "Roaming-Internet: EIN" : "Roaming-Internet: AUS")
                                    : (cmd.boolVal ? "Roaming internet: ON"  : "Roaming internet: OFF"));
@@ -1018,7 +1395,7 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_FORCE_2G: {
-            modem.force2gOnly = cmd.boolVal;
+            modem.config.force2gOnly = cmd.boolVal;
             /* flash write handled centrally by dataActualizator.handler().
                This field takes effect live now too — see doIdle()'s
                force2gOnly-change reactive block — not just on next
@@ -1029,37 +1406,37 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_APN: {
-            strncpy(modem.apn, cmd.strArg, sizeof(modem.apn) - 1);
-            modem.apn[sizeof(modem.apn) - 1] = '\0';
+            strncpy(modem.internet.apn, cmd.strArg, sizeof(modem.internet.apn) - 1);
+            modem.internet.apn[sizeof(modem.internet.apn) - 1] = '\0';
             /* flash write handled centrally by dataActualizator.handler().
                No forced teardown/reinit here — takes effect on the next
                connect attempt, which happens within 60s if internet is
                currently down (see doIdle()'s timerNet-gated retry). */
-            modem.sendSms(phone, de ? (modem.apn[0] ? "APN aktualisiert" : "APN zurückgesetzt (automatisch)")
-                                   : (modem.apn[0] ? "APN updated" : "APN reset (auto)"));
+            modem.sendSms(phone, de ? (modem.internet.apn[0] ? "APN aktualisiert" : "APN zurückgesetzt (automatisch)")
+                                   : (modem.internet.apn[0] ? "APN updated" : "APN reset (auto)"));
             break;
         }
 
         case TL_CMD_APN_USER: {
-            strncpy(modem.apnUsername, cmd.strArg, sizeof(modem.apnUsername) - 1);
-            modem.apnUsername[sizeof(modem.apnUsername) - 1] = '\0';
+            strncpy(modem.internet.apnUsername, cmd.strArg, sizeof(modem.internet.apnUsername) - 1);
+            modem.internet.apnUsername[sizeof(modem.internet.apnUsername) - 1] = '\0';
             /* flash write handled centrally by dataActualizator.handler(). */
-            modem.sendSms(phone, de ? (modem.apnUsername[0] ? "APN-Benutzer aktualisiert" : "APN-Benutzer zurückgesetzt")
-                                   : (modem.apnUsername[0] ? "APN username updated" : "APN username reset"));
+            modem.sendSms(phone, de ? (modem.internet.apnUsername[0] ? "APN-Benutzer aktualisiert" : "APN-Benutzer zurückgesetzt")
+                                   : (modem.internet.apnUsername[0] ? "APN username updated" : "APN username reset"));
             break;
         }
 
         case TL_CMD_APN_PASS: {
-            strncpy(modem.apnPassword, cmd.strArg, sizeof(modem.apnPassword) - 1);
-            modem.apnPassword[sizeof(modem.apnPassword) - 1] = '\0';
+            strncpy(modem.internet.apnPassword, cmd.strArg, sizeof(modem.internet.apnPassword) - 1);
+            modem.internet.apnPassword[sizeof(modem.internet.apnPassword) - 1] = '\0';
             /* flash write handled centrally by dataActualizator.handler(). */
-            modem.sendSms(phone, de ? (modem.apnPassword[0] ? "APN-Passwort aktualisiert" : "APN-Passwort zurückgesetzt")
-                                   : (modem.apnPassword[0] ? "APN password updated" : "APN password reset"));
+            modem.sendSms(phone, de ? (modem.internet.apnPassword[0] ? "APN-Passwort aktualisiert" : "APN-Passwort zurückgesetzt")
+                                   : (modem.internet.apnPassword[0] ? "APN password updated" : "APN password reset"));
             break;
         }
 
         case TL_CMD_GETLINK: {
-            if (!modem.useInternet) {
+            if (!modem.config.useInternet) {
                 modem.sendSms(phone, de ? "Erst Internet aktivieren: internet 1"
                                        : "Enable internet first: internet 1");
                 break;
@@ -1068,19 +1445,19 @@ static void onSmsReceived(const char* phone, const char* text) {
             generateLinkToken(token, sizeof(token));
             modem.mqttPublish("linkToken", token);
 
-            char* url = modem.connectionLink;
+            char* url = modem.internet.connectionLink;
             int   n = 0;
-            const int urlMax = (int)sizeof(modem.connectionLink) - 1;
+            const int urlMax = (int)sizeof(modem.internet.connectionLink) - 1;
             /* https on the default port (443, terminated by nginx in front of
                the web app) — not ":3000", which is the app's own plain-HTTP
                port and has no TLS cert bound to it. Also requires mqttBroker
                to hold a hostname (matching the cert's CN), not a bare IP. */
             const char* pre = "https://";
             while (*pre) url[n++] = *pre++;
-            for (const char* p = modem.mqttBroker; *p && n < urlMax; ) url[n++] = *p++;
+            for (const char* p = modem.mqtt.broker; *p && n < urlMax; ) url[n++] = *p++;
             const char* mid = "/go/";
             while (*mid && n < urlMax) url[n++] = *mid++;
-            for (const char* p = modem.mqttUsername; *p && n < urlMax; ) url[n++] = *p++;
+            for (const char* p = modem.mqtt.username; *p && n < urlMax; ) url[n++] = *p++;
             if (n < urlMax) url[n++] = '/';
             for (const char* p = token; *p && n < urlMax; ) url[n++] = *p++;
             url[n] = '\0';
@@ -1105,25 +1482,25 @@ void Timberline::init(void) {
     button.onShortPress    = onButtonShortPress;
     button.onLongPress     = onButtonLongPress;
     button.onVeryLongPress = onButtonFactoryReset;
-    stringTransfer.registerString(STRID_IMEI,           modem.imei,          sizeof(modem.imei));
-    stringTransfer.registerString(STRID_PIN,             modem.pin,           sizeof(modem.pin));
-    stringTransfer.registerString(STRID_ADMIN_PHONE,     modem.phones[0],     sizeof(modem.phones[0]));
-    stringTransfer.registerString(STRID_TRUSTED_PHONE1,  modem.phones[1],     sizeof(modem.phones[1]));
-    stringTransfer.registerString(STRID_TRUSTED_PHONE2,  modem.phones[2],     sizeof(modem.phones[2]));
-    stringTransfer.registerString(STRID_TRUSTED_PHONE3,  modem.phones[3],     sizeof(modem.phones[3]));
-    stringTransfer.registerString(STRID_TRUSTED_PHONE4,  modem.phones[4],     sizeof(modem.phones[4]));
-    stringTransfer.registerString(STRID_LAST_REC_SMS_TEXT,  modem.cmgrBody,   sizeof(modem.cmgrBody));
-    stringTransfer.registerString(STRID_LAST_REC_SMS_NUM,   modem.cmgrPhone,  sizeof(modem.cmgrPhone));
-    stringTransfer.registerString(STRID_LAST_SENT_SMS_TEXT, modem.smsText,    sizeof(modem.smsText));
-    stringTransfer.registerString(STRID_LAST_SENT_SMS_NUM,  modem.smsPhone,   sizeof(modem.smsPhone));
-    stringTransfer.registerString(STRID_OPERATOR_NAME,   modem.operatorName,  sizeof(modem.operatorName));
-    stringTransfer.registerString(STRID_OPERATOR_CODE,   modem.operatorCode,  sizeof(modem.operatorCode));
-    stringTransfer.registerString(STRID_INTERNET_CHECK_URL, modem.internetCheckUrl, sizeof(modem.internetCheckUrl));
-    stringTransfer.registerString(STRID_MQTT_BROKER,     modem.mqttBroker,    sizeof(modem.mqttBroker));
-    stringTransfer.registerString(STRID_MODEM_LOGIN,     modem.mqttUsername,  sizeof(modem.mqttUsername));
-    stringTransfer.registerString(STRID_MODEM_PASSWORD,  modem.mqttPassword,  sizeof(modem.mqttPassword));
-    stringTransfer.registerString(STRID_IP_V4,           modem.ipAddress,     sizeof(modem.ipAddress));
-    stringTransfer.registerString(STRID_CONNECTION_LINK, modem.connectionLink, sizeof(modem.connectionLink));
+    stringTransfer.registerString(STRID_IMEI,           modem.network.imei,          sizeof(modem.network.imei));
+    stringTransfer.registerString(STRID_PIN,             modem.config.pin,           sizeof(modem.config.pin));
+    stringTransfer.registerString(STRID_ADMIN_PHONE,     modem.config.phones[0],     sizeof(modem.config.phones[0]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE1,  modem.config.phones[1],     sizeof(modem.config.phones[1]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE2,  modem.config.phones[2],     sizeof(modem.config.phones[2]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE3,  modem.config.phones[3],     sizeof(modem.config.phones[3]));
+    stringTransfer.registerString(STRID_TRUSTED_PHONE4,  modem.config.phones[4],     sizeof(modem.config.phones[4]));
+    stringTransfer.registerString(STRID_LAST_REC_SMS_TEXT,  modem.network.cmgrBody,   sizeof(modem.network.cmgrBody));
+    stringTransfer.registerString(STRID_LAST_REC_SMS_NUM,   modem.network.cmgrPhone,  sizeof(modem.network.cmgrPhone));
+    stringTransfer.registerString(STRID_LAST_SENT_SMS_TEXT, modem.network.smsText,    sizeof(modem.network.smsText));
+    stringTransfer.registerString(STRID_LAST_SENT_SMS_NUM,  modem.network.smsPhone,   sizeof(modem.network.smsPhone));
+    stringTransfer.registerString(STRID_OPERATOR_NAME,   modem.network.operatorName,  sizeof(modem.network.operatorName));
+    stringTransfer.registerString(STRID_OPERATOR_CODE,   modem.network.operatorCode,  sizeof(modem.network.operatorCode));
+    stringTransfer.registerString(STRID_INTERNET_CHECK_URL, modem.internet.internetCheckUrl, sizeof(modem.internet.internetCheckUrl));
+    stringTransfer.registerString(STRID_MQTT_BROKER,     modem.mqtt.broker,    sizeof(modem.mqtt.broker));
+    stringTransfer.registerString(STRID_MODEM_LOGIN,     modem.mqtt.username,  sizeof(modem.mqtt.username));
+    stringTransfer.registerString(STRID_MODEM_PASSWORD,  modem.mqtt.password,  sizeof(modem.mqtt.password));
+    stringTransfer.registerString(STRID_IP_V4,           modem.internet.ipAddress,     sizeof(modem.internet.ipAddress));
+    stringTransfer.registerString(STRID_CONNECTION_LINK, modem.internet.connectionLink, sizeof(modem.internet.connectionLink));
 }
 
 /* ── mqttActualizerHandler ─────────────────────────────────────────────
@@ -1161,6 +1538,20 @@ void Timberline::mqttActualizerHandler(void) {
     static uint8_t     prevFloorHyst, prevPumpForceDur;
     static uint8_t     prevDayStartHr, prevDayStartMin, prevNightStartHr, prevNightStartMin;
     static uint8_t     prevTelemetryInterval;
+    /* MBC-2 OTA progress — see Modem::otaStatus/otaPage/otaPageTotal and
+       doOta(). Read-only (no HCU write protocol — set purely by the modem
+       itself as it downloads/stages), diff-published the same way as
+       everything else here. */
+    static Modem::OtaStatus prevOtaStatus;
+    static uint16_t    prevOtaPage;
+    /* What's actually sitting in the modem's flash OTA buffer right now —
+       see Modem::ota.stagedValid/stagedVersion. Separate from otaStatus/
+       otaProgress above (those describe a download in progress); this is
+       what the web panel shows so the user can decide whether to relay it
+       onto MBC-2 over CAN, independent of whatever the modem's last
+       download run happened to be. */
+    static char        prevStagedVersion[24];
+    static bool        prevStagedValid;
     /* Hardware-presence mirrors, not user controls — lets the web UI hide
        btnFloor/btnEngine on systems that don't have that hardware. */
     static bool        prevFloorConnected, prevEngineConnected;
@@ -1172,8 +1563,8 @@ void Timberline::mqttActualizerHandler(void) {
 
     char buf[8];
 
-    bool justConnected = modem.mqttConnected && !wasConnected;
-    wasConnected = modem.mqttConnected;
+    bool justConnected = modem.mqtt.connected && !wasConnected;
+    wasConnected = modem.mqtt.connected;
 
     if (HeaterButton  != prevHtr     || justConnected) { prevHtr     = HeaterButton;  modem.mqttPublish("btnHtr",     HeaterButton  ? "1" : "0"); }
     if (ElementButton != prevElement || justConnected) { prevElement = ElementButton; modem.mqttPublish("btnElement", ElementButton ? "1" : "0"); }
@@ -1294,10 +1685,81 @@ void Timberline::mqttActualizerHandler(void) {
         sprintf(buf, "%d", nightStartMinute);
         modem.mqttPublish("nightStartMin", buf);
     }
-    if (modem.telemetryIntervalSec != prevTelemetryInterval || justConnected) {
-        prevTelemetryInterval = modem.telemetryIntervalSec;
-        sprintf(buf, "%d", modem.telemetryIntervalSec);
+    if (modem.mqtt.telemetryIntervalSec != prevTelemetryInterval || justConnected) {
+        prevTelemetryInterval = modem.mqtt.telemetryIntervalSec;
+        sprintf(buf, "%d", modem.mqtt.telemetryIntervalSec);
         modem.mqttPublish("telemetryInt", buf);
+    }
+    if (modem.ota.status != prevOtaStatus || justConnected) {
+        prevOtaStatus = modem.ota.status;
+        static const char* otaStatusStr[] = { "idle", "staging", "done", "error" };
+        modem.mqttPublish("otaStatus", otaStatusStr[modem.ota.status]);
+    }
+    /* Only worth publishing progress while actually staging — otaPage is
+       meaningless (and noisy to diff-publish) once idle/done/error. */
+    if (modem.ota.status == Modem::OTA_STAGING
+        && (modem.ota.page != prevOtaPage || justConnected)) {
+        prevOtaPage = modem.ota.page;
+        sprintf(buf, "%u/%u", modem.ota.page, modem.ota.pageTotal);
+        modem.mqttPublish("otaProgress", buf);
+    }
+    if (modem.ota.stagedValid != prevStagedValid
+        || strcmp(modem.ota.stagedVersion, prevStagedVersion) != 0
+        || justConnected) {
+        prevStagedValid = modem.ota.stagedValid;
+        strncpy(prevStagedVersion, modem.ota.stagedVersion, sizeof(prevStagedVersion) - 1);
+        prevStagedVersion[sizeof(prevStagedVersion) - 1] = 0;
+        modem.mqttPublish("otaStaged", modem.ota.stagedValid ? modem.ota.stagedVersion : "");
+    }
+    /* The modem's own firmware version (VERSION_1..4, a compile-time
+       constant — see Version.h, same values already broadcast over CAN's
+       own PGN=18 in canBroadcast()) — never changes at runtime, so just
+       publish it once per connection rather than diff-checking it. */
+    if (justConnected) {
+        char mv[20];
+        int mn = 0;
+        mn = appendUint(mv, mn, VERSION_1); mv[mn++] = '.';
+        mn = appendUint(mv, mn, VERSION_2); mv[mn++] = '.';
+        mn = appendUint(mv, mn, VERSION_3); mv[mn++] = '.';
+        mn = appendUint(mv, mn, VERSION_4); mv[mn] = 0;
+        modem.mqttPublish("modemVersion", mv);
+    }
+    /* MBC-2's own currently-running app version, as it actually reports it
+       (PGN=18, see ProcessCanMessage's case 18 — MbcVersion[4] =
+       VER_PRODUCT_TYPE.VER_VOLTAGE.VER_PRODUCT_SUBTYPE.VER_ASSEMBLAGE_NUMBER),
+       not to be confused with otaStaged above (what's downloaded and
+       verified in the modem's own flash, waiting to be relayed — could be
+       a different version, or nothing at all). All-zero is treated as
+       "never seen a broadcast yet" rather than a genuine "0.0.0.0" —
+       VER_PRODUCT_TYPE is never actually 0 for a real device. */
+    static uint8_t prevMbcVersion[4];
+    if (memcmp(MbcVersion, prevMbcVersion, 4) != 0 || justConnected) {
+        memcpy(prevMbcVersion, MbcVersion, 4);
+        bool seen = MbcVersion[0] || MbcVersion[1] || MbcVersion[2] || MbcVersion[3];
+        if (seen) {
+            char verBuf[20];
+            int vn = 0;
+            vn = appendUint(verBuf, vn, MbcVersion[0]); verBuf[vn++] = '.';
+            vn = appendUint(verBuf, vn, MbcVersion[1]); verBuf[vn++] = '.';
+            vn = appendUint(verBuf, vn, MbcVersion[2]); verBuf[vn++] = '.';
+            vn = appendUint(verBuf, vn, MbcVersion[3]); verBuf[vn] = 0;
+            modem.mqttPublish("mbcVersion", verBuf);
+        } else {
+            modem.mqttPublish("mbcVersion", "");
+        }
+    }
+    static Timberline::CanRelayStatus prevCanRelayStatus;
+    static uint16_t prevCanRelayFragment;
+    if (canRelay.status != prevCanRelayStatus || justConnected) {
+        prevCanRelayStatus = canRelay.status;
+        static const char* canRelayStatusStr[] = { "idle", "staging", "done", "error" };
+        modem.mqttPublish("canRelayStatus", canRelayStatusStr[canRelay.status]);
+    }
+    if (canRelay.status == Timberline::RELAY_STAGING
+        && (canRelay.fragment != prevCanRelayFragment || justConnected)) {
+        prevCanRelayFragment = canRelay.fragment;
+        sprintf(buf, "%u/%u", canRelay.fragment, canRelay.fragmentTotal);
+        modem.mqttPublish("canRelayProgress", buf);
     }
 
     bool errorsChanged = justConnected;
@@ -1328,7 +1790,7 @@ void Timberline::mqttActualizerHandler(void) {
    Fast-changing status fields (temperatures, fan speeds, pump states, ...)
    packed into one 20-byte struct and base64-encoded into a single
    "telemetry" topic, published unconditionally every
-   modem.telemetryIntervalSec seconds (5-60, default 15, settable live via
+   modem.mqtt.telemetryIntervalSec seconds (5-60, default 15, settable live via
    cmd/desired/telemetryInt — see onMqttCommandReceived() and
    Modem::telemetryIntervalSec) — unlike
    mqttActualizerHandler's fields above, these change too often for
@@ -1356,7 +1818,7 @@ void Timberline::mqttActualizerHandler(void) {
 void Timberline::mqttTelemetryHandler(void) {
     static uint32_t timerTelemetry = 0;
     uint32_t now = core.getTick();
-    if (!modem.mqttConnected || (now - timerTelemetry) < (uint32_t)modem.telemetryIntervalSec * 1000) return;
+    if (!modem.mqtt.connected || (now - timerTelemetry) < (uint32_t)modem.mqtt.telemetryIntervalSec * 1000) return;
     timerTelemetry = now;
 
     uint8_t raw[20];

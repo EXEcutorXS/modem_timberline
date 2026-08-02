@@ -73,6 +73,11 @@ echo "== 6/13: web app =="
 mkdir -p /opt/timberline-web/public
 cp timberline-web/server.js timberline-web/package.json /opt/timberline-web/
 cp timberline-web/public/index.html timberline-web/public/app.js /opt/timberline-web/public/
+# firmware/ is user-managed content (published per device/version via
+# make_firmware_crc.js, see README) — copy whatever's already staged
+# locally, if anything, but don't fail the setup run if there's nothing yet.
+mkdir -p /opt/timberline-web/public/firmware
+cp -r timberline-web/public/firmware/. /opt/timberline-web/public/firmware/ 2>/dev/null || true
 ( cd /opt/timberline-web && npm install --omit=dev )
 cp systemd/timberline-web.service /etc/systemd/system/timberline-web.service
 systemctl daemon-reload

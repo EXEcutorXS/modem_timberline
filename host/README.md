@@ -29,11 +29,16 @@ host/
   nginx/timberline-web.conf         # -> /etc/nginx/sites-available/ (pre-certbot template)
   letsencrypt/timberline-mosquitto.sh  # -> /etc/letsencrypt/renewal-hooks/deploy/
   systemd/timberline-web.service    # -> /etc/systemd/system/
+  at-bridge-relay.py                # run by whoever is physically next to the modem
+  tools/make_firmware_crc.js        # generates firmware.crc32 sidecar files, see "Firmware OTA" below
   timberline-web/                   # -> /opt/timberline-web on the server
     server.js
     package.json
     public/index.html
     public/app.js
+    public/at-console.html
+    public/firmware/<deviceType>/<version>/firmware.bin
+    public/firmware/<deviceType>/<version>/firmware.crc32
 ```
 
 ## Architecture, in one paragraph
@@ -95,6 +100,88 @@ echoed back over `cmd/actual/<topic>`:
 
 Both clear back to normal the moment the device's echoed value matches what
 was requested — there's no timeout, just "confirmed" vs "not yet."
+
+## AT-bridge relay (remote AT console)
+
+For sending raw AT commands to a modem that's physically somewhere else
+(e.g. at a dealer/reseller), over an internet connection that isn't the
+modem's own cellular link — useful precisely when the cellular link itself
+is what needs debugging, so a solution that tunnels through it would be
+useless exactly when needed.
+
+Three pieces:
+- **`server.js`**'s `/at-bridge` WebSocket endpoint — a plain byte relay, one
+  room per account (same login as the main site). Doesn't parse or store
+  anything; `role=relay` and `role=viewer` connections in the same room just
+  get piped to each other.
+- **`at-bridge-relay.py`** — a small script the person physically next to
+  the modem runs on their own computer (Windows: `pip install pyserial
+  websocket-client`, then `python at-bridge-relay.py COM5 <username>
+  <password>`). Opens the modem's USB-CDC COM port and relays bytes to/from
+  the server above.
+- **`public/at-console.html`**— the viewer side: log in with the same
+  account, get a live raw terminal. Type `b` first to put the modem's own
+  USB console into AT bridge mode (see `usb_process_line()`'s `b`/`B`
+  command in the firmware — forwards every byte straight to the cellular
+  module's AT UART); `+++` exits it, same as any other terminal session on
+  that console.
+
+Auth reuses `verifyCredentials()` (same check as `/auth/user` and the login
+form) — checked once at WebSocket connect time, not per-message. `nginx`
+needs the `Upgrade`/`Connection` headers for this one path specifically
+(see `nginx/timberline-web.conf`) — everything else on this site is plain
+HTTP through nginx (MQTT's own wss on 8083 bypasses nginx entirely).
+
+## Firmware OTA (MBC-2)
+
+The modem downloads a firmware image for the MBC-2 module it talks to over
+CAN, from this server, over plain HTTP (`AT+HTTPREAD`) — no MQTT involved.
+It stages the image page-by-page in its own spare flash, verifying each
+page's CRC32 before writing (and skipping any page whose flash contents
+already match — makes an interrupted download resumable, and re-running an
+`otaStart` for the same version a no-op past the first successful run), then
+replays the CAN bootloader protocol onto MBC-2 itself. See
+`modem/User/Modem.cpp`/`Timberline.cpp` for the modem side.
+
+**Version naming**: this org's device version scheme is 8 dot-separated
+bytes; for firmware directories only the first 4 are used, matching what
+the CAN bootloader itself reports on request (OmniProtocol PGN=6, param 18 —
+`VER_PRODUCT_TYPE.VER_VOLTAGE.VER_PRODUCT_SUBTYPE.VER_ASSEMBLAGE_NUMBER`).
+For MBC-2 (device type 125, `VER_VOLTAGE` unused/always 0) that looks like
+`125.0.0.15`. Using the bootloader's own reported tuple as the directory
+name means "what version is currently on the device" and "what's the latest
+available" are always directly comparable strings, no separate mapping.
+
+Publishing a new version:
+```bash
+mkdir -p host/timberline-web/public/firmware/mbc2/125.0.0.15
+cp your-built-firmware.bin host/timberline-web/public/firmware/mbc2/125.0.0.15/firmware.bin
+node host/tools/make_firmware_crc.js host/timberline-web/public/firmware/mbc2/125.0.0.15/firmware.bin
+scp -r host/timberline-web/public/firmware/mbc2/125.0.0.15 user@vps:/opt/timberline-web/public/firmware/mbc2/
+```
+`make_firmware_crc.js` pads `firmware.bin` in place to a multiple of 2048
+bytes (0xFF filler — so the modem's last downloaded page is always exactly
+2048 bytes, no special-casing a short one) and writes `firmware.crc32` next
+to it: one little-endian uint32 CRC32 per page, same algorithm
+(`Flash_C::crc32OtaPage()` in `Library/Flash/flash.cpp`) the modem uses to
+verify what it downloaded. This CRC32 is only for the HTTP download's
+integrity — it has nothing to do with the separate checksum MBC-2's own CAN
+bootloader computes during the actual flashing step.
+
+Files under `public/firmware/` are served by the same unauthenticated
+`express.static` as everything else in `public/` — no login, same as
+`index.html`/`app.js` today. The version string a device requests
+(`cmd/desired/otaStart` payload) becomes the `<version>` path segment
+verbatim, so keep it filesystem-safe (no `/`, no `..`).
+
+**Listing available versions**: `GET /firmware/<type>/versions` (added in
+`server.js`, since static file serving alone doesn't do directory listings)
+returns `{"versions": ["125.0.0.15", ...]}` — every subdirectory under
+`public/firmware/<type>/` that actually has both `firmware.bin` and
+`firmware.crc32`, sorted. No auth, same as the files themselves. E.g.:
+```bash
+curl https://multihot.duckdns.org/firmware/mbc2/versions
+```
 
 ## TLS (Let's Encrypt)
 

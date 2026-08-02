@@ -24,17 +24,33 @@ void Work_C::handler(void) {
     resetHandler();
     modem_process_emulated_sms();
     faultManager.handler();
-    canBroadcast();
     dataActualizator.handler();
     timberline.mqttActualizerHandler();
     timberline.mqttTelemetryHandler();
-    stringTransfer.handler();
+    timberline.doCanRelay();
+
+    /* canBroadcast() (periodic PGN18/60 + the string round-robin it drives)
+       and stringTransfer.handler() (paces any string transfer in progress,
+       PGN61/62) both compete for the same 3 CAN TX mailboxes as
+       doCanRelay()'s PGN=106 fragment stream — confirmed on real hardware
+       that even with mailbox checks and inter-frame pacing, occasional
+       frames still got dropped, most likely lost arbitration/mailbox
+       contention against this other routine traffic. Neither is
+       time-critical enough to matter losing a few seconds of updates
+       during the one-off, already-slow (tens of seconds) firmware relay,
+       so just don't compete with it. */
+    if (timberline.canRelay.status != Timberline::RELAY_STAGING) {
+        canBroadcast();
+        stringTransfer.handler();
+    }
 }
 
 /* ── canBroadcast ─────────────────────────────────────────────────────────
  * PGN 18 — version/presence announcement (every 5 s)
  * PGN 60 — GSM status, multi-packet: D[0] selects the sub-packet:
- *   0 — registration/roaming + internet + CSQ        (every 5 s, fast-changing)
+ *   0 — registration/roaming + internet + CSQ — sent on change (see below),
+ *       plus resent every 5 s in case a panel missed the change-triggered
+ *       one, same pattern as sub-packet 1
  *   1 — settings flags — sent on change by DataActualizator, plus resent
  *       here every 10 s in case a panel missed the change-triggered one
  *   2 — operator code (numeric MCC+MNC, ASCII digits) — only when the
@@ -48,30 +64,44 @@ void Work_C::handler(void) {
 void Work_C::canBroadcast(void) {
     static uint32_t timer     = 0;
     static uint32_t timerSlow = 0;
+    static uint8_t  prevD1    = 0xFFu; /* forces an immediate first send once real state exists */
     uint32_t id60 = (60u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
                   | ((uint32_t)can.idType<<3) | can.idAddress;
 
-    if ((core.getTick() - timer) >= 5000) {
+    /* Sub-packet 0: D[1] = 2 bits/bool (00=off,01=on,11=no data):
+     *   bits0-1 registered, bits2-3 roaming, bits4-5 internet connected
+     *   (only meaningful when useInternet), bits6-7 MQTT connected
+     *   (only meaningful when useInternet && isInternetConnected). D[2]=CSQ.
+     *   D[3] = networkAcT, raw <AcT> from the last +COPS? poll (real
+     *   network tech — the panel buckets it into 2G/3G/4G for display).
+     *   Recomputed every tick (cheap — a handful of bitfield reads) and
+     *   compared against the last sent value so a genuine transition
+     *   (just registered, internet came up, MQTT connected/dropped) reaches
+     *   the panel right away — confirmed on real hardware that relying on
+     *   the fixed periodic send alone left the panel's modem-status icon
+     *   showing a stale colour for up to ~5s after the real change. CSQ/AcT
+     *   changing on their own doesn't trigger a resend — they're covered by
+     *   the periodic tick below, and diffing them here would spam a resend
+     *   on every signal-strength wobble even though nothing meaningful
+     *   (registration/internet/mqtt) actually changed. */
+    uint8_t d1 = (uint8_t)(  (modem.network.isRegistered ? 1u : 0u)
+                            | ((modem.network.isRoaming   ? 1u : 0u) << 2)
+                            | ((modem.internet.isInternetConnected ? 1u : 0u) << 4)
+                            | ((modem.mqtt.connected ? 1u : 0u) << 6));
+    bool dueForPeriodic = (core.getTick() - timer) >= 5000;
+    if (d1 != prevD1 || dueForPeriodic) {
+        prevD1 = d1;
         timer = core.getTick();
+        can.SendMessage(id60,
+            0, d1, modem.network.csq, modem.network.networkAcT, 0xFF, 0xFF, 0xFF, 0xFF);
+    }
 
+    if (dueForPeriodic) {
         uint32_t id18 = (18u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
                       | ((uint32_t)can.idType<<3) | can.idAddress;
         can.SendMessage(id18,
             VERSION_1, VERSION_2, VERSION_3, VERSION_4,
             0xFF, 0xFF, 0xFF, 0xFF);
-
-        /* Sub-packet 0: D[1] = 2 bits/bool (00=off,01=on,11=no data):
-         *   bits0-1 registered, bits2-3 roaming, bits4-5 internet connected
-         *   (only meaningful when useInternet), bits6-7 MQTT connected
-         *   (only meaningful when useInternet && isInternetConnected). D[2]=CSQ.
-         *   D[3] = networkAcT, raw <AcT> from the last +COPS? poll (real
-         *   network tech — the panel buckets it into 2G/3G/4G for display). */
-        uint8_t d1 = (uint8_t)(  (modem.isRegistered ? 1u : 0u)
-                                | ((modem.isRoaming   ? 1u : 0u) << 2)
-                                | ((modem.isInternetConnected ? 1u : 0u) << 4)
-                                | ((modem.mqttConnected ? 1u : 0u) << 6));
-        can.SendMessage(id60,
-            0, d1, modem.csq, modem.networkAcT, 0xFF, 0xFF, 0xFF, 0xFF);
     }
 
     if ((core.getTick() - timerSlow) >= 10000) {
@@ -83,18 +113,18 @@ void Work_C::canBroadcast(void) {
         /* Sub-packet 2: operator code, up to 5 ASCII digits (MCC+MNC) —
            only sent when the operator isn't resolved to a name below. */
         static char lastOperatorName[24] = {0};
-        if (modem.operatorName[0]) {
-            if (strcmp(lastOperatorName, modem.operatorName) != 0) {
-                strncpy(lastOperatorName, modem.operatorName, sizeof(lastOperatorName)-1);
+        if (modem.network.operatorName[0]) {
+            if (strcmp(lastOperatorName, modem.network.operatorName) != 0) {
+                strncpy(lastOperatorName, modem.network.operatorName, sizeof(lastOperatorName)-1);
                 lastOperatorName[sizeof(lastOperatorName)-1] = 0;
-                stringTransfer.sendString(modem.operatorName, STRID_OPERATOR_NAME,
+                stringTransfer.sendString(modem.network.operatorName, STRID_OPERATOR_NAME,
                                            can.idType, can.idAddress);
             }
         } else {
             lastOperatorName[0] = 0;
             char op[5] = {0xFF,0xFF,0xFF,0xFF,0xFF};
-            for (uint8_t i = 0; i < 5 && modem.operatorCode[i]; i++)
-                op[i] = modem.operatorCode[i];
+            for (uint8_t i = 0; i < 5 && modem.network.operatorCode[i]; i++)
+                op[i] = modem.network.operatorCode[i];
             can.SendMessage(id60,
                 2, op[0], op[1], op[2], op[3], op[4], 0xFF, 0xFF);
         }
@@ -102,9 +132,9 @@ void Work_C::canBroadcast(void) {
         /* Sub-packet 3: LAC (16-bit) + Cell ID (32-bit), big-endian */
         can.SendMessage(id60,
             3,
-            (uint8_t)(modem.lac>>8),    (uint8_t)modem.lac,
-            (uint8_t)(modem.cellId>>24),(uint8_t)(modem.cellId>>16),
-            (uint8_t)(modem.cellId>>8), (uint8_t)modem.cellId,
+            (uint8_t)(modem.network.lac>>8),    (uint8_t)modem.network.lac,
+            (uint8_t)(modem.network.cellId>>24),(uint8_t)(modem.network.cellId>>16),
+            (uint8_t)(modem.network.cellId>>8), (uint8_t)modem.network.cellId,
             0xFF);
     }
 

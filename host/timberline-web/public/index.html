@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <title>Timberline control</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  /* Applied here, synchronously, before the stylesheet below ever paints —
+     doing this in app.js instead (loaded at the bottom, after body) would
+     flash the OS-default theme first and then jump to the saved choice.
+     See applyTheme() in app.js for the same logic used on later changes. */
+  (function () {
+    var saved = localStorage.getItem('timberline-theme');
+    if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved;
+  })();
+</script>
 <style>
   :root {
     --bg: #f2f3f5;
@@ -32,6 +42,20 @@
       --danger: #f2686c;
       --shadow: 0 1px 3px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3);
     }
+  }
+  /* Manual theme override (Misc -> Theme, see app.js applyTheme()) — wins
+     over the OS-driven media query above in both directions. "System"
+     leaves html[data-theme] unset entirely, so the media query alone
+     decides, same as before this setting existed. */
+  :root[data-theme="light"] {
+    --bg: #f2f3f5; --card: #ffffff; --border: #e2e4e8; --text: #1c1e21; --muted: #767a82;
+    --accent: #1fa971; --accent-text: #ffffff; --heat: #ea8a3c; --vent: #3d97dd; --danger: #e5484d;
+    --shadow: 0 1px 3px rgba(20,20,30,0.06), 0 1px 2px rgba(20,20,30,0.08);
+  }
+  :root[data-theme="dark"] {
+    --bg: #131417; --card: #1d1f23; --border: #303338; --text: #eceef0; --muted: #92969e;
+    --accent: #29c07f; --accent-text: #06231a; --heat: #ef9a52; --vent: #5aacea; --danger: #f2686c;
+    --shadow: 0 1px 3px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3);
   }
 
   * { box-sizing: border-box; }
@@ -82,12 +106,21 @@
   .conn-dot.disconnected { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
   @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   .conn-sep { color: var(--border); }
+  /* Unobtrusive reminder of which account this tab is logged into — mainly
+     for switching between multiple test accounts without mixing them up. */
+  .login-label { margin-left: auto; color: var(--muted); opacity: 0.6; }
   /* Floor/engine settings "spoilers" (see FLOOR_SETTINGS/ENGINE_SETTINGS in
      app.js) — collapsed by default, card-styled like the other widgets. */
   .settings-group {
     display: block; border: 1px solid var(--border); border-radius: 12px;
     background: var(--card); box-shadow: var(--shadow); padding: 2px 12px 10px; margin: 0 0 8px;
   }
+  /* Higher specificity than plain .hidden — otherwise .settings-group's own
+     `display: block`, declared after .hidden in this stylesheet, wins the
+     cascade at equal specificity and the hide never actually takes visual
+     effect even though the class gets added correctly (see updateSettingsGroup
+     in app.js). */
+  .settings-group.hidden { display: none; }
   .settings-group > summary { margin: 8px 0; }
   .setting-row { margin: 10px 0; }
   .setting-row label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
@@ -97,6 +130,30 @@
      desiredValues in app.js. */
   .setting-row input[type=range] { width: 100%; accent-color: var(--accent); }
   .setting-row input[type=range].pending { accent-color: var(--vent); }
+  .setting-row select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); color: var(--text); font-size: 14px; font-family: inherit;
+  }
+
+  .ota-staged-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 13px; color: var(--muted);
+  }
+  #mbcVersionText, #modemVersionText { font-weight: 600; color: var(--text); }
+  .ota-status-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  }
+  #otaStatusText { font-size: 13px; color: var(--muted); }
+  /* Semantic (not accent) coloring — matches the pattern used for danger/
+     errors elsewhere: state carried in color, not just text. */
+  #otaStatusText.ota-error { color: var(--danger); font-weight: 600; }
+  #otaStatusText.ota-done { color: var(--accent); font-weight: 600; }
+  #otaStartBtn:disabled { opacity: 0.5; cursor: default; }
+  #canRelayStatusText { font-size: 13px; color: var(--muted); }
+  #canRelayStatusText.ota-error { color: var(--danger); font-weight: 600; }
+  #canRelayStatusText.ota-done { color: var(--accent); font-weight: 600; }
+  #canRelayStartBtn:disabled { opacity: 0.5; cursor: default; }
 
   #statusPre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 200px; overflow: auto; color: var(--text); }
   #err { color: var(--danger); font-size: 14px; }
@@ -161,9 +218,17 @@
     cursor: pointer; touch-action: none;
   }
 
-  .zone-row { display: flex; gap: 8px; margin: 0 0 16px; }
+  /* flex-wrap lets the row break into a second line once cards would
+     otherwise get too narrow to hold both the fan/radiator icon and the
+     temperature (5 connected zones with plain `flex: 1` on one line was
+     cramped enough that the icon overlapped the digit) — min-width on the
+     card (a third of the row, in % so it scales with the container rather
+     than a fixed px floor) is what actually triggers the wrap; flex-grow
+     still stretches whichever cards land on each line to fill it evenly. */
+  .zone-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
   .zone-btn {
-    position: relative; flex: 1; display: flex; flex-direction: column; align-items: center;
+    position: relative; flex: 1 1 calc(33.333% - 6px); min-width: calc(33.333% - 6px);
+    display: flex; flex-direction: column; align-items: center;
     padding: 8px 0; margin: 0; border: 1px solid var(--border); border-radius: 12px;
     background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
   }
@@ -171,7 +236,19 @@
   /* Sits inline right after the temperature digit — between it and the "⋮"
      menu button — instead of a corner badge; see renderZoneRow(). */
   .zone-info { display: flex; align-items: center; gap: 4px; }
-  .zone-info .pending-spinner { position: static; width: 13px; height: 13px; }
+  /* Centered/overlaid on the whole card (not inline in .zone-info) — a
+     small card had no room for it next to the temperature without
+     crowding the fan-level meter (see .fan-level). Semi-transparent so the
+     temperature/icon stay legible underneath while it spins. */
+  /* Centered via top/left+negative margins, not `transform: translate(...)`
+     — .pending-spinner's own rotate animation already owns the `transform`
+     property, and mixing a static translate into it made the browser
+     interpolate translate->rotate as one matrix, which drifted/slid instead
+     of spinning in place. */
+  .zone-btn .zone-spinner {
+    top: 50%; left: 50%; right: auto; margin: -10px 0 0 -10px;
+    width: 20px; height: 20px; opacity: 0.7; z-index: 1;
+  }
   /* Background = current zone state (color-coded), at a glance. */
   .zone-btn.state-off  { background: var(--card); color: var(--muted); }
   .zone-btn.state-heat { background: var(--heat); color: #fff; }
@@ -184,16 +261,29 @@
   .zone-btn.selected { outline: 3px solid var(--text); outline-offset: -3px; }
 
   /* Fan/radiator badge — zoneType 1 vs 3, see renderZoneRow(). Height spans
-     the card (aspect-ratio keeps width proportional, so it isn't stretched)
-     — sized to match the temperature digit rather than a tiny corner mark.
-     Muted so it reads as a secondary cue, not competing with the digit. */
-  .zone-icon {
-    position: absolute; top: 6px; bottom: 6px; left: 6px; aspect-ratio: 1 / 1;
+     the card — sized to match the temperature digit rather than a tiny
+     corner mark. Muted so it reads as a secondary cue, not competing with
+     the digit. Wraps the icon itself plus (fan zones only) a fan-level
+     meter alongside it — see .fan-level below. */
+  .zone-icon-wrap {
+    position: absolute; top: 6px; bottom: 6px; left: 6px;
+    display: flex; align-items: stretch; gap: 3px;
     opacity: 0.5; pointer-events: none;
   }
+  .zone-icon { aspect-ratio: 1 / 1; }
   .zone-icon svg { width: 100%; height: 100%; }
   .zone-icon.spinning svg { animation: zone-fan-spin 1.4s linear infinite; transform-origin: 50% 50%; }
   @keyframes zone-fan-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  /* Current fan speed, graphically — a slim vertical gauge instead of a
+     second number competing with the temperature on an already-small card.
+     Empty track = 1px grey outline; .fan-level-fill grows from the bottom
+     in plain white (green read poorly against the card's own colors). */
+  .fan-level {
+    position: relative; width: 7px; align-self: stretch;
+    border: 1px solid var(--border); border-radius: 2px; overflow: hidden;
+  }
+  .fan-level-fill { position: absolute; bottom: 0; left: 0; width: 100%; background: #fff; }
 
   .zone-menu-btn {
     position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
@@ -262,9 +352,11 @@
       <span class="conn-sep">·</span>
       <span id="deviceDot" class="conn-dot"></span>
       <span id="deviceLabel"></span>
+      <span id="loginLabel" class="login-label"></span>
     </div>
     <div id="iconRow" class="icon-row"></div>
     <div id="drumRow" class="drum-row"></div>
+    <div id="zoneRow" class="zone-row"></div>
     <details id="floorSettings" class="settings-group hidden">
       <summary>Floor heating</summary>
     </details>
@@ -274,10 +366,40 @@
     <details id="miscSettings" class="settings-group">
       <summary>Misc</summary>
     </details>
-    <div id="zoneRow" class="zone-row"></div>
+    <details id="otaSettings" class="settings-group">
+      <summary id="otaSummary">MBC-2 Firmware</summary>
+      <!-- Two separate steps: (1) download a firmware image into the modem
+           itself (below) — the status row shows what's actually sitting in
+           the modem right now ("Loaded X.X.X.X" / "Empty"), independent of
+           whichever version MBC-2 itself is currently running (shown in
+           the top row, from its own PGN=18 broadcast); (2) relay the
+           loaded image onto the MBC-2 device over CAN (the relay row), a
+           separate user-initiated action once they're satisfied with
+           what's loaded. -->
+      <div class="ota-staged-row">
+        <span id="modemVersionLabel">Modem version</span>
+        <span id="modemVersionText"></span>
+      </div>
+      <div class="ota-staged-row">
+        <span id="mbcVersionLabel">MBC-2 version</span>
+        <span id="mbcVersionText"></span>
+      </div>
+      <div class="setting-row">
+        <label><span id="otaVersionLabel">Version</span></label>
+        <select id="otaVersionSelect"></select>
+      </div>
+      <div class="ota-status-row">
+        <span id="otaStatusText"></span>
+        <button id="otaStartBtn">Load</button>
+      </div>
+      <div class="ota-status-row">
+        <span id="canRelayStatusText"></span>
+        <button id="canRelayStartBtn">Flash device</button>
+      </div>
+    </details>
     <div id="buttons"></div>
     <table id="statusTable"></table>
-    <details>
+    <details id="rawDetails">
       <summary>Raw</summary>
       <pre id="statusPre"></pre>
     </details>

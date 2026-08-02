@@ -6,95 +6,138 @@
 #include "gpio.h"
 #include <stdint.h>
 
+/* Kept in sync with flash.h's FLASH_OTA_PAGE_COUNT/FLASH_PAGE_SIZE — see the
+   static_asserts in Modem.cpp (this header intentionally doesn't include
+   flash.h itself, to keep it out of Modem.h's public include surface). */
+#define MODEM_OTA_PAGE_SIZE   2048
+#define MODEM_OTA_PAGE_COUNT  80
+
 class Modem {
 public:
-    /* ── Public state ────────────────────────────────────────────────── */
-    bool    isRegistered;   /* +CREG: 1  — on home network               */
-    bool    isRoaming;      /* +CREG: 5  — roaming                       */
-    uint8_t csq;            /* 0-31 = valid, 0xFF = unknown              */
-    char    imei[16];
-    char    iccid[21];
-    char    ownNumber[16];
+    /* ── Network / registration state ────────────────────────────────── */
+    struct NetworkState {
+        bool    isRegistered;   /* +CREG: 1  — on home network               */
+        bool    isRoaming;      /* +CREG: 5  — roaming                       */
+        uint8_t csq;            /* 0-31 = valid, 0xFF = unknown              */
+        char    imei[16];
+        char    iccid[21];
+        char    ownNumber[16];
 
-    /* Last SMS seen in each direction — exposed for STRID_LAST_*_SMS_* */
-    char    smsPhone[16];   /* last outgoing SMS recipient   */
-    char    smsText[141];   /* last outgoing SMS body        */
-    char    cmgrPhone[20];  /* last incoming SMS sender      */
-    char    cmgrBody[161];  /* last incoming SMS body        */
+        /* Last SMS seen in each direction — exposed for STRID_LAST_*_SMS_* */
+        char    smsPhone[16];   /* last outgoing SMS recipient   */
+        char    smsText[141];   /* last outgoing SMS body        */
+        char    cmgrPhone[20];  /* last incoming SMS sender      */
+        char    cmgrBody[161];  /* last incoming SMS body        */
 
-    /* Network info — from +CREG: (lac/ci) and +COPS: (operator), polled  */
-    char     operatorCode[7];  /* numeric MCC+MNC, e.g. "25099"           */
-    char     operatorName[24]; /* resolved carrier name, empty if unknown */
-    uint16_t lac;               /* location area code                     */
-    uint32_t cellId;            /* cell ID                                */
-    uint8_t  networkAcT;        /* 3GPP <AcT> from +COPS: (0=GSM,2=UTRAN,
-                                    7=E-UTRAN,...), 0xFF = unknown/not yet
-                                    queried — real tech, sent to the panel
-                                    for display (see canBroadcast()) */
+        /* From +CREG: (lac/ci) and +COPS: (operator), polled */
+        char     operatorCode[7];  /* numeric MCC+MNC, e.g. "25099"           */
+        char     operatorName[24]; /* resolved carrier name, empty if unknown */
+        uint16_t lac;               /* location area code                     */
+        uint32_t cellId;            /* cell ID                                */
+        uint8_t  networkAcT;        /* 3GPP <AcT> from +COPS: (0=GSM,2=UTRAN,
+                                        7=E-UTRAN,...), 0xFF = unknown/not yet
+                                        queried — real tech, sent to the panel
+                                        for display (see canBroadcast()) */
+    } network;
 
-    /* Mobile internet (PDP context), active only when useInternet          */
-    bool     isInternetConnected; /* PDP up and (if configured) HTTP check passed */
-    char     ipAddress[16];       /* from +CGPADDR, for diagnostics        */
-    char     internetCheckUrl[64];/* HTTP GET target used to verify real connectivity;
-                                      STRID_INTERNET_CHECK_URL, persisted (flash.cpp) */
-    char     connectionLink[96];  /* Last "getlink" URL (see TL_CMD_GETLINK in
-                                      Timberline.cpp) — STRID_CONNECTION_LINK, persisted
-                                      (flash.cpp) so it survives a reboot even though it's
-                                      only regenerated rarely (on demand, via SMS). */
-    char     apn[32];             /* Explicit PDP context APN override, set via the "apn"
-                                      SMS command; empty = auto (blank CGDCONT APN, or a
-                                      recognized-operator default — see doInitNet()).
-                                      Persisted in flash so a value found by trial on a
-                                      remote device survives a power cycle. */
-    char     apnUsername[32];     /* PDP auth username (AT+CGAUTH), set via "apnuser";
-                                      empty = no auth, unless a recognized operator needs
-                                      one (see doInitNet()). Persisted in flash. */
-    char     apnPassword[32];     /* PDP auth password (AT+CGAUTH), set via "apnpass".
-                                      Persisted in flash. */
+    /* ── Mobile internet (PDP context), active only when config.useInternet ── */
+    struct InternetState {
+        bool     isInternetConnected; /* PDP up and (if configured) HTTP check passed */
+        char     ipAddress[16];       /* from +CGPADDR, for diagnostics        */
+        char     internetCheckUrl[64];/* HTTP GET target used to verify real connectivity;
+                                          STRID_INTERNET_CHECK_URL, persisted (flash.cpp) */
+        char     connectionLink[96];  /* Last "getlink" URL (see TL_CMD_GETLINK in
+                                          Timberline.cpp) — STRID_CONNECTION_LINK, persisted
+                                          (flash.cpp) so it survives a reboot even though it's
+                                          only regenerated rarely (on demand, via SMS). */
+        char     apn[32];             /* Explicit PDP context APN override, set via the "apn"
+                                          SMS command; empty = auto (blank CGDCONT APN, or a
+                                          recognized-operator default — see doInitNet()).
+                                          Persisted in flash so a value found by trial on a
+                                          remote device survives a power cycle. */
+        char     apnUsername[32];     /* PDP auth username (AT+CGAUTH), set via "apnuser";
+                                          empty = no auth, unless a recognized operator needs
+                                          one (see doInitNet()). Persisted in flash. */
+        char     apnPassword[32];     /* PDP auth password (AT+CGAUTH), set via "apnpass".
+                                          Persisted in flash. */
+    } internet;
 
-    /* MQTT control channel, active only when useInternet && isInternetConnected.
-       Broker/username/password are persisted in flash (flash.cpp) and can be
-       changed at runtime via the "server"/"password" SMS commands (or CAN/
-       StringTransfer) — call mqttForceReconnect() after changing them. */
-    bool     mqttConnected;
-    char     mqttBroker[32];     /* host only, port fixed at 1883; STRID_MQTT_BROKER */
-    char     mqttUsername[16];  /* STRID_MODEM_LOGIN — also the topic namespace       */
-    char     mqttPassword[24];  /* STRID_MODEM_PASSWORD                                */
-    uint8_t  telemetryIntervalSec; /* How often Timberline::mqttTelemetryHandler()
-                                      publishes, 5-60s, default 15. Modem-local
-                                      behavior (not a heater/CAN setting), so it lives
-                                      here, not in Timberline — set via cmd/desired/
-                                      telemetryInt (see onMqttCommandReceived() in
-                                      Timberline.cpp); RAM-only, not persisted in flash
-                                      (the web app/broker is the source of truth — a
-                                      retained MQTT message re-delivers it on reboot). */
+    /* ── MQTT control channel, active only when config.useInternet &&
+       internet.isInternetConnected. broker/username/password are persisted
+       in flash (flash.cpp) and can be changed at runtime via the "server"/
+       "password" SMS commands (or CAN/StringTransfer) — call
+       mqttForceReconnect() after changing them. ─────────────────────────── */
+    struct MqttState {
+        bool     connected;
+        char     broker[32];    /* host only, port fixed at 1883; STRID_MQTT_BROKER */
+        char     username[16];  /* STRID_MODEM_LOGIN — also the topic namespace       */
+        char     password[24];  /* STRID_MODEM_PASSWORD                                */
+        uint8_t  telemetryIntervalSec; /* How often Timberline::mqttTelemetryHandler()
+                                          publishes, 5-60s, default 15. Modem-local
+                                          behavior (not a heater/CAN setting), so it lives
+                                          here, not in Timberline — set via cmd/desired/
+                                          telemetryInt (see onMqttCommandReceived() in
+                                          Timberline.cpp); RAM-only, not persisted in flash
+                                          (the web app/broker is the source of truth — a
+                                          retained MQTT message re-delivers it on reboot). */
+    } mqtt;
 
-    /* Called when "<mqttUsername>/cmd/desired/<name>" arrives (name = last path segment) */
+    /* MBC-2 firmware OTA — see doOta() in Modem.cpp. Downloads
+       firmware/<version>/{firmware.crc32,firmware.bin} from the same host
+       as mqtt.broker over plain HTTP (AT+HTTPREAD), stages it page-by-page
+       in this modem's own spare flash (FLASH_OTA_BUF_ADDR, see flash.h),
+       verifying each page before writing it. The actual CAN relay onto
+       MBC-2 is a separate, later phase (not implemented here). */
+    enum OtaStatus { OTA_IDLE, OTA_STAGING, OTA_DONE, OTA_ERROR };
+    struct OtaState {
+        OtaStatus status;
+        uint16_t  page;       /* current page index, for progress reporting */
+        uint16_t  pageTotal;  /* total pages for the image being staged     */
+        /* What's actually sitting in the flash OTA buffer right now —
+           independent of status/page/pageTotal above, which only describe
+           a download *in progress*. Loaded once at boot (see initialize())
+           and refreshed whenever a download finishes (see doOta()'s
+           cleanup step), from FLASH_OTA_META_ADDR — see flash.h. This is
+           the value the web panel is meant to show the user before they
+           decide to relay it onto MBC-2 over CAN: "this is the firmware
+           the modem is currently holding," separate from "a download just
+           finished." stagedValid false means stagedVersion/stagedBytes are
+           blank — nothing verified is staged (fresh device, or the sector
+           was erased/corrupt). */
+        bool      stagedValid;
+        char      stagedVersion[24];
+        uint32_t  stagedBytes;
+    } ota;
+    void startOta(const char* version);  /* called from onMqttCommandReceived() */
+
+    /* Called when "<mqtt.username>/cmd/desired/<name>" arrives (name = last path segment) */
     void (*onMqttCommand)(const char* name, const char* payload);
 
-    /* Access control — persisted in flash */
-    char       phones[5][16];  /* [0] = admin phone; [1..4] = trusted phones */
-    char       pin[5];         /* 4-digit PIN, null-terminated               */
-    bool       useInternet;    /* true = use mobile internet/MQTT, false = SMS-only.
-                                   CAN wire bit (PGN60) and the flash byte format keep
-                                   the old "onlySmsMode" polarity — translated at the
-                                   two boundaries (Timberline.cpp CAN read, flash.cpp)
-                                   so this rename doesn't touch existing wire/storage
-                                   formats or need a migration on already-flashed units. */
-    uint8_t    tempUnit;       /* 0 = °C, 1 = °F — persisted in flash        */
-    bool       allowRoaming;   /* false (default) = tear down/never bring up mobile
-                                   internet/MQTT while isRoaming; true = allowed.
-                                   Persisted in flash — see the "roaming" SMS command
-                                   (Library/Sms/timberline_sms.cpp) and doIdle()'s
-                                   internetAllowed gate below.                   */
-    bool       force2gOnly;    /* false (default) = AT+CNMP=2 (automatic 2G/4G);
-                                   true = AT+CNMP=13 (GSM-only) in doInitNet().
-                                   Persisted in flash — see the "2g" SMS command. */
-    bool       faultReport;    /* send SMS on fault — persisted in flash      */
-    bool       cmdAck;         /* send confirmation on device commands        */
-    uint8_t    language;       /* 0 = English, 1 = German — persisted in flash;
-                                   used to reply when the SMS itself carries no
-                                   language cue (parse errors, bare "?")       */
+    /* Access control / general config — persisted in flash */
+    struct Config {
+        char       phones[5][16];  /* [0] = admin phone; [1..4] = trusted phones */
+        char       pin[5];         /* 4-digit PIN, null-terminated               */
+        bool       useInternet;    /* true = use mobile internet/MQTT, false = SMS-only.
+                                       CAN wire bit (PGN60) and the flash byte format keep
+                                       the old "onlySmsMode" polarity — translated at the
+                                       two boundaries (Timberline.cpp CAN read, flash.cpp)
+                                       so this rename doesn't touch existing wire/storage
+                                       formats or need a migration on already-flashed units. */
+        uint8_t    tempUnit;       /* 0 = °C, 1 = °F — persisted in flash        */
+        bool       allowRoaming;   /* false (default) = tear down/never bring up mobile
+                                       internet/MQTT while network.isRoaming; true = allowed.
+                                       Persisted in flash — see the "roaming" SMS command
+                                       (Library/Sms/timberline_sms.cpp) and doIdle()'s
+                                       internetAllowed gate below.                   */
+        bool       force2gOnly;    /* false (default) = AT+CNMP=2 (automatic 2G/4G);
+                                       true = AT+CNMP=13 (GSM-only) in doInitNet().
+                                       Persisted in flash — see the "2g" SMS command. */
+        bool       faultReport;    /* send SMS on fault — persisted in flash      */
+        bool       cmdAck;         /* send confirmation on device commands        */
+        uint8_t    language;       /* 0 = English, 1 = German — persisted in flash;
+                                       used to reply when the SMS itself carries no
+                                       language cue (parse errors, bare "?")       */
+    } config;
 
     /* Called on every received SMS (phone and text are temporary buffers) */
     void (*onSmsReceived)(const char* phone, const char* text);
@@ -140,6 +183,10 @@ private:
         ANS_HTTPACTION = 1<<15, /* +HTTPACTION: — httpStatus updated, URC */
         ANS_MQTT_URC = 1<<16, /* +CMQTTCONNECT:/+CMQTTSUB:/+CMQTTPUB: — mqttUrcResult updated */
         ANS_CMGL    = 1<<17,  /* +CMGL: — at least one line seen, smsSlot set (see ST_POLL_SMS_UNREAD) */
+        ANS_HTTPREAD = 1<<18, /* +HTTPREAD: <len> — any chunk header seen, len>0 or 0 */
+        ANS_HTTPREAD_DONE = 1<<19, /* +HTTPREAD: 0 — the terminator; the whole (possibly
+                                       multi-chunk) read is actually complete now, see
+                                       RawCapture's comment in Modem.h and doOta() */
     };
     uint32_t answer;
 
@@ -148,7 +195,7 @@ private:
     CaptureMode capture;
 
     /* ── State machine ───────────────────────────────────────────────── */
-    enum State {
+    enum ModemState {
         ST_POWER_ON,
         ST_WAIT_READY,
         ST_INIT,
@@ -166,86 +213,109 @@ private:
         ST_MQTT_SUB,
         ST_MQTT_PUB,
         ST_MQTT_TEARDOWN,
+        ST_OTA,
     };
-    State   state;
-    int8_t  step;
+    ModemState state;
+    int8_t     step;
 
-    void setState(State s) { state = s; step = 0; answer = 0; capture = CAP_NONE; }
+    void setState(ModemState s) { state = s; step = 0; answer = 0; capture = CAP_NONE; }
 
-    /* ── Outgoing SMS ────────────────────────────────────────────────── */
-    bool    smsPending;   /* true while smsPhone/smsText is the one actively being sent */
-
-    /* Overflow queue for sendSms() calls that arrive while smsPending is
-       already true — e.g. a combined SMS ("server X,login Y,password
-       Z,getlink") dispatches multiple command handlers in one synchronous
-       pass, each calling sendSms() with its own reply. Without this, every
-       call after the first used to be silently dropped (smsPending was
-       already true), so only the first command's confirmation ever went
-       out. doIdle() promotes the oldest queued entry into
-       smsPhone/smsText once the active send finishes. */
+    /* ── Outgoing + incoming SMS scratch ─────────────────────────────── */
     enum { SMS_QUEUE_MAX = 4 };
     struct SmsQueueEntry { char phone[16]; char text[141]; bool pending; };
-    SmsQueueEntry smsQueue[SMS_QUEUE_MAX];
+    struct SmsIo {
+        bool pending;   /* true while smsPhone/smsText is the one actively being sent */
 
-    /* ── Incoming SMS ────────────────────────────────────────────────── */
-    /* The slot doReadSms() is actively working on right now — set exactly
-       once, by doIdle(), the moment it starts a read (copied from
-       smsNotifySlot below). doReadSms()'s own command-building re-reads
-       this on every call while its step is in flight; it must NOT change
-       out from under an in-progress read, or the AT+CMGR=<smsSlot> command
-       string changes mid-wait, atCmd() sees a new hash, and abandons the
-       response it was already waiting for (confirmed on real hardware: a
-       second +CMTI: arriving while CMGR=1 was still in flight caused the
-       firmware to fire CMGR=2 immediately, and CMGR=1's late response then
-       landed as a stray, out-of-place +CMGR: line later on, eventually
-       producing a bogus CMGR=0 / "CMS ERROR: Invalid memory index"). */
-    uint8_t smsSlot;
-    /* Slot most recently announced by "+CMTI:"/found by ST_POLL_SMS_UNREAD —
-       safe to overwrite any time, from anywhere, since nothing reads it
-       while a read is in flight; only doIdle() copies it into smsSlot. */
-    uint8_t smsNotifySlot;
-    /* Set the moment "+CMTI:" is parsed, independent of the `answer` bitmask
-       (see ANS_CMTI) — `answer` gets wiped to 0 by atCmd() the instant any
-       OTHER command is issued (new hash), which happens constantly while
-       doMqttStart()/doInitNet()/etc. cycle through their own steps. If
-       "there's an SMS waiting" only lived in `answer`, a notification that
-       arrives while the modem is busy with anything else would be silently
-       lost the moment the busy state's next AT command goes out — confirmed
-       happening in practice when MQTT can't connect and retries in a tight
-       loop for minutes at a time. This flag survives that; only doIdle()
-       clears it, once it actually acts on it. */
-    bool    smsNotifyPending;
+        /* Overflow queue for sendSms() calls that arrive while pending is
+           already true — e.g. a combined SMS ("server X,login Y,password
+           Z,getlink") dispatches multiple command handlers in one synchronous
+           pass, each calling sendSms() with its own reply. Without this, every
+           call after the first used to be silently dropped (pending was
+           already true), so only the first command's confirmation ever went
+           out. doIdle() promotes the oldest queued entry into
+           smsPhone/smsText once the active send finishes. */
+        SmsQueueEntry queue[SMS_QUEUE_MAX];
+
+        /* The slot doReadSms() is actively working on right now — set exactly
+           once, by doIdle(), the moment it starts a read (copied from
+           notifySlot below). doReadSms()'s own command-building re-reads
+           this on every call while its step is in flight; it must NOT change
+           out from under an in-progress read, or the AT+CMGR=<slot> command
+           string changes mid-wait, atCmd() sees a new hash, and abandons the
+           response it was already waiting for (confirmed on real hardware: a
+           second +CMTI: arriving while CMGR=1 was still in flight caused the
+           firmware to fire CMGR=2 immediately, and CMGR=1's late response then
+           landed as a stray, out-of-place +CMGR: line later on, eventually
+           producing a bogus CMGR=0 / "CMS ERROR: Invalid memory index"). */
+        uint8_t slot;
+        /* Slot most recently announced by "+CMTI:"/found by ST_POLL_SMS_UNREAD —
+           safe to overwrite any time, from anywhere, since nothing reads it
+           while a read is in flight; only doIdle() copies it into slot. */
+        uint8_t notifySlot;
+        /* Set the moment "+CMTI:" is parsed, independent of the `answer` bitmask
+           (see ANS_CMTI) — `answer` gets wiped to 0 by atCmd() the instant any
+           OTHER command is issued (new hash), which happens constantly while
+           doMqttStart()/doInitNet()/etc. cycle through their own steps. If
+           "there's an SMS waiting" only lived in `answer`, a notification that
+           arrives while the modem is busy with anything else would be silently
+           lost the moment the busy state's next AT command goes out — confirmed
+           happening in practice when MQTT can't connect and retries in a tight
+           loop for minutes at a time. This flag survives that; only doIdle()
+           clears it, once it actually acts on it. */
+        bool    notifyPending;
+    } sms;
 
     /* ── USSD ────────────────────────────────────────────────────────── */
     bool     ussdPending;
     char     ussdReq[32];
 
     /* ── Polling timers ──────────────────────────────────────────────── */
-    uint32_t timerCsq;
-    uint32_t timerCreg;
-    uint32_t timerNet;
-    uint32_t timerMqttRetry;
-    uint32_t timerSmsPoll; /* fallback safety net — see ST_POLL_SMS_UNREAD */
+    struct Timers {
+        uint32_t csq;
+        uint32_t creg;
+        uint32_t net;
+        uint32_t mqttRetry;
+        uint32_t smsPoll; /* fallback safety net — see ST_POLL_SMS_UNREAD */
+    } timers;
 
-    /* ── Internet check scratch ──────────────────────────────────────── */
-    uint16_t httpStatus;
+    /* ── Internet check / HTTP scratch ───────────────────────────────── */
+    struct HttpScratch {
+        uint16_t status;
+        uint16_t dataLen;  /* +HTTPACTION:'s 3rd field — only OTA (doOta())
+                               currently reads this; doCheckInternet() doesn't
+                               need it, just parsed unconditionally alongside
+                               status since it's free. */
+    } http;
+
+    /* ── Raw byte capture (bypasses line-oriented parsing entirely) ─────
+       Used for AT+HTTPREAD's binary payload, which can contain any byte
+       value including '\r'/'\n' — the normal drainRx()/parseLine() line
+       splitter would corrupt it.
+
+       Confirmed on real hardware: AT+HTTPREAD's "OK" arrives immediately
+       (command *accepted*, same as AT+HTTPACTION) — the actual payload
+       shows up later, asynchronously, as one or more "+HTTPREAD: <len>"
+       blocks (observed capped around 1024 bytes per block for a 2048-byte
+       request), terminated by a final "+HTTPREAD: 0" with no data after
+       it. So a single AT+HTTPREAD can involve *multiple* raw chunks into
+       the same destination buffer, not one — got tracks the running total
+       across all of them; chunkRemaining is what's left of the chunk
+       currently being copied (0 = between chunks, waiting for the next
+       "+HTTPREAD: <len>" header line or the terminator). A step arms this
+       by pointing dst/cap at its destination and zeroing got before issuing
+       AT+HTTPREAD, then must poll for ANS_HTTPREAD_DONE (not just atCmd()
+       returning true on that first OK) — see doOta(). */
+    struct RawCapture {
+        uint8_t*  dst;
+        uint16_t  cap;  /* dst's actual buffer size — parseLine() clamps a chunk's
+                            reported length to what's left of this so a module-
+                            reported length bigger than expected (bug/corrupt
+                            response) can't overflow the destination */
+        uint16_t  got;
+        uint16_t  chunkRemaining;
+    } rawCapture;
 
     /* ── MQTT scratch ─────────────────────────────────────────────────── */
-    uint8_t  mqttUrcResult;         /* result code from +CMQTTCONNECT:/+CMQTTSUB:/+CMQTTPUB: */
-    char     mqttRxName[16];        /* last path segment of an incoming desired-topic        */
-    char     mqttRxPayload[8];
-    bool     mqttTeardownThenNet;   /* ST_MQTT_TEARDOWN's next hop: ST_NET_TEARDOWN (true) or
-                                        back to ST_IDLE to retry MQTT alone (false)             */
-    bool     netTeardownThenReinit; /* ST_NET_TEARDOWN's next hop: ST_INIT_NET (true, so a live
-                                        force2gOnly change actually re-issues AT+CNMP with the
-                                        new value) or back to ST_IDLE as usual (false)           */
-    bool     mqttReconnectRequested; /* set by mqttForceReconnect(), consumed by doIdle() —
-                                         never setState() directly there: mqttForceReconnect()
-                                         can be called re-entrantly from inside onSmsReceived,
-                                         itself invoked from doReadSms(), and clobbering
-                                         state/step out from under the caller's own state
-                                         handler would corrupt the state machine.            */
-
     /* A name, once assigned a slot by mqttPublish(), keeps that slot for
        the device's entire runtime (matched by name, never freed) — so this
        must exceed the total number of *distinct* topic names the firmware
@@ -253,7 +323,7 @@ private:
        those happen to coincide today: justConnected in Timberline.cpp
        forces every mqttActualizerHandler field dirty on one pass, which is
        the same worst case). Currently ~50: mqttActualizerHandler's ~47
-       (control mirrors + zn<N>/* + errors) + "telemetry" + "linkToken" +
+       (control mirrors + zn<N>/... + errors) + "telemetry" + "linkToken" +
        "online" (published once per connect from doMqttStart(); the "0"
        farewell in doMqttTeardown() is a one-off AT sequence, not queued
        through here). A
@@ -270,14 +340,67 @@ private:
         char value[36];
         bool dirty;
     };
-    MqttPubEntry mqttPubQueue[MQTT_PUB_MAX];
+    struct MqttScratch {
+        uint8_t  urcResult;         /* result code from +CMQTTCONNECT:/+CMQTTSUB:/+CMQTTPUB: */
+        char     rxName[16];        /* last path segment of an incoming desired-topic        */
+        char     rxPayload[32];     /* was [8] — big enough for old on/off/small-number payloads,
+                                        but truncated cmd/desired/otaStart's version string (e.g.
+                                        "125.0.0.15", 10 chars) down to "125.0.0", silently building
+                                        a wrong firmware URL. Sized to match otaScratch.version[24]
+                                        (+ headroom) since that's the longest payload this now
+                                        needs to hold. */
+        bool     teardownThenNet;   /* ST_MQTT_TEARDOWN's next hop: ST_NET_TEARDOWN (true) or
+                                        back to ST_IDLE to retry MQTT alone (false)             */
+        bool     netTeardownThenReinit; /* ST_NET_TEARDOWN's next hop: ST_INIT_NET (true, so a live
+                                        force2gOnly change actually re-issues AT+CNMP with the
+                                        new value) or back to ST_IDLE as usual (false)           */
+        bool     reconnectRequested; /* set by mqttForceReconnect(), consumed by doIdle() —
+                                         never setState() directly there: mqttForceReconnect()
+                                         can be called re-entrantly from inside onSmsReceived,
+                                         itself invoked from doReadSms(), and clobbering
+                                         state/step out from under the caller's own state
+                                         handler would corrupt the state machine.            */
+        MqttPubEntry pubQueue[MQTT_PUB_MAX];
+    } mqttScratch;
     bool  mqttQueueHasPending(void);
 
+    /* ── OTA scratch (see doOta(), startOta()) ───────────────────────────
+       chunkBuf/verifyBuf/pageCrc's sizes below (2048, 2048, 64) hardcode
+       flash.h's FLASH_PAGE_SIZE/FLASH_OTA_PAGE_COUNT rather than including
+       flash.h here (keeps it out of Modem.h's public include surface) —
+       Modem.cpp static_asserts the two stay in sync. RAM cost (~4 KB) is a
+       non-issue given ~114 KB is free (see the flash/RAM budget discussion
+       this feature was scoped against). */
+    struct OtaScratch {
+        bool     startRequested;   /* set by startOta(), consumed by doIdle() —
+                                       same reentrancy rationale as
+                                       mqttScratch.reconnectRequested above:
+                                       startOta() can be called from
+                                       onMqttCommandReceived(), itself invoked
+                                       mid-parseLine(), so it must not setState()
+                                       directly out from under whatever state
+                                       handler is currently running. */
+        char     version[24];
+        uint32_t pageCrc[MODEM_OTA_PAGE_COUNT]; /* target CRC32 per page, from firmware.crc32 */
+        uint8_t  retries;
+        bool     failed;
+        uint8_t  chunkBuf[MODEM_OTA_PAGE_SIZE];  /* raw bytes just downloaded for the current page */
+        uint8_t  verifyBuf[MODEM_OTA_PAGE_SIZE]; /* read back from flash after writing, for memcmp */
+        uint16_t readLen; /* requested AT+HTTPREAD length, stashed by the "send" step for the
+                              matching "wait" step to check rawCapture.got against — http.dataLen
+                              can't be used for this, since every "+HTTPREAD: <n>" chunk header,
+                              including the final "+HTTPREAD: 0" terminator, overwrites it. */
+    } otaScratch;
+    void     doOta(void);
+    void     refreshStagedInfo(void);  /* re-reads ota.stagedValid/stagedVersion/stagedBytes from flash */
+
     /* ── RX line accumulator ─────────────────────────────────────────── */
-    uint16_t rxCursor;
     static const uint16_t LINE_SIZE = 256;
-    char     lineBuf[LINE_SIZE];
-    uint16_t lineLen;
+    struct RxLine {
+        uint16_t cursor;
+        char     buf[LINE_SIZE];
+        uint16_t len;
+    } rx;
 
     /* ── Internal methods ────────────────────────────────────────────── */
     bool  atCmd(const char* cmd, uint32_t ms);

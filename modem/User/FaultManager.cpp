@@ -115,12 +115,12 @@ void FaultManager::handler(void) {
         return;
     }
 
-    if (!modem.faultReport) {
+    if (!modem.config.faultReport) {
         for (uint8_t i = 0; i < 8; i++) prevErrors[i] = timberline.errors[i];
         return;
     }
 
-    if (!modem.phones[0][0]) return;   /* no admin phone set */
+    if (!modem.config.phones[0][0]) return;   /* no admin phone set */
 
     uint32_t now = core.getTick();
     if (everSent && (now - lastSentTick) < COOLDOWN_MS) {
@@ -162,7 +162,7 @@ void FaultManager::handler(void) {
 
     if (len > 0) {
         log_info("FAULT SMS: "); log_info(msg); log_info("\r\n");
-        modem.sendSms(modem.phones[0], msg);
+        modem.sendSms(modem.config.phones[0], msg);
         lastSentTick = now;
         everSent     = true;
     }

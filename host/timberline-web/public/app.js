@@ -41,21 +41,201 @@ const ICONS = {
   },
 };
 
+/* UI translations. Keys are referenced from the various *_BUTTONS/*_SETTINGS
+   arrays below (their `label` field holds an i18n key, not display text)
+   plus a handful of static elements translated directly by id in
+   applyStaticTranslations(). Units (°, %, min, s) and the brand name
+   "Timberline" are deliberately left untranslated — universal/a proper noun.
+   Server-generated error messages (e.g. failed login) aren't covered here
+   either — that would need i18n on the backend too, out of scope for now. */
+const I18N = {
+  en: {
+    heater: 'Heater', element: 'Element', floor: 'Floor', engine: 'Engine', eco: 'Eco',
+    day: 'Day', fan: 'Fan', night: 'Night',
+    floorHeating: 'Floor heating', engineHeater: 'Engine heater', misc: 'Misc', raw: 'Raw',
+    setpoint: 'Setpoint', hysteresis: 'Hysteresis', runTime: 'Run time', unlimited: 'Unlimited',
+    telemetryInterval: 'Telemetry interval', language: 'Language',
+    theme: 'Theme', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark',
+    off: 'Off', heat: 'Heat', vent: 'Vent', auto: 'auto',
+    logIn: 'Log in', register: 'Register', createAccount: 'Create account', backToLogin: 'Back to login',
+    logOut: 'Log out', copy: 'Copy', copied: 'Copied!', continueToLogin: 'Continue to login',
+    loginPlaceholder: 'login', passwordPlaceholder: 'password',
+    regLoginPlaceholder: 'login (this is also your MQTT username)', emailPlaceholder: 'email (optional)',
+    connConnecting: 'Broker connecting…', connConnected: 'Broker connected',
+    connReconnecting: 'Broker reconnecting…', connDisconnected: 'Broker disconnected',
+    deviceUnknown: 'Device: —', deviceOnline: 'Device online', deviceOffline: 'Device offline',
+    linkInvalid: 'This link is invalid or expired — request a new one (send "getlink" via SMS).',
+    waitingDevice: 'Waiting for the device to finish connecting…',
+    otaFirmware: 'MBC-2 Firmware', otaVersion: 'Version', otaUpdate: 'Load',
+    otaNoVersions: 'No versions published', otaStatusStaging: 'Loading…',
+    otaStatusError: 'Load failed', otaEmpty: 'Empty', otaLoadedPrefix: 'Loaded',
+    mbcVersionLabel: 'MBC-2 version', mbcVersionUnknown: 'unknown', modemVersionLabel: 'Modem version',
+    canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
+    canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
+    tankTemp: 'Tank temp', heaterTemp: 'Heater temp', voltage: 'Voltage', outdoorTemp: 'Outdoor temp',
+    heaterState: 'Heater state', domesticWater: 'Domestic water', liquidLevel: 'Liquid level',
+    pumpsRunning: 'Pumps running', floorTemp: 'Floor temp', floorPump: 'Floor pump',
+    engineTemp: 'Engine temp', enginePump: 'Engine pump', errorsLabel: 'Errors',
+    onState: 'ON', offState: 'off', flowing: 'flowing', noneLabel: 'none',
+    heaterIdle: 'Idle', heaterBlowing: 'Blowing', heaterIgnition: 'Ignition/warming', heaterWorkOnPower: 'Work on power',
+    pump1: 'Pump 1', pump2: 'Pump 2', pump3: 'Pump 3', pump4: 'Pump 4',
+    heaterPump: 'Heater pump', auxPump1: 'Aux pump 1', auxPump2: 'Aux pump 2', auxPump3: 'Aux pump 3',
+  },
+  ru: {
+    heater: 'Котёл', element: 'ТЭН', floor: 'Пол', engine: 'Двигатель', eco: 'Эко',
+    day: 'День', fan: 'Вентилятор', night: 'Ночь',
+    floorHeating: 'Тёплый пол', engineHeater: 'Подогрев двигателя', misc: 'Разное', raw: 'Сырые данные',
+    setpoint: 'Уставка', hysteresis: 'Гистерезис', runTime: 'Время работы', unlimited: 'Без ограничения',
+    telemetryInterval: 'Интервал телеметрии', language: 'Язык',
+    theme: 'Тема', themeSystem: 'Системная', themeLight: 'Светлая', themeDark: 'Тёмная',
+    off: 'Выкл', heat: 'Нагрев', vent: 'Вентиляция', auto: 'авто',
+    logIn: 'Войти', register: 'Регистрация', createAccount: 'Создать аккаунт', backToLogin: 'Назад ко входу',
+    logOut: 'Выйти', copy: 'Копировать', copied: 'Скопировано!', continueToLogin: 'Перейти ко входу',
+    loginPlaceholder: 'логин', passwordPlaceholder: 'пароль',
+    regLoginPlaceholder: 'логин (он же ваш MQTT-логин)', emailPlaceholder: 'email (необязательно)',
+    connConnecting: 'Подключение к брокеру…', connConnected: 'Брокер подключён',
+    connReconnecting: 'Переподключение к брокеру…', connDisconnected: 'Брокер отключён',
+    deviceUnknown: 'Устройство: —', deviceOnline: 'Устройство онлайн', deviceOffline: 'Устройство офлайн',
+    linkInvalid: 'Ссылка недействительна или устарела — запросите новую (отправьте SMS "getlink").',
+    waitingDevice: 'Ожидание подключения устройства…',
+    otaFirmware: 'Прошивка MBC-2', otaVersion: 'Версия', otaUpdate: 'Загрузить',
+    otaNoVersions: 'Нет опубликованных версий', otaStatusStaging: 'Загрузка…',
+    otaStatusError: 'Ошибка загрузки', otaEmpty: 'Пусто', otaLoadedPrefix: 'Загружено',
+    mbcVersionLabel: 'Версия MBC-2', mbcVersionUnknown: 'неизвестно', modemVersionLabel: 'Версия модема',
+    canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
+    canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
+    tankTemp: 'Температура бака', heaterTemp: 'Температура котла', voltage: 'Напряжение', outdoorTemp: 'Уличная температура',
+    heaterState: 'Состояние котла', domesticWater: 'Горячая вода', liquidLevel: 'Уровень жидкости',
+    pumpsRunning: 'Работают насосы', floorTemp: 'Температура пола', floorPump: 'Насос пола',
+    engineTemp: 'Температура двигателя', enginePump: 'Насос двигателя', errorsLabel: 'Ошибки',
+    onState: 'ВКЛ', offState: 'выкл', flowing: 'есть проток', noneLabel: 'нет',
+    heaterIdle: 'Ожидание', heaterBlowing: 'Обдув', heaterIgnition: 'Розжиг/прогрев', heaterWorkOnPower: 'Работа на мощности',
+    pump1: 'Насос 1', pump2: 'Насос 2', pump3: 'Насос 3', pump4: 'Насос 4',
+    heaterPump: 'Насос котла', auxPump1: 'Доп. насос 1', auxPump2: 'Доп. насос 2', auxPump3: 'Доп. насос 3',
+  },
+  de: {
+    heater: 'Heizung', element: 'Heizelement', floor: 'Fußboden', engine: 'Motor', eco: 'Eco',
+    day: 'Tag', fan: 'Lüfter', night: 'Nacht',
+    floorHeating: 'Fußbodenheizung', engineHeater: 'Motorheizung', misc: 'Sonstiges', raw: 'Rohdaten',
+    setpoint: 'Sollwert', hysteresis: 'Hysterese', runTime: 'Laufzeit', unlimited: 'Unbegrenzt',
+    telemetryInterval: 'Telemetrie-Intervall', language: 'Sprache',
+    theme: 'Design', themeSystem: 'System', themeLight: 'Hell', themeDark: 'Dunkel',
+    off: 'Aus', heat: 'Heizen', vent: 'Lüften', auto: 'auto',
+    logIn: 'Anmelden', register: 'Registrieren', createAccount: 'Konto erstellen', backToLogin: 'Zurück zur Anmeldung',
+    logOut: 'Abmelden', copy: 'Kopieren', copied: 'Kopiert!', continueToLogin: 'Weiter zur Anmeldung',
+    loginPlaceholder: 'Login', passwordPlaceholder: 'Passwort',
+    regLoginPlaceholder: 'Login (zugleich Ihr MQTT-Benutzername)', emailPlaceholder: 'E-Mail (optional)',
+    connConnecting: 'Verbinde mit Broker…', connConnected: 'Broker verbunden',
+    connReconnecting: 'Broker verbindet erneut…', connDisconnected: 'Broker getrennt',
+    deviceUnknown: 'Gerät: —', deviceOnline: 'Gerät online', deviceOffline: 'Gerät offline',
+    linkInvalid: 'Der Link ist ungültig oder abgelaufen — fordern Sie einen neuen an (SMS „getlink“ senden).',
+    waitingDevice: 'Warte auf Verbindungsaufbau des Geräts…',
+    otaFirmware: 'MBC-2-Firmware', otaVersion: 'Version', otaUpdate: 'Laden',
+    otaNoVersions: 'Keine Version veröffentlicht', otaStatusStaging: 'Wird geladen…',
+    otaStatusError: 'Laden fehlgeschlagen', otaEmpty: 'Leer', otaLoadedPrefix: 'Geladen',
+    mbcVersionLabel: 'MBC-2-Version', mbcVersionUnknown: 'unbekannt', modemVersionLabel: 'Modem-Version',
+    canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
+    canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
+    tankTemp: 'Tanktemperatur', heaterTemp: 'Kesseltemperatur', voltage: 'Spannung', outdoorTemp: 'Außentemperatur',
+    heaterState: 'Kesselstatus', domesticWater: 'Warmwasser', liquidLevel: 'Flüssigkeitsstand',
+    pumpsRunning: 'Laufende Pumpen', floorTemp: 'Fußbodentemperatur', floorPump: 'Fußbodenpumpe',
+    engineTemp: 'Motortemperatur', enginePump: 'Motorpumpe', errorsLabel: 'Fehler',
+    onState: 'EIN', offState: 'aus', flowing: 'Durchfluss', noneLabel: 'keine',
+    heaterIdle: 'Bereit', heaterBlowing: 'Gebläse', heaterIgnition: 'Zündung/Aufwärmen', heaterWorkOnPower: 'Volllast',
+    pump1: 'Pumpe 1', pump2: 'Pumpe 2', pump3: 'Pumpe 3', pump4: 'Pumpe 4',
+    heaterPump: 'Kesselpumpe', auxPump1: 'Zusatzpumpe 1', auxPump2: 'Zusatzpumpe 2', auxPump3: 'Zusatzpumpe 3',
+  },
+};
+const LANGUAGES = [
+  { value: 'en', label: 'English' },
+  { value: 'ru', label: 'Русский' },
+  { value: 'de', label: 'Deutsch' },
+];
+let uiLang = 'en';
+function t(key) { return (I18N[uiLang] && I18N[uiLang][key]) || I18N.en[key] || key; }
+
+/* Unlike LANGUAGES above, these option labels ARE i18n keys — "System/
+   Light/Dark" reads in whatever language is currently selected, whereas a
+   language's own name in the language picker deliberately doesn't (see
+   LANGUAGES). See the `translateOptions` branch in buildSettingsRow/
+   updateSettingsGroup below for how that distinction is honored. */
+const THEMES = [
+  { value: 'system', label: 'themeSystem' },
+  { value: 'light', label: 'themeLight' },
+  { value: 'dark', label: 'themeDark' },
+];
+const THEME_STORAGE_KEY = 'timberline-theme';
+
+/* Per-browser display preference — deliberately NOT synced via MQTT like
+   "lang" (a phone that should follow its own OS dark-mode setting has no
+   business inheriting the theme some other device on the same account
+   picked). "system" removes the override entirely so the
+   prefers-color-scheme media query in index.html decides, same as before
+   this setting existed; light/dark force :root[data-theme=...] regardless
+   of OS setting. The very first application (avoiding a flash of the wrong
+   theme before this script even loads) happens synchronously in an inline
+   <script> at the top of index.html's <head> — this just handles later
+   changes and keeps that inline copy's logic in sync. */
+function applyTheme(value) {
+  uiTheme = value;
+  rawStatus.theme = value;
+  localStorage.setItem(THEME_STORAGE_KEY, value);
+  if (value === 'light' || value === 'dark') document.documentElement.dataset.theme = value;
+  else delete document.documentElement.dataset.theme;
+}
+let uiTheme = (() => {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === 'light' || saved === 'dark' ? saved : 'system';
+})();
+
+/* Static (non-repeatedly-rendered) elements translated by id — called once
+   on load and again whenever uiLang changes (locally or via the "lang"
+   actual topic echoing back a device-confirmed value). The dynamically
+   rebuilt rows (icon/zone/drum/settings) pick up the new language on their
+   next renderButtons() pass instead, since they already call t() live. */
+function applyStaticTranslations() {
+  $('loginLogin').placeholder = t('loginPlaceholder');
+  $('loginPassword').placeholder = t('passwordPlaceholder');
+  $('loginBtn').textContent = t('logIn');
+  $('showRegisterBtn').textContent = t('register');
+  $('regLogin').placeholder = t('regLoginPlaceholder');
+  $('regPassword').placeholder = t('passwordPlaceholder');
+  $('regEmail').placeholder = t('emailPlaceholder');
+  $('registerBtn').textContent = t('createAccount');
+  $('showLoginBtn').textContent = t('backToLogin');
+  $('copySmsBtn').textContent = t('copy');
+  $('smsContinueBtn').textContent = t('continueToLogin');
+  $('floorSettings').querySelector('summary').textContent = t('floorHeating');
+  $('engineSettings').querySelector('summary').textContent = t('engineHeater');
+  $('miscSettings').querySelector('summary').textContent = t('misc');
+  $('otaSummary').textContent = t('otaFirmware');
+  $('modemVersionLabel').textContent = t('modemVersionLabel');
+  $('mbcVersionLabel').textContent = t('mbcVersionLabel');
+  $('otaVersionLabel').textContent = t('otaVersion');
+  $('otaStartBtn').textContent = t('otaUpdate');
+  $('canRelayStartBtn').textContent = t('canRelayFlash');
+  $('rawDetails').querySelector('summary').textContent = t('raw');
+  $('logoutBtn').textContent = t('logOut');
+  refreshStatusLabels();
+  renderStatus(); /* re-translates the telemetry summary table (HEATER_ICON_LABELS/PUMP_LABELS/etc.) */
+  renderOtaPanel(); /* re-translates the status line / "no versions" option */
+}
+
 /* First row: icon toggle buttons. Floor/Engine carry a connectedKey — not
    every physical system has that hardware, so they stay hidden until the
    modem confirms presence via the matching "*Connected" status topic (see
    mqttActualizerHandler in Timberline.cpp). Heater/Element are always
    present, no gating. */
 const ICON_BUTTONS = [
-  { name: 'btnHtr', label: 'Heater', icon: ICONS.flame },
-  { name: 'btnElement', label: 'Element', icon: ICONS.bolt },
-  { name: 'btnFloor', label: 'Floor', icon: ICONS.floor, connectedKey: 'floorConnected' },
-  { name: 'btnEngine', label: 'Engine', icon: ICONS.engine, connectedKey: 'engineConnected' },
+  { name: 'btnHtr', label: 'heater', icon: ICONS.flame },
+  { name: 'btnElement', label: 'element', icon: ICONS.bolt },
+  { name: 'btnFloor', label: 'floor', icon: ICONS.floor, connectedKey: 'floorConnected' },
+  { name: 'btnEngine', label: 'engine', icon: ICONS.engine, connectedKey: 'engineConnected' },
 ];
 
 /* Everything else, rendered the old label/ON-off way below the icon row. */
 const OTHER_BUTTONS = [
-  { name: 'btnEco', label: 'Eco' },
+  { name: 'btnEco', label: 'eco' },
 ];
 
 const ZONE_COUNT = 5;
@@ -66,9 +246,9 @@ const ZONE_COUNT = 5;
    sanity bounds, not enforced by the firmware — it accepts whatever's
    published to cmd/desired/zn<N>/<key>. */
 const DRUMS = [
-  { key: 'daySp', label: 'Day', min: 10, max: 32, step: 1, unit: '°' },
-  { key: 'fanPct', label: 'Fan', min: 10, max: 100, step: 1, unit: '%', isFan: true },
-  { key: 'nightSp', label: 'Night', min: 10, max: 32, step: 1, unit: '°' },
+  { key: 'daySp', label: 'day', min: 10, max: 32, step: 1, unit: '°' },
+  { key: 'fanPct', label: 'fan', min: 10, max: 100, step: 1, unit: '%', isFan: true },
+  { key: 'nightSp', label: 'night', min: 10, max: 32, step: 1, unit: '°' },
 ];
 
 /* Floor/engine settings, tucked behind the two <details> "spoilers" in
@@ -78,17 +258,17 @@ const DRUMS = [
    in Timberline.cpp's onMqttCommandReceived() — the slider can't offer
    anything the modem would reject anyway. */
 const FLOOR_SETTINGS = [
-  { key: 'floorSp', label: 'Setpoint', min: 2, max: 32, step: 1, unit: '°' },
-  { key: 'floorHyst', label: 'Hysteresis', min: 2, max: 10, step: 1, unit: '°' },
+  { key: 'floorSp', label: 'setpoint', min: 2, max: 32, step: 1, unit: '°' },
+  { key: 'floorHyst', label: 'hysteresis', min: 2, max: 10, step: 1, unit: '°' },
 ];
 /* engineDur: >1440 (24h) reads as "Unlimited" — same convention the
    firmware itself already uses for SystemTimeLimitHours (see Timberline.h).
    1450 is the one slider stop above that line (10..1450 step 10 lands on
    1440 exactly, then one more step to 1450). */
 const ENGINE_SETTINGS = [
-  { key: 'engineSp', label: 'Setpoint', min: 0, max: 80, step: 1, unit: '°' },
-  { key: 'engineDur', label: 'Run time', min: 10, max: 1450, step: 10, unit: ' min',
-    format: (v) => (Number(v) > 1440 ? 'Unlimited' : `${v} min`) },
+  { key: 'engineSp', label: 'setpoint', min: 0, max: 80, step: 1, unit: '°' },
+  { key: 'engineDur', label: 'runTime', min: 10, max: 1450, step: 10, unit: ' min',
+    format: (v) => (Number(v) > 1440 ? t('unlimited') : `${v} min`) },
 ];
 /* Modem-level settings, not tied to any zone/hardware presence — always
    shown, unlike FLOOR_SETTINGS/ENGINE_SETTINGS above (see
@@ -98,12 +278,21 @@ const MISC_SETTINGS = [
   /* Key is "telemetryInt", not the more obvious "telemetryInterval" — the
      modem's MQTT-desired-topic-name buffer (Modem::mqttRxName) is only 16
      bytes, and the longer name silently truncated and never matched. */
-  { key: 'telemetryInt', label: 'Telemetry interval', min: 5, max: 60, step: 1, unit: ' s' },
+  { key: 'telemetryInt', label: 'telemetryInterval', min: 5, max: 60, step: 1, unit: ' s' },
+  /* UI language — web-app-only, no modem/firmware involvement at all (see
+     publishLang()/the 'lang' branch in buildSettingsRow's select handler).
+     Persisted as its own retained MQTT message under a "web/" topic instead
+     of the usual cmd/desired -> cmd/actual round trip every other setting
+     here goes through, since there's no device to confirm it. */
+  { key: 'lang', label: 'language', type: 'select', options: LANGUAGES },
+  /* Display theme — purely local to this browser, see applyTheme(). */
+  { key: 'theme', label: 'theme', type: 'select', options: THEMES, translateOptions: true },
 ];
 
 let mqttClient = null;
 let mqttUsername = null;
 let selectedZone = null;  /* unknown until zn<N>/connected data arrives */
+let zoneManuallySelected = false;  /* once the user clicks a zone, stop auto-following */
 let telemetry = null;     /* decoded "telemetry" blob, see decodeTelemetry() */
 const buttonState = {};
 const connectedState = {};
@@ -189,7 +378,7 @@ function renderIconRow() {
     const svgAttrs = b.icon.fill
       ? 'fill="currentColor" stroke="none"'
       : 'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
-    btn.innerHTML = `<svg viewBox="${b.icon.viewBox}" ${svgAttrs}>${b.icon.path}</svg><span class="icon-label">${b.label}</span>`;
+    btn.innerHTML = `<svg viewBox="${b.icon.viewBox}" ${svgAttrs}>${b.icon.path}</svg><span class="icon-label">${t(b.label)}</span>`;
     btn.onclick = () => publishToggle(b.name, effectiveOn);
     if (pending !== undefined) btn.appendChild(makeSpinner());
     container.appendChild(btn);
@@ -204,7 +393,7 @@ function renderOtherButtons() {
     row.className = 'btn-row';
 
     const label = document.createElement('span');
-    label.textContent = b.label;
+    label.textContent = t(b.label);
 
     const confirmed = buttonState[b.name];
     let pending = desiredValues[b.name];
@@ -242,6 +431,17 @@ function publishValue(name, value) {
   mqttClient.publish(`${mqttUsername}/cmd/desired/${name}`, String(value));
 }
 
+/* UI language — web-app-only, the modem/firmware is never involved. Stored
+   as a retained message the browser itself publishes/reads directly (not
+   the cmd/desired -> cmd/actual round trip the other settings use, which
+   only the modem echoes) — the MQTT broker is just acting as small durable
+   key-value storage here so the choice survives closing the tab, shared
+   across whichever browser/device logs into this account. Lost only if the
+   broker itself restarts (acceptable — see the "web" prefix note below). */
+function publishLang(value) {
+  mqttClient.publish(`${mqttUsername}/web/lang`, value, { retain: true });
+}
+
 /* zn<N>/connected mirrors Timberline::zoneConnected: 0 = not connected,
    1 = dependent heater (has a fan), 2 = defrost (always-on, not
    user-controllable), 3 = radiator (no fan). 1 and 3 are shown — matches
@@ -255,8 +455,6 @@ function connectedZones() {
   }
   return zones;
 }
-
-const ZONE_STATE_LABELS = { off: 'Off', heat: 'Heat', vent: 'Vent' };
 
 /* Zone state (off/heat/vent) is a separate concept from "selected" (which
    zone the drums below operate on) — state now owns the card's background
@@ -273,7 +471,12 @@ function renderZoneRow() {
   const container = $('zoneRow');
   container.innerHTML = '';
   const zones = connectedZones();
-  if (!zones.includes(selectedZone)) selectedZone = zones[0] || null;
+  /* Retained zn<N>/connected messages can arrive in any order over MQTT —
+     without the manual-selection guard, whichever zone happens to connect
+     first would "win" and stick even after zone 1 shows up later. Auto-pick
+     always prefers the lowest-numbered zone until the user actually clicks
+     one themselves. */
+  if (!zoneManuallySelected || !zones.includes(selectedZone)) selectedZone = zones[0] || null;
 
   zones.forEach((z) => {
     const temp = telemetry ? telemetry.zoneCurrentTemp[z - 1] : undefined;
@@ -294,7 +497,7 @@ function renderZoneRow() {
 
     const card = document.createElement('div');
     card.className = 'zone-btn' + (state ? ` state-${state}` : '') + (z === selectedZone ? ' selected' : '');
-    card.onclick = () => { selectedZone = z; openZoneMenu = null; renderZoneRow(); renderDrums(); };
+    card.onclick = () => { selectedZone = z; zoneManuallySelected = true; openZoneMenu = null; renderZoneRow(); renderDrums(); };
 
     /* zoneType 1 = has a fan, 3 = radiator (no fan) — see connectedZones().
        Fan spins while its live speed (telemetry) is nonzero; a radiator has
@@ -302,21 +505,42 @@ function renderZoneRow() {
     const zoneIconDef = zoneType === '1' ? ICONS.fan : zoneType === '3' ? ICONS.radiator : null;
     if (zoneIconDef) {
       const fanPwm = zoneType === '1' && telemetry ? telemetry.zoneFanPwm[z - 1] : 0;
+      const wrap = document.createElement('div');
+      wrap.className = 'zone-icon-wrap';
       const icon = document.createElement('div');
       icon.className = 'zone-icon' + (fanPwm > 0 ? ' spinning' : '');
       icon.innerHTML = `<svg viewBox="${zoneIconDef.viewBox}" fill="currentColor" stroke="none">${zoneIconDef.path}</svg>`;
-      card.appendChild(icon);
+      wrap.appendChild(icon);
+      /* Current fan speed at a glance, without a competing second number on
+         an already-tiny card — a slim triangular level meter (narrow/short
+         end = low speed, wide/tall end = full speed) instead. Radiators
+         have no fan, so no meter for those. */
+      if (zoneType === '1') {
+        const level = document.createElement('div');
+        level.className = 'fan-level';
+        const fill = document.createElement('div');
+        fill.className = 'fan-level-fill';
+        fill.style.height = `${Math.max(0, Math.min(100, fanPwm))}%`;
+        level.appendChild(fill);
+        wrap.appendChild(level);
+      }
+      card.appendChild(wrap);
     }
 
     const info = document.createElement('div');
     info.className = 'zone-info';
     info.innerHTML = `<span class="zone-temp">${temp !== undefined ? temp + '°' : '–'}</span>`;
+    card.appendChild(info);
+
+    /* Centered/overlaid rather than inline next to the temperature — at
+       the card's small width (esp. 4-5 connected zones, 3 per row) an
+       inline spinner was crowding into the fan-level meter. Semi-transparent
+       so the temperature/icon underneath stay legible while it spins. */
     if (pendingState !== undefined) {
       const spinner = makeSpinner();
       spinner.classList.add('zone-spinner');
-      info.appendChild(spinner);
+      card.appendChild(spinner);
     }
-    card.appendChild(info);
 
     const menuBtn = document.createElement('button');
     menuBtn.className = 'zone-menu-btn';
@@ -334,7 +558,7 @@ function renderZoneRow() {
       stateOptions.forEach((opt) => {
         const item = document.createElement('button');
         item.className = 'zone-menu-item' + (state === opt ? ' active' : '');
-        item.textContent = ZONE_STATE_LABELS[opt];
+        item.textContent = t(opt);
         item.onclick = (e) => {
           e.stopPropagation();
           desiredValues[stateTopic] = opt;
@@ -416,25 +640,55 @@ function buildSettingsRow(groupId, s) {
 
   const label = document.createElement('label');
   const text = document.createElement('span');
-  text.textContent = s.label;
+  text.id = `${groupId}-${s.key}-label`;
+  text.textContent = t(s.label);
   const value = document.createElement('span');
   value.className = 'setting-value';
   value.id = `${groupId}-${s.key}-value`;
   label.appendChild(text);
   label.appendChild(value);
 
-  const input = document.createElement('input');
-  input.type = 'range';
-  input.id = `${groupId}-${s.key}`;
-  input.min = String(s.min);
-  input.max = String(s.max);
-  input.step = String(s.step);
-  input.addEventListener('input', () => { value.textContent = s.format ? s.format(input.value) : input.value + s.unit; });
-  input.addEventListener('change', () => {
-    desiredValues[s.key] = input.value;
-    publishValue(s.key, input.value);
-    renderSettings(); /* turn the slider blue right away, don't wait for the next unrelated message */
-  });
+  let input;
+  if (s.type === 'select') {
+    input = document.createElement('select');
+    s.options.forEach((o) => {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      /* LANGUAGES: each language's own native name, never translated.
+         THEMES (translateOptions: true): "System/Light/Dark", translated —
+         refreshed again on every render, see updateSettingsGroup below. */
+      opt.textContent = s.translateOptions ? t(o.label) : o.label;
+      input.appendChild(opt);
+    });
+    input.id = `${groupId}-${s.key}`;
+    input.addEventListener('change', () => {
+      /* Applied immediately — these are purely local rendering choices with
+         no firmware/hardware involved, so there's nothing to wait on. */
+      if (s.key === 'lang') {
+        uiLang = input.value;
+        rawStatus.lang = input.value;
+        publishLang(input.value);
+        applyStaticTranslations();
+        renderButtons();
+      } else if (s.key === 'theme') {
+        applyTheme(input.value);
+        renderSettings();
+      }
+    });
+  } else {
+    input = document.createElement('input');
+    input.type = 'range';
+    input.id = `${groupId}-${s.key}`;
+    input.min = String(s.min);
+    input.max = String(s.max);
+    input.step = String(s.step);
+    input.addEventListener('input', () => { value.textContent = s.format ? s.format(input.value) : input.value + s.unit; });
+    input.addEventListener('change', () => {
+      desiredValues[s.key] = input.value;
+      publishValue(s.key, input.value);
+      renderSettings(); /* turn the slider blue right away, don't wait for the next unrelated message */
+    });
+  }
 
   row.appendChild(label);
   row.appendChild(input);
@@ -461,6 +715,13 @@ function updateSettingsGroup(groupId, connectedKey, settings) {
     const raw = rawStatus[s.key]; /* last value the device itself confirmed */
     const input = $(`${groupId}-${s.key}`);
     const valueEl = $(`${groupId}-${s.key}-value`);
+    $(`${groupId}-${s.key}-label`).textContent = t(s.label);
+    if (s.translateOptions) {
+      Array.from(input.options).forEach((opt) => {
+        const def = s.options.find((o) => o.value === opt.value);
+        if (def) opt.textContent = t(def.label);
+      });
+    }
     let pending = desiredValues[s.key];
 
     /* Device caught up to what was requested — done, stop tracking it as
@@ -476,7 +737,7 @@ function updateSettingsGroup(groupId, connectedKey, settings) {
 
     if (document.activeElement !== input) {
       if (input.value !== display) input.value = display;
-      valueEl.textContent = s.format ? s.format(display) : display + s.unit;
+      valueEl.textContent = s.type === 'select' ? '' : (s.format ? s.format(display) : display + s.unit);
     }
 
     input.classList.toggle('pending', pending !== undefined);
@@ -527,7 +788,7 @@ function buildDrum(d) {
 
   const label = document.createElement('div');
   label.className = 'drum-label';
-  label.textContent = d.label;
+  label.textContent = t(d.label);
 
   const toggleFanManual = () => {
     if (!(d.isFan && selectedZone)) return;
@@ -545,7 +806,7 @@ function buildDrum(d) {
        the current value yet (e.g. right after connecting). */
     const staticEl = document.createElement('div');
     staticEl.className = 'drum-static';
-    staticEl.textContent = isAuto ? 'auto' : '–';
+    staticEl.textContent = isAuto ? t('auto') : '–';
     drum.appendChild(staticEl);
     drum.appendChild(label);
     return drum;
@@ -713,9 +974,11 @@ function buildDrum(d) {
 }
 
 /* Matches Timberline.h's heaterStateIcon_t: 0 idle, 1 blowing,
-   2 ignition/warming (one combined state), 3 work on power. */
-const HEATER_ICON_LABELS = ['Idle', 'Blowing', 'Ignition/warming', 'Work on power'];
-const PUMP_LABELS = ['Pump 1', 'Pump 2', 'Pump 3', 'Pump 4', 'Heater pump', 'Aux pump 1', 'Aux pump 2', 'Aux pump 3'];
+   2 ignition/warming (one combined state), 3 work on power. i18n keys, not
+   display text — same convention as the *_BUTTONS/*_SETTINGS `label`
+   fields above (see t() near the top of the file). */
+const HEATER_ICON_LABELS = ['heaterIdle', 'heaterBlowing', 'heaterIgnition', 'heaterWorkOnPower'];
+const PUMP_LABELS = ['pump1', 'pump2', 'pump3', 'pump4', 'heaterPump', 'auxPump1', 'auxPump2', 'auxPump3'];
 
 function statusRow(label, value) {
   return `<tr><td>${label}</td><td>${value}</td></tr>`;
@@ -729,32 +992,32 @@ function renderStatusTable() {
   const table = $('statusTable');
   if (!telemetry) { table.innerHTML = ''; return; }
 
-  const t = telemetry;
-  const onPumps = PUMP_LABELS.filter((_, i) => t.pumps[i]);
+  const tel = telemetry; /* not named `t` — that's the global translate function */
+  const onPumps = PUMP_LABELS.filter((_, i) => tel.pumps[i]).map(t);
   const errors = rawStatus.errors;
 
   let rows = '';
-  rows += statusRow('Tank temp', `${t.tankTemp}°`);
-  rows += statusRow('Heater temp', `${t.heaterTemp}°`);
-  rows += statusRow('Voltage', `${t.voltage.toFixed(1)}V`);
-  rows += statusRow('Outdoor temp', `${t.outdoorTemp}°`);
-  rows += statusRow('Heater state', HEATER_ICON_LABELS[t.heaterIcon] || '?');
-  rows += statusRow('Element', t.elementState ? 'ON' : 'off');
-  rows += statusRow('Domestic water', t.domesticWaterFlow ? 'flowing' : 'off');
-  rows += statusRow('Liquid level', `${t.liquidLevel}/6`);
-  rows += statusRow('Pumps running', onPumps.length ? onPumps.join(', ') : 'none');
+  rows += statusRow(t('tankTemp'), `${tel.tankTemp}°`);
+  rows += statusRow(t('heaterTemp'), `${tel.heaterTemp}°`);
+  rows += statusRow(t('voltage'), `${tel.voltage.toFixed(1)}V`);
+  rows += statusRow(t('outdoorTemp'), `${tel.outdoorTemp}°`);
+  rows += statusRow(t('heaterState'), t(HEATER_ICON_LABELS[tel.heaterIcon]) || '?');
+  rows += statusRow(t('element'), tel.elementState ? t('onState') : t('offState'));
+  rows += statusRow(t('domesticWater'), tel.domesticWaterFlow ? t('flowing') : t('offState'));
+  rows += statusRow(t('liquidLevel'), `${tel.liquidLevel}/6`);
+  rows += statusRow(t('pumpsRunning'), onPumps.length ? onPumps.join(', ') : t('noneLabel'));
   /* Floor/engine are optional hardware — only show once we know it's
      actually installed (same connectedState gate the icon row uses). */
   if (connectedState.floorConnected === '1') {
-    rows += statusRow('Floor temp', `${t.floorTemp}°`);
-    rows += statusRow('Floor pump', t.floorPumpState ? 'ON' : 'off');
+    rows += statusRow(t('floorTemp'), `${tel.floorTemp}°`);
+    rows += statusRow(t('floorPump'), tel.floorPumpState ? t('onState') : t('offState'));
   }
   if (connectedState.engineConnected === '1') {
-    rows += statusRow('Engine temp', `${t.engineTemp}°`);
-    rows += statusRow('Engine pump', t.enginePumpState ? 'ON' : 'off');
+    rows += statusRow(t('engineTemp'), `${tel.engineTemp}°`);
+    rows += statusRow(t('enginePump'), tel.enginePumpState ? t('onState') : t('offState'));
   }
   if (errors && errors !== '0') {
-    rows += `<tr class="errors-row"><td colspan="2">Errors: ${errors}</td></tr>`;
+    rows += `<tr class="errors-row"><td colspan="2">${t('errorsLabel')}: ${errors}</td></tr>`;
   }
   table.innerHTML = rows;
 }
@@ -762,7 +1025,122 @@ function renderStatusTable() {
 function renderStatus() {
   $('statusPre').textContent = JSON.stringify(rawStatus, null, 2);
   renderStatusTable();
+  renderOtaPanel();
 }
+
+/* ── MBC-2 firmware OTA ──────────────────────────────────────────────────
+   Version list comes from the server (GET /firmware/<type>/versions, see
+   server.js) — a plain HTTP fetch, nothing to do with MQTT. Status/progress
+   (rawStatus.otaStatus / rawStatus.otaProgress) arrive the normal way,
+   through the existing cmd/actual/# subscription, same as every other
+   read-only field — see Timberline::mqttActualizerHandler() on the modem
+   side (Timberline.cpp) for where those two topics get published. */
+let otaVersions = [];
+let otaVersionsFetched = false;
+
+async function fetchOtaVersions() {
+  try {
+    const r = await fetch('/firmware/mbc2/versions');
+    const data = await r.json();
+    otaVersions = Array.isArray(data.versions) ? data.versions : [];
+  } catch (e) {
+    otaVersions = [];
+  }
+  otaVersionsFetched = true;
+  renderOtaPanel();
+}
+
+function renderOtaPanel() {
+  const select = $('otaVersionSelect');
+  const btn = $('otaStartBtn');
+  const statusEl = $('otaStatusText');
+  const mbcVersionEl = $('mbcVersionText');
+  const modemVersionEl = $('modemVersionText');
+  if (!select || !btn || !statusEl || !mbcVersionEl || !modemVersionEl) return; /* not logged in yet — controlBox not shown */
+
+  /* rawStatus.modemVersion: the modem's own firmware version — a
+     compile-time constant, published once per connection (see
+     mqttActualizerHandler), so just show it verbatim once it arrives. */
+  if (rawStatus.modemVersion) modemVersionEl.textContent = rawStatus.modemVersion;
+
+  /* rawStatus.mbcVersion: MBC-2's own currently-running app version, as it
+     actually broadcasts it (PGN=18) — published by the modem whenever
+     Timberline::MbcVersion changes (see mqttActualizerHandler). Empty or
+     undefined means no broadcast has been seen yet (device offline, still
+     in its bootloader, or the modem hasn't published it yet). Deliberately
+     separate from "what's loaded in the modem" below — those can differ
+     (e.g. a new version loaded but not yet flashed onto the device). */
+  mbcVersionEl.textContent = rawStatus.mbcVersion ? rawStatus.mbcVersion : t('mbcVersionUnknown');
+
+  if (document.activeElement !== select) {
+    const prevValue = select.value;
+    select.innerHTML = '';
+    if (otaVersionsFetched && otaVersions.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = t('otaNoVersions');
+      select.appendChild(opt);
+    } else {
+      otaVersions.forEach((v) => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        select.appendChild(opt);
+      });
+    }
+    if (otaVersions.includes(prevValue)) select.value = prevValue;
+  }
+
+  const status = rawStatus.otaStatus; /* idle/staging/done/error, or undefined before the modem's first publish */
+  const staging = status === 'staging';
+  select.disabled = staging || otaVersions.length === 0;
+  btn.disabled = staging || otaVersions.length === 0;
+
+  /* Reflects what's actually loaded in the modem right now
+     (rawStatus.otaStaged, see Modem::ota.stagedValid/stagedVersion) rather
+     than the ephemeral last-download outcome — "Up to date"/"Idle" wrongly
+     implied the *device* was current, when this only ever describes the
+     modem's own local copy waiting to be relayed. Only the in-progress and
+     error cases still come from otaStatus itself. */
+  statusEl.className = status === 'error' ? 'ota-error' : rawStatus.otaStaged ? 'ota-done' : '';
+  let text = '';
+  if (status === 'staging') text = `${t('otaStatusStaging')} ${rawStatus.otaProgress || ''}`;
+  else if (status === 'error') text = t('otaStatusError');
+  else text = rawStatus.otaStaged ? `${t('otaLoadedPrefix')} ${rawStatus.otaStaged}` : t('otaEmpty');
+  statusEl.textContent = text;
+
+  /* rawStatus.canRelayStatus/canRelayProgress: published by
+     Timberline::mqttActualizerHandler whenever Timberline::canRelay
+     changes — see Timberline::doCanRelay() on the modem side. Flashing
+     the device is only offered once something verified is actually
+     staged (rawStatus.otaStaged non-empty) and nothing else is already
+     running (a download or a relay). */
+  const relayBtn = $('canRelayStartBtn');
+  const relayEl = $('canRelayStatusText');
+  if (relayBtn && relayEl) {
+    const relayStatus = rawStatus.canRelayStatus;
+    const relayStaging = relayStatus === 'staging';
+    relayBtn.disabled = relayStaging || staging || !rawStatus.otaStaged;
+    relayEl.className = relayStatus === 'error' ? 'ota-error' : relayStatus === 'done' ? 'ota-done' : '';
+    let relayText = '';
+    if (relayStatus === 'idle' || !relayStatus) relayText = t('canRelayStatusIdle');
+    else if (relayStatus === 'staging') relayText = `${t('canRelayStatusStaging')} ${rawStatus.canRelayProgress || ''}`;
+    else if (relayStatus === 'done') relayText = t('canRelayStatusDone');
+    else if (relayStatus === 'error') relayText = t('canRelayStatusError');
+    relayEl.textContent = relayText;
+  }
+}
+
+$('otaStartBtn').onclick = () => {
+  const version = $('otaVersionSelect').value;
+  if (!version || !mqttClient) return;
+  mqttClient.publish(`${mqttUsername}/cmd/desired/otaStart`, version);
+};
+
+$('canRelayStartBtn').onclick = () => {
+  if (!mqttClient) return;
+  mqttClient.publish(`${mqttUsername}/cmd/desired/canRelayStart`, '1');
+};
 
 /* Visible, at-a-glance proof that *this browser* actually has a live MQTT
    session — separate from whether the modem itself is connected. The user
@@ -770,11 +1148,13 @@ function renderStatus() {
    wasn't (page backgrounded, wifi hiccup, whatever) with nothing on
    screen to reveal that. green = connected, amber/pulsing = connecting or
    reconnecting, red = disconnected. */
-function setConnStatus(state, label) {
+let lastConnState = null, lastConnKey = null;
+function setConnStatus(state, labelKey) {
+  lastConnState = state; lastConnKey = labelKey;
   const dot = $('connDot');
   if (!dot) return;
   dot.className = 'conn-dot' + (state ? ' ' + state : '');
-  $('connLabel').textContent = label;
+  $('connLabel').textContent = t(labelKey);
 }
 
 /* The modem's own presence, via the "online" topic — Last Will (published
@@ -785,20 +1165,31 @@ function setConnStatus(state, label) {
    own link to the broker, this is whether the device itself is there at
    all. Unknown (gray, "Device: —") until the first "online" message —
    which arrives immediately on subscribe if it was ever retained. */
+let lastDeviceOnline = null;
 function setDeviceStatus(online) {
+  lastDeviceOnline = online;
   const dot = $('deviceDot');
   if (!dot) return;
   dot.className = 'conn-dot' + (online === null ? '' : online ? ' connected' : ' disconnected');
-  $('deviceLabel').textContent = online === null ? 'Device: —' : online ? 'Device online' : 'Device offline';
+  $('deviceLabel').textContent = online === null ? t('deviceUnknown') : online ? t('deviceOnline') : t('deviceOffline');
+}
+
+/* Re-applies the connection/device status labels in the now-current
+   uiLang — setConnStatus()/setDeviceStatus() only run again on their own
+   next state change, which a language switch alone doesn't trigger. */
+function refreshStatusLabels() {
+  if (lastConnKey !== null) setConnStatus(lastConnState, lastConnKey);
+  setDeviceStatus(lastDeviceOnline);
 }
 
 function connectMqtt(creds) {
   mqttUsername = creds.mqttUsername;
+  $('loginLabel').textContent = mqttUsername;
   /* A page loaded over https can't open a plain ws:// connection — the
      browser blocks it as mixed content. Match the page's own scheme. */
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${wsScheme}://${creds.mqttHost}:${creds.mqttWsPort}`;
-  setConnStatus('connecting', 'Broker connecting…');
+  setConnStatus('connecting', 'connConnecting');
   setDeviceStatus(null);
   mqttClient = mqtt.connect(url, {
     username: creds.mqttUsername,
@@ -807,20 +1198,39 @@ function connectMqtt(creds) {
   });
 
   mqttClient.on('connect', () => {
-    setConnStatus('connected', 'Broker connected');
+    setConnStatus('connected', 'connConnected');
     mqttClient.subscribe(`${mqttUsername}/cmd/actual/#`);
+    /* Separate from cmd/actual/# — that namespace is "modem confirmed this",
+       lang is browser-owned storage the modem never touches (see
+       publishLang()). Own subscribe call, not folded into a shared
+       wildcard, to keep that distinction obvious at the call site. */
+    mqttClient.subscribe(`${mqttUsername}/web/lang`);
   });
 
-  mqttClient.on('reconnect', () => setConnStatus('connecting', 'Broker reconnecting…'));
-  mqttClient.on('close',     () => setConnStatus('disconnected', 'Broker disconnected'));
-  mqttClient.on('offline',   () => setConnStatus('disconnected', 'Broker disconnected'));
+  mqttClient.on('reconnect', () => setConnStatus('connecting', 'connReconnecting'));
+  mqttClient.on('close',     () => setConnStatus('disconnected', 'connDisconnected'));
+  mqttClient.on('offline',   () => setConnStatus('disconnected', 'connDisconnected'));
 
   mqttClient.on('message', (topic, payload) => {
+    const value = payload.toString();
+
+    if (topic === `${mqttUsername}/web/lang`) {
+      /* Picks up the account's last-saved language on load (retained
+         message — arrives right after subscribe) and keeps it in sync if
+         changed from another tab/device. Redundant with the optimistic
+         apply in buildSettingsRow's own 'change' handler when this tab is
+         the one that just changed it — harmless, same value either way. */
+      if (LANGUAGES.some(l => l.value === value)) {
+        rawStatus.lang = value;
+        if (value !== uiLang) { uiLang = value; applyStaticTranslations(); renderButtons(); }
+      }
+      return;
+    }
+
     const marker = '/cmd/actual/';
     const idx = topic.indexOf(marker);
     if (idx === -1) return;
     const name = topic.slice(idx + marker.length);
-    const value = payload.toString();
     rawStatus[name] = value;
     if (ICON_BUTTONS.some(b => b.name === name) || OTHER_BUTTONS.some(b => b.name === name)) buttonState[name] = value;
     if (name === 'floorConnected' || name === 'engineConnected') connectedState[name] = value;
@@ -830,11 +1240,12 @@ function connectMqtt(creds) {
     renderButtons();
   });
 
-  mqttClient.on('error', (e) => { console.error('mqtt error', e); setConnStatus('disconnected', 'Broker disconnected'); });
+  mqttClient.on('error', (e) => { console.error('mqtt error', e); setConnStatus('disconnected', 'connDisconnected'); });
 
   showBox('controlBox');
   renderButtons();
   renderStatus();
+  fetchOtaVersions();
 }
 
 async function api(path, body) {
@@ -883,10 +1294,10 @@ async function tryMagicLink() {
       return true;
     } catch (e) {
       if (attempt === maxAttempts) {
-        $('err').textContent = 'This link is invalid or expired — request a new one (send "getlink" via SMS).';
+        $('err').textContent = t('linkInvalid');
         return false;
       }
-      $('err').textContent = 'Waiting for the device to finish connecting…';
+      $('err').textContent = t('waitingDevice');
       await sleep(retryDelayMs);
     }
   }
@@ -946,7 +1357,7 @@ $('copySmsBtn').onclick = async () => {
   try {
     await copyText($('smsCommand').textContent);
     const original = btn.textContent;
-    btn.textContent = 'Copied!';
+    btn.textContent = t('copied');
     setTimeout(() => { btn.textContent = original; }, 1500);
   } catch (e) {
     alert('Copy failed — please select and copy the text manually.');
@@ -963,5 +1374,7 @@ $('logoutBtn').onclick = () => {
   showBox('authBox');
 };
 
+applyTheme(uiTheme); /* re-applies the value the inline <script> in <head> already set on <html> — just populates rawStatus.theme so the Misc select reflects it */
+applyStaticTranslations();
 showBox('authBox');
 tryMagicLink();

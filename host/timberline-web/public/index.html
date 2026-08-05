@@ -270,7 +270,11 @@
     display: flex; align-items: stretch; gap: 3px;
     opacity: 0.5; pointer-events: none;
   }
-  .zone-icon { aspect-ratio: 1 / 1; }
+  /* height: 100% (not just the align-items: stretch above) so the
+     aspect-ratio below has a definite height to size its width from — iOS
+     Safari doesn't treat a flex-stretched cross size as "definite" for
+     aspect-ratio purposes and collapses the icon to 0 width otherwise. */
+  .zone-icon { aspect-ratio: 1 / 1; height: 100%; }
   .zone-icon svg { width: 100%; height: 100%; }
   .zone-icon.spinning svg { animation: zone-fan-spin 1.4s linear infinite; transform-origin: 50% 50%; }
   @keyframes zone-fan-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

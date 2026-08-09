@@ -340,6 +340,47 @@ static void nthQuoted(const char* s, int n, char* out, int outLen) {
     out[i] = 0;
 }
 
+/* Some operators deliver non-Latin SMS/USSD text (Cyrillic, German umlauts,
+   ...) as UCS2 even though CSCS stays "IRA" — it then arrives as a run of
+   hex digits, 4 per UTF-16BE code unit, instead of being auto-decoded. Detect
+   that shape (all hex digits, length a multiple of 4) and convert to UTF-8;
+   otherwise just copy the text through unchanged (plain GSM7/ASCII stays
+   ASCII). Returns true if the input was decoded as UCS2 hex. */
+static bool decodeUcs2Hex(const char* raw, char* out, int outCap) {
+    int rlen = (int)strlen(raw);
+    bool isUcs2 = (rlen >= 4) && (rlen % 4 == 0);
+    for (int i = 0; i < rlen && isUcs2; i++) {
+        char c = raw[i];
+        if (!((c>='0'&&c<='9')||(c>='A'&&c<='F')||(c>='a'&&c<='f')))
+            isUcs2 = false;
+    }
+    if (!isUcs2) {
+        strncpy(out, raw, outCap - 1); out[outCap-1] = 0;
+        return false;
+    }
+    int di = 0;
+    for (int i = 0; i < rlen - 3 && di < outCap - 4; i += 4) {
+        #define HV(c) ((uint8_t)((c)>='a'?(c)-'a'+10:(c)>='A'?(c)-'A'+10:(c)-'0'))
+        uint16_t cp = (uint16_t)( ((uint16_t)HV(raw[i  ])<<12)
+                                | ((uint16_t)HV(raw[i+1])<< 8)
+                                | ((uint16_t)HV(raw[i+2])<< 4)
+                                |  (uint16_t)HV(raw[i+3]));
+        #undef HV
+        if (cp < 0x80) {
+            out[di++] = (char)cp;
+        } else if (cp < 0x800) {
+            out[di++] = (char)(0xC0 | (cp >> 6));
+            out[di++] = (char)(0x80 | (cp & 0x3F));
+        } else {
+            out[di++] = (char)(0xE0 | ( cp >> 12));
+            out[di++] = (char)(0x80 | ((cp >>  6) & 0x3F));
+            out[di++] = (char)(0x80 | ( cp        & 0x3F));
+        }
+    }
+    out[di] = 0;
+    return true;
+}
+
 void Modem::parseLine(void) {
     const char* s = rx.buf;
 
@@ -360,7 +401,7 @@ void Modem::parseLine(void) {
     }
     if (capture == CAP_CMGR_BODY) {
         capture = CAP_NONE;
-        strncpy(network.cmgrBody, s, sizeof(network.cmgrBody)-1); network.cmgrBody[sizeof(network.cmgrBody)-1] = 0;
+        decodeUcs2Hex(s, network.cmgrBody, sizeof(network.cmgrBody));
         return;
     }
     if (capture == CAP_MQTT_TOPIC) {
@@ -586,42 +627,8 @@ void Modem::parseLine(void) {
         char raw[128];
         nthQuoted(s + 7, 0, raw, sizeof(raw));
 
-        /* Detect UCS2 hex: all chars are 0-9/A-F and length divisible by 4 */
-        int rlen = (int)strlen(raw);
-        bool isUcs2 = (rlen >= 4) && (rlen % 4 == 0);
-        for (int i = 0; i < rlen && isUcs2; i++) {
-            char c = raw[i];
-            if (!((c>='0'&&c<='9')||(c>='A'&&c<='F')||(c>='a'&&c<='f')))
-                isUcs2 = false;
-        }
-
         static char decoded[128];
-        if (isUcs2) {
-            /* UTF-16BE hex → UTF-8 */
-            int di = 0;
-            for (int i = 0; i < rlen - 3 && di < 125; i += 4) {
-                #define HV(c) ((uint8_t)((c)>='a'?(c)-'a'+10:(c)>='A'?(c)-'A'+10:(c)-'0'))
-                uint16_t cp = (uint16_t)( ((uint16_t)HV(raw[i  ])<<12)
-                                        | ((uint16_t)HV(raw[i+1])<< 8)
-                                        | ((uint16_t)HV(raw[i+2])<< 4)
-                                        |  (uint16_t)HV(raw[i+3]));
-                #undef HV
-                if (cp < 0x80) {
-                    decoded[di++] = (char)cp;
-                } else if (cp < 0x800) {
-                    decoded[di++] = (char)(0xC0 | (cp >> 6));
-                    decoded[di++] = (char)(0x80 | (cp & 0x3F));
-                } else {
-                    decoded[di++] = (char)(0xE0 | ( cp >> 12));
-                    decoded[di++] = (char)(0x80 | ((cp >>  6) & 0x3F));
-                    decoded[di++] = (char)(0x80 | ( cp        & 0x3F));
-                }
-            }
-            decoded[di] = 0;
-        } else {
-            strncpy(decoded, raw, sizeof(decoded) - 1);
-            decoded[sizeof(decoded)-1] = 0;
-        }
+        decodeUcs2Hex(raw, decoded, sizeof(decoded));
 
         log_info("[USSD] "); log_info(decoded); log_info("\r\n");
         answer |= ANS_CUSD;

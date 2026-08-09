@@ -41,6 +41,7 @@ Modem::Modem()
        `network(...)`, not `network.isRegistered(...)`) — so their fields
        are just zeroed/defaulted here instead. */
     network.isRegistered = false; network.isRoaming = false; network.csq = 0xFF;
+    csRegistered = csRoaming = epsRegistered = epsRoaming = false;
     network.lac = 0xFFFF; network.cellId = 0xFFFFFFFF; network.networkAcT = 0xFF;
     internet.isInternetConnected = false;
     mqtt.connected = false;
@@ -65,7 +66,12 @@ Modem::Modem()
     network.imei[0] = network.iccid[0] = network.ownNumber[0] = network.operatorCode[0] = network.operatorName[0] = 0;
     network.smsPhone[0] = network.smsText[0] = network.cmgrPhone[0] = network.cmgrBody[0] = ussdReq[0] = 0;
     internet.ipAddress[0] = 0;
-    strncpy(internet.internetCheckUrl, "http://google.com", sizeof(internet.internetCheckUrl) - 1);
+    /* example.com (IANA/ICANN-run, reserved for documentation/testing) —
+       globally reachable including from behind the Great Firewall, unlike
+       google.com, and backed by Verisign's infrastructure for uptime.
+       See "internet check url" in the SMS command set if this ever needs
+       overriding for a specific deployment. */
+    strncpy(internet.internetCheckUrl, "http://example.com", sizeof(internet.internetCheckUrl) - 1);
     internet.internetCheckUrl[sizeof(internet.internetCheckUrl) - 1] = 0;
     /* No baked-in default here on purpose — a real broker/account's
        credentials don't belong compiled into firmware that could end up
@@ -398,12 +404,20 @@ void Modem::parseLine(void) {
         network.csq = (v >= 0 && v <= 31) ? (uint8_t)v : 0xFF;
         answer |= ANS_CSQ;
     }
-    else if (starts(s,"+CREG: ")) {
-        /* AT+CREG=2 makes both the poll reply and the URC carry network.lac/ci:
-             poll: <n>,<stat>[,"<network.lac>","<ci>"]   URC: <stat>[,"<network.lac>","<ci>"]
+    else if (starts(s,"+CREG: ") || starts(s,"+CEREG: ")) {
+        /* AT+CREG=2/AT+CEREG=2 make both the poll reply and the URC carry
+           network.lac/ci:
+             poll: <n>,<stat>[,"<lac/tac>","<ci>"]   URC: <stat>[,"<lac/tac>","<ci>"]
            Collect the unquoted leading comma-separated fields — the last
-           one is always <stat> regardless of whether <n> is present. */
-        const char* p = s + 7;
+           one is always <stat> regardless of whether <n> is present.
+           +CREG is the CS (GSM/UTRAN) domain; +CEREG is the PS/EPS (LTE)
+           domain — a data-only LTE SIM only ever registers in the latter,
+           so both are tracked (see csRegistered/epsRegistered's comment in
+           Modem.h) and OR'd together below rather than one overwriting the
+           other. */
+        bool isCereg = starts(s,"+CEREG: ");
+        const char* fieldsStart = s + (isCereg ? 8 : 7);
+        const char* p = fieldsStart;
         char tok[2][8]; int ntok = 0;
         {
             char buf[8]; int bi = 0;
@@ -418,17 +432,19 @@ void Modem::parseLine(void) {
             if (bi && ntok < 2) { buf[bi] = 0; strncpy(tok[ntok], buf, sizeof(tok[0])-1); tok[ntok][sizeof(tok[0])-1] = 0; ntok++; }
         }
         char stat = (ntok > 0) ? tok[ntok-1][0] : '0';
-        network.isRegistered = (stat == '1');
-        network.isRoaming    = (stat == '5');
+        if (isCereg) { epsRegistered = (stat == '1'); epsRoaming = (stat == '5'); }
+        else         { csRegistered  = (stat == '1'); csRoaming  = (stat == '5'); }
+        network.isRegistered = csRegistered || epsRegistered;
+        network.isRoaming    = csRoaming || epsRoaming;
 
         if (*p == '"') {
             char hexLac[8], hexCi[12];
-            nthQuoted(s + 7, 0, hexLac, sizeof(hexLac));
-            nthQuoted(s + 7, 1, hexCi,  sizeof(hexCi));
+            nthQuoted(fieldsStart, 0, hexLac, sizeof(hexLac));
+            nthQuoted(fieldsStart, 1, hexCi,  sizeof(hexCi));
             network.lac    = (uint16_t)strtol(hexLac, NULL, 16);
             network.cellId = (uint32_t)strtol(hexCi,  NULL, 16);
         }
-        answer |= ANS_CREG;
+        answer |= isCereg ? ANS_CEREG : ANS_CREG;
     }
     else if (starts(s,"+COPS: ")) {
         /* AT+COPS=3,2 selects numeric format, so the 3rd field (oper) is a
@@ -663,8 +679,10 @@ void Modem::doInit(void) {
     case 9:  if (atCmd("AT+CNUM\r\n",             3000)) step++; break;
     case 10: if (atCmd("AT+CREG=2\r\n",            300)) step++; break;
     case 11: if (atCmd("AT+CREG?\r\n",            2000)) step++; break;
-    case 12: if (atCmd("AT+COPS=3,2\r\n",          300)) step++; break;
-    case 13: if (atCmd("AT+COPS?\r\n",            3000)) step++; break;
+    case 12: if (atCmd("AT+CEREG=2\r\n",           300)) step++; break;
+    case 13: if (atCmd("AT+CEREG?\r\n",           2000)) step++; break;
+    case 14: if (atCmd("AT+COPS=3,2\r\n",          300)) step++; break;
+    case 15: if (atCmd("AT+COPS?\r\n",            3000)) step++; break;
     default:
         log_info("Modem ready. IMEI="); log_info(network.imei[0]       ? network.imei       : "?");
         log_info(" SIM=");              log_info(network.ownNumber[0]   ? network.ownNumber  : "?");
@@ -965,14 +983,18 @@ void Modem::doPollCsq(void) {
 }
 
 void Modem::doPollCreg(void) {
-    /* AT+CREG=2 enables network.lac/ci in the +CREG: response (and URC); cheap to
-       re-assert every poll since some modems forget it across power cycles.
+    /* AT+CREG=2/AT+CEREG=2 enable network.lac/ci in the +CREG:/+CEREG: response
+       (and URC); cheap to re-assert every poll since some modems forget it
+       across power cycles. Both domains are polled — see the +CREG:/+CEREG:
+       handler in parseLine() for why a data-only LTE SIM needs +CEREG too.
        AT+COPS=3,2 selects numeric operator format for the +COPS: query. */
     switch (step) {
-    case 0: if (atCmd("AT+CREG=2\r\n",  300)) step++; break;
-    case 1: if (atCmd("AT+CREG?\r\n",  2000)) step++; break;
-    case 2: if (atCmd("AT+COPS=3,2\r\n", 300)) step++; break;
-    case 3: if (atCmd("AT+COPS?\r\n",  3000)) step++; break;
+    case 0: if (atCmd("AT+CREG=2\r\n",   300)) step++; break;
+    case 1: if (atCmd("AT+CREG?\r\n",   2000)) step++; break;
+    case 2: if (atCmd("AT+CEREG=2\r\n",  300)) step++; break;
+    case 3: if (atCmd("AT+CEREG?\r\n",  2000)) step++; break;
+    case 4: if (atCmd("AT+COPS=3,2\r\n", 300)) step++; break;
+    case 5: if (atCmd("AT+COPS?\r\n",  3000)) step++; break;
     default:
         timers.creg = core.getTick();
         setState(ST_IDLE);

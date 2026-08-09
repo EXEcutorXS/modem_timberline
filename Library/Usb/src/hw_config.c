@@ -344,6 +344,27 @@ static void usb_process_line(char* line)
         return;
     }
 
+    /* server <host> / login <user> / password <pass>  — set MQTT connection
+       directly over USB, no SMS/PIN/admin-phone auth needed (physical USB
+       access to the device already is the authorization). Same values as
+       the "server"/"login"/"password" SMS commands; takes effect immediately
+       (modem_process_usb_config() reconnects MQTT) and persists to flash. */
+    if (!strncmp(line, "server ", 7)) {
+        usb_set_mqtt_server(line + 7);
+        log_info("[USB CFG] server queued: "); log_info(line + 7); log_info("\r\n");
+        return;
+    }
+    if (!strncmp(line, "login ", 6)) {
+        usb_set_mqtt_login(line + 6);
+        log_info("[USB CFG] login queued: "); log_info(line + 6); log_info("\r\n");
+        return;
+    }
+    if (!strncmp(line, "password ", 9)) {
+        usb_set_mqtt_password(line + 9);
+        log_info("[USB CFG] password queued\r\n");
+        return;
+    }
+
     /* U <ussd>  — send USSD request, see reply in log */
     if ((line[0] == 'u' || line[0] == 'U') && line[1] == ' ') {
         modem.sendUssd(line + 2);

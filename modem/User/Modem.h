@@ -187,8 +187,20 @@ private:
         ANS_HTTPREAD_DONE = 1<<19, /* +HTTPREAD: 0 — the terminator; the whole (possibly
                                        multi-chunk) read is actually complete now, see
                                        RawCapture's comment in Modem.h and doOta() */
+        ANS_CEREG   = 1<<20,  /* +CEREG: — epsRegistered/epsRoaming updated (EPS/LTE
+                                  registration; see the comment above csRegistered) */
     };
     uint32_t answer;
+
+    /* +CREG (CS domain: GSM/UTRAN) and +CEREG (PS/EPS domain: E-UTRAN/LTE) are
+       tracked separately and OR'd into network.isRegistered/isRoaming — a
+       data-only LTE SIM (common with Chinese IoT carriers) never satisfies
+       CREG at all (no CS domain to register in), so relying on CREG alone
+       left network.isRegistered permanently false despite CGATT/CGACT/HTTP
+       all working. Each domain's flags persist across polls of the *other*
+       domain (see parseLine()'s +CREG:/+CEREG: handlers), so a stale/never-
+       queried domain can't mask a working one. */
+    bool csRegistered, csRoaming, epsRegistered, epsRoaming;
 
     /* ── Capture mode for multi-line responses ───────────────────────── */
     enum CaptureMode { CAP_NONE, CAP_IMEI, CAP_CMGR_BODY, CAP_MQTT_TOPIC, CAP_MQTT_PAYLOAD };

@@ -163,7 +163,7 @@ void Flash_C::readSetup(void)
            Password an empty value here isn't a sensible fallback (it's a
            check URL, not a credential) — fall back to the same default the
            constructor uses for a genuinely fresh device. */
-        sanitizeString(modem.internet.internetCheckUrl, sizeof(modem.internet.internetCheckUrl), "http://google.com", needRewrite);
+        sanitizeString(modem.internet.internetCheckUrl, sizeof(modem.internet.internetCheckUrl), "http://example.com", needRewrite);
         /* connectionLink is brand new too — empty is a perfectly legitimate
            "no getlink sent yet" state, same as mqttBroker/Username/Password. */
         sanitizeString(modem.internet.connectionLink, sizeof(modem.internet.connectionLink), "", needRewrite);

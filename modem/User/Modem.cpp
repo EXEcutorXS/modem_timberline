@@ -53,6 +53,8 @@ Modem::Modem()
     config.cmdAck = true;
     ota.status = OTA_IDLE; ota.page = 0; ota.pageTotal = 0;
     ota.stagedValid = false; ota.stagedVersion[0] = 0; ota.stagedBytes = 0;
+    ota.deviceType = 0; ota.flashBase = 0; ota.eraseSectorCount = 0;
+    bootloaderTableCount = 0;
 
     sms.pending = false; sms.slot = 0; sms.notifySlot = 0; sms.notifyPending = false;
     timers.csq = 0; timers.creg = 0; timers.net = 0; timers.mqttRetry = 0; timers.smsPoll = 0;
@@ -61,6 +63,9 @@ Modem::Modem()
     mqttScratch.urcResult = 0; mqttScratch.teardownThenNet = false;
     mqttScratch.netTeardownThenReinit = false; mqttScratch.reconnectRequested = false;
     otaScratch.startRequested = false; otaScratch.retries = 0; otaScratch.failed = false; otaScratch.readLen = 0;
+    regScratch.startRequested = false; regScratch.retries = 0;
+    regScratch.login[0] = 0; regScratch.password[0] = 0;
+    autoRegisterStatus = AUTOREG_IDLE;
     rx.cursor = 0; rx.len = 0;
 
     network.imei[0] = network.iccid[0] = network.ownNumber[0] = network.operatorCode[0] = network.operatorName[0] = 0;
@@ -73,11 +78,17 @@ Modem::Modem()
        overriding for a specific deployment. */
     strncpy(internet.internetCheckUrl, "http://example.com", sizeof(internet.internetCheckUrl) - 1);
     internet.internetCheckUrl[sizeof(internet.internetCheckUrl) - 1] = 0;
-    /* No baked-in default here on purpose — a real broker/account's
-       credentials don't belong compiled into firmware that could end up
-       on any device; must be set explicitly (SMS/CAN) before MQTT is
-       usable. */
-    mqtt.broker[0] = 0;
+    /* Broker gets a baked-in fallback (see MODEM_DEFAULT_BROKER in Modem.h)
+       so a factory-fresh device can auto-register (startAutoRegister())
+       without ever having been told a broker via SMS first — mirrored in
+       flash.cpp's sanitizeString() call for mqtt.broker, which is what
+       actually wins once readSetup() runs right after this constructor;
+       this initial value only matters for the brief window before that.
+       Login/password stay genuinely empty on purpose — a real account's
+       credentials don't belong compiled into firmware that could end up on
+       any device; those only ever come from SMS/CAN or auto-registration. */
+    strncpy(mqtt.broker, MODEM_DEFAULT_BROKER, sizeof(mqtt.broker) - 1);
+    mqtt.broker[sizeof(mqtt.broker) - 1] = 0;
     mqtt.username[0] = 0;
     mqtt.password[0] = 0;
     internet.apn[0] = 0;
@@ -85,11 +96,23 @@ Modem::Modem()
     internet.apnPassword[0] = 0;
     mqttScratch.rxName[0] = 0; mqttScratch.rxPayload[0] = 0;
     otaScratch.version[0] = 0;
+    otaScratch.deviceType = 0;
     for (int i = 0; i < MQTT_PUB_MAX; i++) {
         mqttScratch.pubQueue[i].name[0] = 0;
         mqttScratch.pubQueue[i].value[0] = 0;
         mqttScratch.pubQueue[i].dirty = false;
     }
+    /* "online" pre-claims slot 0 (not marked dirty yet — just reserved by
+       name) so doMqttPub()'s scan, which always picks the lowest-index dirty
+       entry, drains it before anything else queued around the same time.
+       Confirmed on real hardware: right after reconnecting, many actualizer
+       fields go dirty at once (a full resend on justConnected), and "online"
+       otherwise lands wherever mqttPublish() first happened to see it —
+       which could be dozens of entries deep — leaving the browser looking at
+       the stale retained "0" from the Last Will for a few extra seconds
+       after the device is actually back. Reserving slot 0 makes the
+       retained-"1" overwrite go out first, every time. */
+    strncpy(mqttScratch.pubQueue[0].name, "online", sizeof(mqttScratch.pubQueue[0].name) - 1);
     for (int i = 0; i < SMS_QUEUE_MAX; i++) {
         sms.queue[i].phone[0] = 0;
         sms.queue[i].text[0] = 0;
@@ -166,7 +189,9 @@ void Modem::handler(void) {
         case ST_MQTT_SUB:      doMqttSub();      break;
         case ST_MQTT_PUB:      doMqttPub();      break;
         case ST_MQTT_TEARDOWN: doMqttTeardown(); break;
+        case ST_FETCH_PROFILE: doFetchProfile(); break;
         case ST_OTA:           doOta();          break;
+        case ST_AUTO_REGISTER: doAutoRegister(); break;
     }
 }
 
@@ -758,7 +783,7 @@ void Modem::doIdle(void) {
     if (mqttScratch.reconnectRequested) {
         mqttScratch.reconnectRequested = false;
         if (mqtt.connected) { mqttScratch.teardownThenNet = false; setState(ST_MQTT_TEARDOWN); return; }
-        timers.mqttRetry = now - 45000;  /* let the retry check below fire immediately */
+        timers.mqttRetry = now - 5000;  /* let the retry check below fire immediately */
     }
 
     /* startOta() was called (e.g. from onMqttCommandReceived()) — same
@@ -772,7 +797,18 @@ void Modem::doIdle(void) {
         ota.status = OTA_STAGING;
         ota.page = 0;
         otaScratch.failed = false;
-        setState(ST_OTA);
+        setState(ST_FETCH_PROFILE);
+        return;
+    }
+
+    /* startAutoRegister() was called from Timberline's CAN dispatch — same
+       reentrancy rationale as otaScratch.startRequested above, and same
+       "leave pending until internet is up" behavior. */
+    if (regScratch.startRequested && internet.isInternetConnected) {
+        regScratch.startRequested = false;
+        regScratch.retries = 0;
+        autoRegisterStatus = AUTOREG_BUSY;
+        setState(ST_AUTO_REGISTER);
         return;
     }
 
@@ -795,7 +831,15 @@ void Modem::doIdle(void) {
     if (sms.pending)                  { setState(ST_SEND_SMS);  return; }
     if (ussdPending)                 { setState(ST_USSD);       return; }
     if ((now - timers.csq)  >= 30000) { setState(ST_POLL_CSQ);   return; }
-    if ((now - timers.creg) >= 60000) { setState(ST_POLL_CREG);  return; }
+    /* Retry faster while not yet registered (e.g. right after a SIM swap or
+       a coverage gap) so a missed first attempt doesn't cost a full minute —
+       observed on real hardware: first CREG/COPS poll came back "no network
+       service", and the fixed 60s cadence meant the SIM sat unregistered for
+       almost a minute before the next try even though it would have found
+       the network much sooner. Once registered, back off to the normal 60s
+       so we're not needlessly polling the air interface. */
+    uint32_t cregInterval = network.isRegistered ? 60000 : 5000;
+    if ((now - timers.creg) >= cregInterval) { setState(ST_POLL_CREG);  return; }
     if (internetAllowed && (now - timers.net) >= 60000) {
         /* Already up — just re-verify (cheap: CGPADDR ± HTTP check). Down —
            go through the full CNMP/CGDCONT/CGATT/CGACT sequence again
@@ -821,14 +865,15 @@ void Modem::doIdle(void) {
        off ST_IDLE for no possible benefit. */
     bool mqttConfigured = mqtt.broker[0] && mqtt.username[0] && mqtt.password[0];
 
-    /* 45s, not 30 — confirmed on real hardware that 30s after the PDP
-       context/internet genuinely came up wasn't always enough for the
-       module's own TCP/DNS stack to settle: CMQTTCONNECT failed at the 30s
-       mark but succeeded cleanly the next time, ~60s in. 45s split the
-       difference; the retry-on-failure path below still covers it if this
-       still isn't quite enough on a given attempt. */
+    /* Flat 5s retry, no special-casing for "just came up" vs "retry after a
+       failed attempt" (2026-08-21, per explicit request — earlier attempts to
+       tune this delay at 45s/30s/10s all missed: real-hardware logs showed
+       CMQTTSTART erroring on the first attempt regardless of how long we'd
+       already waited, so no delay length here was ever going to fix it —
+       the actual problem was elsewhere (see doMqttStart's CMQTTSTOP-first
+       fix). Simplest thing that works: just try again every 5s. */
     if (internetAllowed && internet.isInternetConnected && !mqtt.connected && mqttConfigured &&
-        (now - timers.mqttRetry) >= 45000) {
+        (now - timers.mqttRetry) >= 5000) {
         timers.mqttRetry = now;
         setState(ST_MQTT_START);
         return;
@@ -1183,25 +1228,13 @@ void Modem::doCheckInternet(void) {
     case 5:
         if (atCmd("AT+HTTPTERM\r\n", 2000)) {
             /* timers.mqttRetry starts at 0 (see the constructor) and doIdle()
-               gates the very first MQTT connect attempt on
-               (now - timers.mqttRetry) >= 45000 — without resetting it here,
-               that window counts from raw power-on, not from when the PDP
-               context actually came up. Confirmed on real hardware: when
-               credentials got configured (via SMS) fast enough that a
-               fixed delay-since-boot mark landed only ~10s after CGACT/
-               CGPADDR succeeded, CMQTTSTART/CMQTTACCQ/CMQTTCONNECT all
-               failed on the first attempt — but when credentials arrived
-               much later (well past that mark), the same delay-since-boot
-               gate had long since elapsed, so MQTT started immediately
-               once configured, with the PDP context already settled for a
-               while, and connected cleanly every time. Resetting here
-               means the delay always counts from the moment internet
-               genuinely became reachable, giving the module's stack the
-               same settling time regardless of how soon credentials get
-               configured after boot. Only on the false->true transition —
-               a later periodic re-check succeeding again shouldn't push
-               out a pending MQTT retry after an unrelated MQTT-side
-               failure. */
+               gates MQTT connect attempts on (now - timers.mqttRetry) >= 5000
+               — without resetting it here, that window would count from raw
+               power-on instead of from when the PDP context actually came
+               up, so the very first attempt could fire before internet was
+               even reachable. Only on the false->true transition — a later
+               periodic re-check succeeding again shouldn't push out a
+               pending MQTT retry after an unrelated MQTT-side failure. */
             bool wasConnected = internet.isInternetConnected;
             internet.isInternetConnected = (http.status > 0 && http.status < 400);
             if (!wasConnected && internet.isInternetConnected) timers.mqttRetry = core.getTick();
@@ -1248,6 +1281,130 @@ void Modem::mqttPublish(const char* name, const char* payload) {
     /* queue full (all MQTT_PUB_MAX names in use) — drop silently */
 }
 
+/* Lightweight, non-cryptographic token generator — this MCU has no hardware
+   RNG. Mixes the boot tick, a call counter and the device's own IMEI through
+   two rounds of a simple string hash so repeated calls produce different
+   values. Not resistant to a determined attacker who can guess timing —
+   accepted as a known limitation. Used for the "getlink" token itself, and
+   (via publishLinkToken()) reused as-is for auto-registration's generated
+   login/password — same non-guarantee applies there too, but a self-chosen
+   throwaway MQTT password doesn't need to be cryptographically strong, just
+   not predictable at a glance. */
+/* Shared randomness core for generateLinkToken()/generateMemorableLogin() —
+   mixes the boot tick, a call counter and the device's own IMEI through two
+   rounds of a simple string hash, so repeated calls (even within the same
+   millisecond) produce different (h1,h2) pairs. */
+static void generateRandomPair(uint32_t& h1, uint32_t& h2) {
+    static uint32_t counter = 0;
+    counter++;
+
+    char mix[32];
+    int  n = 0;
+    uint32_t tick = core.getTick();
+    for (int i = 0; i < 4; i++) mix[n++] = (char)(tick >> (i * 8));
+    for (int i = 0; i < 4; i++) mix[n++] = (char)(counter >> (i * 8));
+    for (int i = 0; modem.network.imei[i] && n < 30; i++) mix[n++] = modem.network.imei[i];
+
+    h1 = 5381; h2 = 52711;
+    for (int i = 0; i < n; i++) {
+        h1 = h1 * 33 ^ (uint8_t)mix[i];
+        h2 = h2 * 33 ^ (uint8_t)mix[n - 1 - i];
+    }
+}
+
+/* Lightweight, non-cryptographic token generator — this MCU has no hardware
+   RNG. Not resistant to a determined attacker who can guess timing —
+   accepted as a known limitation. Used for the "getlink" token itself, and
+   (via publishLinkToken()) for auto-registration's generated password —
+   same non-guarantee applies there too, but a self-chosen throwaway MQTT
+   password doesn't need to be cryptographically strong, just not
+   predictable at a glance. */
+static void generateLinkToken(char* out, int outLen) {
+    uint32_t h1, h2;
+    generateRandomPair(h1, h2);
+
+    static const char hex[] = "0123456789abcdef";
+    int p = 0;
+    for (int i = 7; i >= 0 && p < outLen - 1; i--) out[p++] = hex[(h1 >> (i * 4)) & 0xF];
+    for (int i = 7; i >= 0 && p < outLen - 1; i--) out[p++] = hex[(h2 >> (i * 4)) & 0xF];
+    out[p] = '\0';
+}
+
+/* Auto-registration's login: "<word><number>" (e.g. "fox228", "bell1337")
+   instead of a hex blob — same non-strength caveat as generateLinkToken()
+   (not the account's real secret, just its public-facing name; the
+   generated password carries the actual entropy), picked to be short enough
+   to read off the QR screen and remember/say out loud if ever needed. Word
+   picked by h1 % word count, a 0-9999 number by h2 % 10000 (matches the
+   requested "fox228"/"bell1337"/"core322" shape — 1-4 digits, no reason to
+   exclude short numbers like "wolf22"). */
+static void generateMemorableLogin(char* out, int outLen) {
+    static const char* const kWords[] = {
+        "fox","bell","core","wolf","lynx","hawk","puma","bear","deer","seal",
+        "storm","cloud","flame","spark","ember","frost","drift","blaze","comet","orbit",
+        "pixel","cyber","nexus","byte","chip","node","wave","beam","gate","tower",
+        "otter","hare","lion","tiger","zebra","camel","goat","swan","owl","eagle",
+        "raven","heron","robin","finch","quail","ibis","crane","gecko","viper","cobra",
+        "shark","whale","orca","walrus","badger","ferret","weasel","marten","jackal","coyote",
+        "panda","koala","sloth","lemur","gibbon","macaw","toucan","condor","falcon","osprey",
+        "stork","egret","plover","curlew","grouse","pigeon","sparrow","swift","martin","linnet",
+        "canyon","fjord","grove","marsh","swamp","tundra","valley","summit","glacier","lagoon",
+        "harbor","island","desert","oasis","plateau","volcano","geyser","cavern","cape","strait",
+        "gorge","meadow","prairie","bluff","knoll","hollow","thicket","copse","estuary","atoll",
+        "thunder","breeze","gale","mist","haze","dew","rain","snow","hail","sleet",
+        "gust","squall","zephyr","aurora","tempest","cyclone","monsoon","drizzle","shower","chinook",
+        "rocket","probe","drone","laser","radar","sonar","pulse","vector","matrix","cipher",
+        "relay","signal","beacon","module","circuit","vertex","zenith","crest","spire","dome",
+        "arch","vault","anchor","compass","nova","quark","photon","proton","plasma","fusion",
+        "amber","onyx","opal","jade","ruby","topaz","coral","pearl","slate","flint",
+        "quartz","granite","marble","copper","silver","bronze","steel","iron","zinc","cobalt",
+        "fern","moss","pine","oak","elm","birch","cedar","maple","willow","thorn",
+        "bloom","petal","leaf","root","vine","reed","bramble","clover","ivy","sage",
+    };
+    const int kWordCount = (int)(sizeof(kWords) / sizeof(kWords[0]));
+
+    uint32_t h1, h2;
+    generateRandomPair(h1, h2);
+
+    const char* word = kWords[h1 % kWordCount];
+    uint32_t number = h2 % 10000;  /* 0-9999 — no reason to exclude 0-99, "wolf22" is fine */
+
+    int p = 0;
+    for (const char* c = word; *c && p < outLen - 1; c++) out[p++] = *c;
+    p = appendUint(out, p, number);
+    if (p > outLen - 1) p = outLen - 1;
+    out[p] = '\0';
+}
+
+/* Shared finishing step for "getlink" (SMS) and a just-succeeded
+   auto-registration: generate a fresh token, publish it retained, and build
+   the https://<broker>/go/<username>/<token> URL directly into
+   internet.connectionLink. Requires mqtt.username/broker already set —
+   auto-registration sets them just before calling this (see
+   doAutoRegister()). */
+void Modem::publishLinkToken(void) {
+    char token[17];
+    generateLinkToken(token, sizeof(token));
+    mqttPublish("linkToken", token);
+
+    char* url = internet.connectionLink;
+    int   n = 0;
+    const int urlMax = (int)sizeof(internet.connectionLink) - 1;
+    /* https on the default port (443, terminated by nginx in front of the
+       web app) — not ":3000", which is the app's own plain-HTTP port and has
+       no TLS cert bound to it. Also requires mqtt.broker to hold a hostname
+       (matching the cert's CN), not a bare IP. */
+    const char* pre = "https://";
+    while (*pre) url[n++] = *pre++;
+    for (const char* p = mqtt.broker; *p && n < urlMax; ) url[n++] = *p++;
+    const char* mid = "/go/";
+    while (*mid && n < urlMax) url[n++] = *mid++;
+    for (const char* p = mqtt.username; *p && n < urlMax; ) url[n++] = *p++;
+    if (n < urlMax) url[n++] = '/';
+    for (const char* p = token; *p && n < urlMax; ) url[n++] = *p++;
+    url[n] = '\0';
+}
+
 bool Modem::mqttQueueHasPending(void) {
     for (uint8_t i = 0; i < MQTT_PUB_MAX; i++)
         if (mqttScratch.pubQueue[i].dirty) return true;
@@ -1271,8 +1428,29 @@ void Modem::doMqttStart(void) {
     const  int      cmdMax = (int)sizeof(cmdBuf) - 1;
 
     switch (step) {
-    case 0: if (atCmd("AT+CMQTTSTART\r\n", 5000)) step++; break;
-    case 1: {
+    case 0:
+        /* Unconditional AT+CMQTTDISC/REL/STOP before every start attempt,
+           including the very first one after boot. Root cause confirmed via
+           SIMCOM's own CMQTT error table (2026-08-21): the module answers
+           CMQTTSTART/CMQTTSTOP with error 19, "client is used" — client
+           index 0's allocation survives independently of this MCU's own
+           reset/reflash, since the cellular module itself doesn't reboot
+           with it. So any run where the *previous* firmware session ended
+           without a clean CMQTTREL (crash, reflash, power cut mid-session)
+           leaves index 0 marked used from the module's point of view, and a
+           bare CMQTTSTOP doesn't clear that flag — only CMQTTREL does, which
+           is why only the *second* attempt (run through this same
+           DISC/REL/STOP sequence in the `default:` failure path below) ever
+           used to succeed. Running it up front here avoids that first,
+           otherwise near-guaranteed, failed round-trip. All three are
+           harmless no-ops (ERROR, ignored — atCmd() advances regardless)
+           when there was nothing to disconnect/release/stop. */
+        if (atCmd("AT+CMQTTDISC=0,60\r\n", 5000)) step++;
+        break;
+    case 1: if (atCmd("AT+CMQTTREL=0\r\n", 3000)) step++; break;
+    case 2: if (atCmd("AT+CMQTTSTOP\r\n", 3000)) step++; break;
+    case 3: if (atCmd("AT+CMQTTSTART\r\n", 5000)) step++; break;
+    case 4: {
         int n = 0;
         const char* pre = "AT+CMQTTACCQ=0,\"";
         while (*pre) cmdBuf[n++] = *pre++;
@@ -1292,7 +1470,7 @@ void Modem::doMqttStart(void) {
        sequence; if it errors out here, CMQTTCONNECT below still runs
        regardless (atCmd() advances on ERROR same as OK), just without a
        registered will. */
-    case 2: {
+    case 5: {
         int n = 0;
         const int topicMax = (int)sizeof(willTopicBuf) - 1;
         for (const char* p = mqtt.username; *p && n < topicMax; ) willTopicBuf[n++] = *p++;
@@ -1308,41 +1486,81 @@ void Modem::doMqttStart(void) {
         if (atCmd(cmdBuf, 2000)) step++;
         break;
     }
-    case 3:
+    case 6:
         if (atCmd(willTopicBuf, 3000)) step++;
         break;
-    case 4:
+    case 7:
         /* len=1, qos=1, retain=1 — without retain, a client that (re)subscribes
            after the will already fired just gets the stale last retained "1"
            instead of the will's "0", masking the outage for anyone whose
            connection wasn't live at the exact moment the will published. */
         if (atCmd("AT+CMQTTWILLMSG=0,1,1,1\r\n", 2000)) step++;
         break;
-    case 5:
+    case 8:
         if (atCmd("0", 3000)) step++;
         break;
-    case 6: {
+    case 9: {
         int n = 0;
         const char* pre = "AT+CMQTTCONNECT=0,\"tcp://";
         while (*pre) cmdBuf[n++] = *pre++;
         for (const char* p = mqtt.broker; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
-        const char* mid = ":1883\",60,1,\"";
+        /* Keepalive 25s, not 60 — confirmed on real hardware (2026-08-21):
+           mosquitto's own log showed this client's source IP cycling between
+           exactly two addresses (the operator's small CGNAT pool) with an
+           almost perfectly regular ~44-45s period, matching CMQTTCONNLOST
+           events one-for-one. That's the signature of a carrier NAT/firewall
+           killing an idle TCP mapping before our old 60s keepalive's first
+           PING would ever go out — the module never gets a chance to keep
+           the binding alive. 25s gives a solid margin under that ~45s
+           window so PINGs refresh the NAT binding well before it can expire,
+           on 2G/EDGE as much as 4G (attach type doesn't change the
+           carrier-side NAT timeout that's actually the culprit here). */
+        const char* mid = ":1883\",25,1,\"";
         while (*mid) cmdBuf[n++] = *mid++;
         for (const char* p = mqtt.username; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
         cmdBuf[n++] = '"'; cmdBuf[n++] = ','; cmdBuf[n++] = '"';
         for (const char* p = mqtt.password; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
         cmdBuf[n++] = '"'; cmdBuf[n++] = '\r'; cmdBuf[n++] = '\n'; cmdBuf[n] = 0;
-        if (atCmd(cmdBuf, 3000)) { answer &= ~ANS_MQTT_URC; t = core.getTick(); step++; }
+        /* No "answer &= ~ANS_MQTT_URC" here on purpose (removed 2026-08-21) —
+           atCmd() already zeroes `answer` fresh the moment this distinct
+           command is transmitted (see atCmd()'s h != h0 branch), so there's
+           nothing stale to clear. Confirmed on real hardware this clear was
+           actively destroying real data: on a synchronous failure, the
+           module returns "+CMQTTCONNECT: 0,19" (setting ANS_MQTT_URC) on the
+           very same line burst as the command's own ERROR — clearing it
+           right as atCmd() completes threw away that already-arrived result,
+           forcing case 10 below to sit out the full 20s timeout for a URC
+           that had, in fact, already shown up. */
+        if (atCmd(cmdBuf, 3000)) { t = core.getTick(); step++; }
         break;
     }
-    case 7:
+    case 10:
         /* AT+CMQTTCONNECT is accepted immediately (OK); the real result
-           arrives later as an asynchronous +CMQTTCONNECT: URC. */
+           usually arrives later as an asynchronous +CMQTTCONNECT: URC, but
+           on a synchronous failure it can also arrive inline with the
+           command's own ERROR (see the note above) — either way, answer
+           already reflects it by the time we get here. */
         if (answer & ANS_MQTT_URC) step++;
         else if ((core.getTick() - t) >= 20000) { mqttScratch.urcResult = 0xFF; step++; }
         break;
     default:
         if (mqttScratch.urcResult == 0) {
+            /* Set true here, not only in doMqttSub()'s own success case —
+               confirmed on real hardware (2026-08-22) that leaving it false
+               until SUB succeeds made doMqttSub()'s own CONNLOST bail-out
+               guard ("if (!mqtt.connected) return to ST_IDLE", added to
+               react to a disconnect mid-subscribe) trigger on *every* fresh
+               connect instead: connected was still false the first time
+               doMqttSub() ran, so it bailed immediately without ever
+               sending CMQTTSUB, leaving connected permanently false and the
+               45s/5s retry gate in doIdle() re-triggering a full teardown+
+               reconnect forever, in a tight loop — CMQTTCONNECT kept
+               succeeding, but the modem never once actually subscribed.
+               Setting it true right when the connection itself succeeds
+               (which is what it actually means) makes that guard correctly
+               distinguish "just connected, about to subscribe" from "was
+               connected, then lost it mid-subscribe". */
+            mqtt.connected = true;
             mqttPublish("online", "1");  /* announce ourselves once connected/subscribed */
             setState(ST_MQTT_SUB);
         } else {
@@ -1360,6 +1578,16 @@ void Modem::doMqttSub(void) {
     static char     topicBuf[48];
     static char     cmdBuf[32];
     static uint32_t t = 0;
+
+    /* +CMQTTCONNLOST can land at any moment (parseLine() sets mqtt.connected
+       false as soon as it's parsed, asynchronously to whatever step this
+       function happens to be on) — bail out immediately instead of grinding
+       through the remaining AT+CMQTTSUB/topic steps, each doomed to a
+       synchronous ERROR against a session that's already dead. Confirmed on
+       real hardware: without this check, a CONNLOST mid-sequence could add
+       several seconds of pointless ERROR round-trips before doIdle() ever
+       got a chance to notice and start reconnecting. */
+    if (!mqtt.connected) { setState(ST_IDLE); return; }
 
     switch (step) {
     case 0: {
@@ -1383,7 +1611,9 @@ void Modem::doMqttSub(void) {
         break;
     }
     case 1:
-        if (atCmd(topicBuf, 3000)) { answer &= ~ANS_MQTT_URC; t = core.getTick(); step++; }
+        /* No manual ANS_MQTT_URC clear here — see the matching note in
+           doMqttStart's CMQTTCONNECT step; same reasoning applies. */
+        if (atCmd(topicBuf, 3000)) { t = core.getTick(); step++; }
         break;
     case 2:
         if (answer & ANS_MQTT_URC) step++;
@@ -1406,6 +1636,12 @@ void Modem::doMqttPub(void) {
     static uint32_t t = 0;
     static bool     pubFailed = false;   /* any step this attempt hit ANS_ERROR */
     static uint8_t  pubFailStreak = 0;   /* consecutive failed attempts */
+
+    /* See the matching check/comment in doMqttSub() — same reasoning: don't
+       grind through remaining CMQTTTOPIC/PAYLOAD/PUB steps against a session
+       CMQTTCONNLOST already killed. The in-flight entry is left dirty (not
+       cleared here), so it just gets retried once reconnected. */
+    if (!mqtt.connected) { setState(ST_IDLE); return; }
 
     switch (step) {
     case 0: {
@@ -1455,8 +1691,10 @@ void Modem::doMqttPub(void) {
            subscriber (or one that just reconnected) immediately gets the last
            known actual value instead of waiting for the next change. */
         if (atCmd("AT+CMQTTPUB=0,1,60,1\r\n", 3000)) {
+            /* No manual ANS_MQTT_URC clear here — see the matching note in
+               doMqttStart's CMQTTCONNECT step; same reasoning applies. */
             if (answer & ANS_ERROR) pubFailed = true;
-            answer &= ~ANS_MQTT_URC; t = core.getTick(); step++;
+            t = core.getTick(); step++;
         }
         break;
     case 5:
@@ -1540,7 +1778,9 @@ void Modem::doMqttTeardown(void) {
         break;
     case 4:
         if (!mqtt.connected) { step++; break; }
-        if (atCmd("AT+CMQTTPUB=0,1,60,1\r\n", 3000)) { answer &= ~ANS_MQTT_URC; t = core.getTick(); step++; }
+        /* No manual ANS_MQTT_URC clear here — see the matching note in
+           doMqttStart's CMQTTCONNECT step; same reasoning applies. */
+        if (atCmd("AT+CMQTTPUB=0,1,60,1\r\n", 3000)) { t = core.getTick(); step++; }
         break;
     case 5:
         if (!mqtt.connected || (answer & ANS_MQTT_URC) || (core.getTick() - t) >= 15000) step++;
@@ -1571,13 +1811,128 @@ void Modem::doMqttTeardown(void) {
    128 KB / 64-page staging area this fills. Triggered by startOta(), called
    from onMqttCommandReceived() (Timberline.cpp) on cmd/desired/otaStart. */
 
-void Modem::startOta(const char* version) {
+void Modem::startOta(uint8_t deviceType, const char* version) {
+    otaScratch.deviceType = deviceType;
     strncpy(otaScratch.version, version, sizeof(otaScratch.version) - 1);
     otaScratch.version[sizeof(otaScratch.version) - 1] = 0;
     otaScratch.startRequested = true;
-    log_info("[OTA] start version=");
+    log_info("[OTA] start type=");
+    char buf[4]; int n = appendUint(buf, 0, deviceType); buf[n] = 0;
+    log_info(buf);
+    log_info(" version=");
     log_info(otaScratch.version);
     log_info("\r\n");
+}
+
+/* Called from Timberline's CAN dispatch (ProcessCanMessage(), PGN 1) when
+   the panel's "Auto-register" button is pressed. Only meaningful on a device
+   that's never been configured (mqtt.username empty) — the caller already
+   guards on that, this just flags the request; doIdle() picks it up once
+   internet is confirmed up, same reentrancy rationale as startOta(). */
+void Modem::startAutoRegister(void) {
+    regScratch.startRequested = true;
+    log_info("[AUTOREG] requested\r\n");
+}
+
+/* Auto-registration: the panel's "Auto-register" button, over CAN, asks the
+   modem to invent its own MQTT login/password, register a new account with
+   the backend over HTTPS, and finish exactly like "getlink" would (fresh
+   token, retained publish, connectionLink built) — so a QR code just
+   appears on the panel with no SMS round-trip at all. First time this
+   firmware has ever done HTTPS (AT+HTTPPARA="URL","https://…") — every
+   prior AT+HTTPACTION call (OTA, the example.com check) used plain http://.
+   Per SIMCOM's HTTP AT command manual, HTTPS is simply the https:// scheme
+   in the URL (default SSL context 0) — not yet verified on this exact
+   module; if it doesn't work as-is, see the plan doc for the plain-HTTP
+   fallback. */
+void Modem::doAutoRegister(void) {
+    static char cmd[192];
+    static uint32_t t = 0;
+
+    switch (step) {
+    case 0:
+        /* Belt-and-suspenders alongside the constructor/sanitizeString()
+           defaults (Modem.cpp / flash.cpp): those only apply to genuinely
+           untouched flash — sanitizeString() deliberately treats an already-
+           persisted *empty* broker as an intentional value, not garbage, so
+           a device that was ever flashed before this feature existed (and
+           so already wrote an empty broker to flash the normal way) keeps
+           it empty forever, no matter what the compiled-in default is.
+           Confirmed on real hardware: exactly this happened, producing
+           "https:///api/register-device..." — no host between the scheme
+           and the path. Applying the fallback here too, right before it's
+           actually used, closes that gap for every device regardless of
+           flash history. */
+        if (mqtt.broker[0] == 0) {
+            strncpy(mqtt.broker, MODEM_DEFAULT_BROKER, sizeof(mqtt.broker) - 1);
+            mqtt.broker[sizeof(mqtt.broker) - 1] = 0;
+        }
+        generateMemorableLogin(regScratch.login,    sizeof(regScratch.login));
+        generateLinkToken(regScratch.password, sizeof(regScratch.password));
+        step++;
+        break;
+    case 1: if (atCmd("AT+HTTPINIT\r\n", 2000)) step++; break;
+    case 2: {
+        int n = 0;
+        const char* pre = "AT+HTTPPARA=\"URL\",\"https://";
+        while (*pre) cmd[n++] = *pre++;
+        for (const char* p = mqtt.broker; *p && n < 150; ) cmd[n++] = *p++;
+        const char* mid = "/api/register-device?login=";
+        while (*mid && n < 150) cmd[n++] = *mid++;
+        for (const char* p = regScratch.login; *p && n < 170; ) cmd[n++] = *p++;
+        const char* mid2 = "&password=";
+        while (*mid2 && n < 175) cmd[n++] = *mid2++;
+        for (const char* p = regScratch.password; *p && n < 185; ) cmd[n++] = *p++;
+        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 500)) step++;
+        break;
+    }
+    case 3:
+        if (atCmd("AT+HTTPACTION=0\r\n", 3000)) {
+            if (answer & ANS_ERROR) { answer &= ~ANS_HTTPACTION; http.status = 0; step = 5; }
+            else { answer &= ~ANS_HTTPACTION; t = core.getTick(); step++; }
+        }
+        break;
+    case 4:
+        if (answer & ANS_HTTPACTION) step = 5;
+        else if ((core.getTick() - t) >= 20000) { http.status = 0; step = 5; }
+        break;
+    case 5: if (atCmd("AT+HTTPTERM\r\n", 2000)) step++; break;
+    default:
+        if (http.status == 200) {
+            strncpy(mqtt.username, regScratch.login,    sizeof(mqtt.username) - 1);
+            mqtt.username[sizeof(mqtt.username) - 1] = 0;
+            strncpy(mqtt.password, regScratch.password, sizeof(mqtt.password) - 1);
+            mqtt.password[sizeof(mqtt.password) - 1] = 0;
+            /* flash write handled centrally by dataActualizator.handler(),
+               same as TL_CMD_LOGIN/PASSWORD. */
+            mqttForceReconnect();
+            publishLinkToken();
+            autoRegisterStatus = AUTOREG_DONE;
+            log_info("[AUTOREG] done, login=");
+            log_info(mqtt.username);
+            log_info("\r\n");
+            setState(ST_IDLE);
+        } else if (http.status == 409 && regScratch.retries < 3) {
+            /* Login collision — regenerate just the login (keep the same
+               password) and retry the HTTP round-trip. Jump straight to
+               step 1 (skip case 0), not setState(): still the same state,
+               and setState() would reset step to 0 and regenerate the
+               password too. */
+            regScratch.retries++;
+            generateMemorableLogin(regScratch.login, sizeof(regScratch.login));
+            log_info("[AUTOREG] login taken, retrying\r\n");
+            answer = 0; capture = CAP_NONE; step = 1;
+        } else {
+            autoRegisterStatus = AUTOREG_ERROR;
+            log_info("[AUTOREG] failed, http.status=");
+            char buf[4]; int n = appendUint(buf, 0, http.status); buf[n] = 0;
+            log_info(buf);
+            log_info("\r\n");
+            setState(ST_IDLE);
+        }
+        break;
+    }
 }
 
 /* Always-visible USB debug output for the OTA flow (log_error()/log_info()
@@ -1616,19 +1971,288 @@ static void logOtaInfoNum(const char* label, uint32_t v) {
     log_info(buf);
 }
 
-/* Builds "http://<mqttBroker>:3000/firmware/mbc2/<version>/<filename>"
-   into out (must be >= 160 bytes). */
-static void buildOtaUrl(char* out, const char* mqttBroker, const char* version, const char* filename) {
+/* Builds "http://<mqttBroker>:3000/firmware/<deviceType>/<version>/<filename>"
+   into out (must be >= 160 bytes) — deviceType picks the folder (see
+   ProcessMessage()/OmniProtocol device-type table) instead of the old
+   hardcoded "mbc2" segment, so any device type works as long as the
+   matching folder exists on the server. */
+static void buildOtaUrl(char* out, const char* mqttBroker, uint8_t deviceType, const char* version, const char* filename) {
     int n = 0;
     const char* pre = "http://";
     while (*pre) out[n++] = *pre++;
     for (const char* p = mqttBroker; *p && n < 150; ) out[n++] = *p++;
-    const char* mid = ":3000/firmware/mbc2/";
+    const char* mid = ":3000/firmware/";
     while (*mid && n < 150) out[n++] = *mid++;
+    n = appendUint(out, n, deviceType);
+    if (n < 150) out[n++] = '/';
     for (const char* p = version; *p && n < 150; ) out[n++] = *p++;
     if (n < 150) out[n++] = '/';
     for (const char* p = filename; *p && n < 155; ) out[n++] = *p++;
     out[n] = 0;
+}
+
+/* Builds "http://<mqttBroker>:3000/firmware/<deviceType>/profile.txt" —
+   fetched by doFetchProfile() before the firmware image itself. Same
+   plain-HTTP, port-3000, bypass-nginx path as buildOtaUrl() above (see its
+   comment) — not a per-version file, one profile per device type. */
+static void buildBootloaderTableUrl(char* out, const char* mqttBroker) {
+    int n = 0;
+    const char* pre = "http://";
+    while (*pre) out[n++] = *pre++;
+    for (const char* p = mqttBroker; *p && n < 150; ) out[n++] = *p++;
+    const char* suf = ":3000/bootloaders.txt";
+    for (const char* p = suf; *p && n < 175; ) out[n++] = *p++;
+    out[n] = 0;
+}
+
+uint8_t Modem::lookupBootloaderAlgorithm(const uint8_t* version) {
+    for (uint8_t i = 0; i < bootloaderTableCount; i++)
+        if (memcmp(bootloaderTable[i].version, version, 4) == 0) return bootloaderTable[i].algorithm;
+    return 0;  /* not found — Timberline::doCanRelay() treats 0 the same as
+                  a known-unsafe algorithm and refuses to relay */
+}
+
+/* Hand-rolled "<v1>.<v2>.<v3>.<v4>=<algorithm>" line scanner for
+   bootloaders.txt, same style as the rest of this file's AT-response
+   parsing — no sscanf/JSON. Malformed lines are just skipped (scan resumes
+   at the next '\n'), so one bad line doesn't lose the rest of the table. */
+void Modem::parseBootloaderTable(const char* buf) {
+    bootloaderTableCount = 0;
+    const char* p = buf;
+    while (*p && bootloaderTableCount < BOOTLOADER_TABLE_MAX) {
+        uint8_t ver[4]; uint8_t vi = 0;
+        while (vi < 4 && *p >= '0' && *p <= '9') {
+            uint32_t v = 0;
+            while (*p >= '0' && *p <= '9') { v = v * 10 + (uint8_t)(*p - '0'); p++; }
+            ver[vi++] = (uint8_t)v;
+            if (*p == '.') p++;
+        }
+        if (vi == 4 && *p == '=') {
+            p++;
+            uint32_t algo = 0; bool any = false;
+            while (*p >= '0' && *p <= '9') { algo = algo * 10 + (uint8_t)(*p - '0'); p++; any = true; }
+            if (any) {
+                memcpy(bootloaderTable[bootloaderTableCount].version, ver, 4);
+                bootloaderTable[bootloaderTableCount].algorithm = (uint8_t)algo;
+                bootloaderTableCount++;
+            }
+        }
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+}
+
+static void buildProfileUrl(char* out, const char* mqttBroker, uint8_t deviceType) {
+    int n = 0;
+    const char* pre = "http://";
+    while (*pre) out[n++] = *pre++;
+    for (const char* p = mqttBroker; *p && n < 150; ) out[n++] = *p++;
+    const char* mid = ":3000/firmware/";
+    while (*mid && n < 150) out[n++] = *mid++;
+    n = appendUint(out, n, deviceType);
+    const char* suf = "/profile.txt";
+    for (const char* p = suf; *p && n < 155; ) out[n++] = *p++;
+    out[n] = 0;
+}
+
+/* Fetches "/firmware/<otaScratch.deviceType>/profile.txt" and parses it into
+   ota.flashBase/eraseSectors/eraseSectorCount — the per-device-type flash
+   layout doCanRelay() needs (base address, which sectors are safe to erase
+   without wiping settings/black-box) that used to be the hardcoded
+   MBC2_APP_FLASH_BASE/"sector 5 then 6" pair in Timberline.cpp. Runs once,
+   right before doOta() fetches the firmware image itself (see
+   ST_FETCH_PROFILE in doIdle()) — same proven HTTPINIT/HTTPPARA/
+   HTTPACTION/HTTPREAD(x2)/HTTPTERM sequence as doOta()'s own
+   firmware.crc32 fetch below, just against a much smaller plain-text file
+   instead of a binary CRC array. Expected format, one KEY=VALUE per line:
+     flashBase=0x08020000
+     eraseSectors=5,6
+   A profile.txt that's missing, unreachable, or malformed fails the whole
+   otaStart the same way a missing firmware.crc32 already does — there's no
+   safe default flash layout to fall back to for an unknown device type. */
+void Modem::doFetchProfile(void) {
+    static char cmd[192];
+    static char url[160];
+    static char profileBuf[96];
+    static uint16_t profileLen;
+    static char bootloaderBuf[512];
+    static uint32_t t = 0;
+
+    switch (step) {
+    case 0: if (atCmd("AT+HTTPINIT\r\n", 2000)) step++; break;
+    case 1: {
+        buildProfileUrl(url, mqtt.broker, otaScratch.deviceType);
+        int n = 0;
+        const char* pre = "AT+HTTPPARA=\"URL\",\"";
+        while (*pre) cmd[n++] = *pre++;
+        for (const char* p = url; *p && n < 185; ) cmd[n++] = *p++;
+        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 500)) step++;
+        break;
+    }
+    case 2:
+        if (atCmd("AT+HTTPACTION=0\r\n", 3000)) {
+            if (answer & ANS_ERROR) { logOtaFail(2, "profile-httpaction-cmd-error", 0); otaScratch.failed = true; step = 6; }
+            else { answer &= ~ANS_HTTPACTION; t = core.getTick(); step++; }
+        }
+        break;
+    case 3:
+        if (answer & ANS_HTTPACTION) {
+            if (http.status != 200 || http.dataLen == 0) {
+                logOtaFail(3, "profile-http-status", http.status);
+                otaScratch.failed = true; step = 6;
+            }
+            else step++;
+        } else if ((core.getTick() - t) >= 20000) { logOtaFail(3, "profile-http-timeout", 0); otaScratch.failed = true; step = 6; }
+        break;
+    case 4: {
+        uint16_t len = http.dataLen;
+        if (len > sizeof(profileBuf) - 1) len = sizeof(profileBuf) - 1;
+        profileLen = len;
+        rawCapture.dst = (uint8_t*)profileBuf;
+        rawCapture.cap = sizeof(profileBuf) - 1;
+        rawCapture.got = 0;
+        rawCapture.chunkRemaining = 0;
+        int n = 0;
+        const char* pre = "AT+HTTPREAD=0,";
+        while (*pre) cmd[n++] = *pre++;
+        n = appendUint(cmd, n, len);
+        cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 3000)) {
+            if (answer & ANS_ERROR) { rawCapture.dst = 0; logOtaFail(4, "profile-httpread-cmd-error", 0); otaScratch.failed = true; step = 6; break; }
+            answer &= ~ANS_HTTPREAD_DONE;
+            t = core.getTick();
+            step++;
+        }
+        break;
+    }
+    case 5: {
+        if (answer & ANS_HTTPREAD_DONE) {
+            rawCapture.dst = 0;
+            if (rawCapture.got != profileLen) { logOtaFail(5, "profile-len-mismatch", rawCapture.got); otaScratch.failed = true; step = 6; break; }
+            profileBuf[profileLen] = 0;
+
+            /* Hand-rolled KEY=VALUE scan — no sscanf/JSON parser anywhere in
+               this firmware, same style as the rest of the AT-response
+               parsing in this file. */
+            bool gotBase = false, gotSectors = false;
+            const char* baseKey = strstr(profileBuf, "flashBase=");
+            if (baseKey) {
+                const char* p = baseKey + 10;  /* strlen("flashBase=") */
+                if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+                uint32_t v = 0; bool any = false;
+                for (; *p; p++) {
+                    uint8_t d;
+                    if (*p >= '0' && *p <= '9') d = (uint8_t)(*p - '0');
+                    else if (*p >= 'a' && *p <= 'f') d = (uint8_t)(*p - 'a' + 10);
+                    else if (*p >= 'A' && *p <= 'F') d = (uint8_t)(*p - 'A' + 10);
+                    else break;
+                    v = (v << 4) | d; any = true;
+                }
+                if (any) { ota.flashBase = v; gotBase = true; }
+            }
+            const char* secKey = strstr(profileBuf, "eraseSectors=");
+            if (secKey) {
+                const char* p = secKey + 13;  /* strlen("eraseSectors=") */
+                uint8_t count = 0;
+                while (*p && *p != '\n' && *p != '\r' && count < 4) {
+                    if (*p < '0' || *p > '9') { p++; continue; }
+                    uint32_t v = 0;
+                    while (*p >= '0' && *p <= '9') { v = v * 10 + (uint8_t)(*p - '0'); p++; }
+                    ota.eraseSectors[count++] = (uint8_t)v;
+                }
+                if (count > 0) { ota.eraseSectorCount = count; gotSectors = true; }
+            }
+            if (!gotBase || !gotSectors) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
+            else { ota.deviceType = otaScratch.deviceType; logOtaInfoNum("profile flashBase", ota.flashBase); logOtaInfoNum("profile eraseSectorCount", ota.eraseSectorCount); }
+            step = 6;
+        } else if ((core.getTick() - t) >= 8000) {
+            rawCapture.dst = 0;
+            logOtaFail(5, "profile-httpread-timeout", rawCapture.got);
+            otaScratch.failed = true;
+            step = 6;
+        }
+        break;
+    }
+    /* Steps 6-10: fetch+parse "/bootloaders.txt" — the same HTTPINIT
+       session as profile.txt above, just a second HTTPPARA/HTTPACTION
+       cycle (same pattern doOta() uses for crc32-then-bin, no HTTPTERM/
+       HTTPINIT needed in between). Unlike profile.txt, a failure here does
+       NOT fail otaScratch/the whole OTA — the firmware download itself
+       doesn't need this table, only the later CAN relay does (see
+       Modem::lookupBootloaderAlgorithm()), and an empty table just makes
+       that step safely refuse rather than guess. Skipped entirely if
+       profile.txt itself already failed — no point spending a second HTTP
+       round-trip once otaScratch.failed is already true. */
+    case 6: {
+        if (otaScratch.failed) { step = 13; break; }
+        buildBootloaderTableUrl(url, mqtt.broker);
+        int n = 0;
+        const char* pre = "AT+HTTPPARA=\"URL\",\"";
+        while (*pre) cmd[n++] = *pre++;
+        for (const char* p = url; *p && n < 185; ) cmd[n++] = *p++;
+        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 500)) step = 9;
+        break;
+    }
+    case 9:
+        if (atCmd("AT+HTTPACTION=0\r\n", 3000)) {
+            if (answer & ANS_ERROR) { logOtaInfo("bootloaders-httpaction-cmd-error, skipping table"); step = 13; }
+            else { answer &= ~ANS_HTTPACTION; t = core.getTick(); step++; }
+        }
+        break;
+    case 10:
+        if (answer & ANS_HTTPACTION) {
+            if (http.status != 200 || http.dataLen == 0) { logOtaInfoNum("bootloaders-http-status, skipping table", http.status); step = 13; }
+            else step++;
+        } else if ((core.getTick() - t) >= 20000) { logOtaInfo("bootloaders-http-timeout, skipping table"); step = 13; }
+        break;
+    case 11: {
+        uint16_t len = http.dataLen;
+        if (len > sizeof(bootloaderBuf) - 1) len = sizeof(bootloaderBuf) - 1;
+        otaScratch.readLen = len;
+        rawCapture.dst = (uint8_t*)bootloaderBuf;
+        rawCapture.cap = sizeof(bootloaderBuf) - 1;
+        rawCapture.got = 0;
+        rawCapture.chunkRemaining = 0;
+        int n = 0;
+        const char* pre = "AT+HTTPREAD=0,";
+        while (*pre) cmd[n++] = *pre++;
+        n = appendUint(cmd, n, len);
+        cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        if (atCmd(cmd, 3000)) {
+            if (answer & ANS_ERROR) { rawCapture.dst = 0; logOtaInfo("bootloaders-httpread-cmd-error, skipping table"); step = 13; break; }
+            answer &= ~ANS_HTTPREAD_DONE;
+            t = core.getTick();
+            step++;
+        }
+        break;
+    }
+    case 12: {
+        if (answer & ANS_HTTPREAD_DONE) {
+            rawCapture.dst = 0;
+            if (rawCapture.got == otaScratch.readLen) {
+                bootloaderBuf[rawCapture.got] = 0;
+                parseBootloaderTable(bootloaderBuf);
+                logOtaInfoNum("bootloader table entries", bootloaderTableCount);
+            } else {
+                logOtaInfoNum("bootloaders-len-mismatch, skipping table", rawCapture.got);
+            }
+            step = 13;
+        } else if ((core.getTick() - t) >= 8000) {
+            rawCapture.dst = 0;
+            logOtaInfo("bootloaders-httpread-timeout, skipping table");
+            step = 13;
+        }
+        break;
+    }
+    default:
+        if (atCmd("AT+HTTPTERM\r\n", 2000)) {
+            if (otaScratch.failed) { ota.status = OTA_ERROR; setState(ST_IDLE); }
+            else setState(ST_OTA);
+        }
+        break;
+    }
 }
 
 void Modem::doOta(void) {
@@ -1666,7 +2290,7 @@ void Modem::doOta(void) {
     switch (step) {
     case 0: if (atCmd("AT+HTTPINIT\r\n", 2000)) step++; break;
     case 1: {
-        buildOtaUrl(url, mqtt.broker, otaScratch.version, "firmware.crc32");
+        buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "firmware.crc32");
         int n = 0;
         const char* pre = "AT+HTTPPARA=\"URL\",\"";
         while (*pre) cmd[n++] = *pre++;
@@ -1746,7 +2370,7 @@ void Modem::doOta(void) {
             if (flash.crc32OtaPage(p) != otaScratch.pageCrc[p]) { allMatch = false; break; }
         }
         if (allMatch) { ota.page = ota.pageTotal; step = 20; }
-        else { buildOtaUrl(url, mqtt.broker, otaScratch.version, "firmware.bin"); step = 10; }
+        else { buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "firmware.bin"); step = 10; }
         break;
     }
 

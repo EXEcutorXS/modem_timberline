@@ -55,16 +55,16 @@ void StringTransfer::beginSend(const char* string, uint16_t stringId, uint8_t to
         0, 0xFF);
 }
 
-void StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress)
+bool StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress)
 {
     if (!tx.active)
     {
         beginSend(string, stringId, toType, toAddress);
-        return;
+        return true;
     }
 
     if (pendingCount >= MAX_PENDING)
-        return; /* queue full — drop, caller can retry later */
+        return false; /* queue full — drop, caller can retry later */
 
     PendingSend& p = pending[pendingCount++];
     p.id = stringId;
@@ -75,6 +75,7 @@ void StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t t
     p.data[len] = 0;
     p.toType    = toType;
     p.toAddress = toAddress;
+    return true;
 }
 
 void StringTransfer::broadcastNext(uint8_t toType, uint8_t toAddress)

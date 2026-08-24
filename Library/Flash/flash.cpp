@@ -153,9 +153,11 @@ void Flash_C::readSetup(void)
            images — the checksum still validates (it only covers what was
            meaningful then), so what we just read could be raw erased/stale
            flash bytes rather than a real string. sanitizeString() catches
-           that; fallback is empty, not a real broker/account — see the
-           Modem constructor for why there's no baked-in default. */
-        sanitizeString(modem.mqtt.broker,   sizeof(modem.mqtt.broker),   "", needRewrite);
+           that. Broker falls back to MODEM_DEFAULT_BROKER (same one baked
+           into the Modem constructor) so a genuinely fresh device can
+           auto-register itself — username/password stay empty, a real
+           account's credentials don't belong baked into firmware. */
+        sanitizeString(modem.mqtt.broker,   sizeof(modem.mqtt.broker),   MODEM_DEFAULT_BROKER, needRewrite);
         sanitizeString(modem.mqtt.username, sizeof(modem.mqtt.username), "", needRewrite);
         sanitizeString(modem.mqtt.password, sizeof(modem.mqtt.password), "", needRewrite);
         /* internetCheckUrl didn't exist in older firmware images either —

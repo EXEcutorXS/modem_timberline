@@ -69,7 +69,13 @@ class StringTransfer
 {
 public:
     void registerString(uint16_t stringId, char* buffer, uint16_t bufferSize);
-    void sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
+    /* Returns false if the pending queue was already full and this update
+       got silently dropped (see MAX_PENDING) — callers that track their own
+       old/new diff (DataActualizator) must NOT advance their "old" copy for
+       this field when false, or the drop becomes permanent (nothing else
+       would ever look "changed" again to trigger a retry). True covers both
+       "sent immediately" and "successfully queued". */
+    bool sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
     void requestString(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
     /* Pushes the next registered string (round-robin over regs[], one per
        call) to toType/toAddress — including empty ones, so a receiver that

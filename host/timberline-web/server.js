@@ -161,18 +161,41 @@ startLinkObserver();
    separate device registry needed: the account's own password (checked via
    /auth/user below) is what the modem/browser authenticate to the broker
    with, matching the "password" SMS command on the firmware side. */
-app.post('/api/register', async (req, res) => {
-    const { login, password, email } = req.body || {};
-    if (!login || !password) return res.status(400).json({ error: 'login and password required' });
+/* Shared by POST /api/register (browser form) and GET /api/register-device
+   (modem auto-registration, see below) — same rules, just a different
+   trigger and response shape. Returns null on success, or an
+   {status, error} object to send back as-is on failure. */
+async function registerAccount(login, password, email) {
+    if (!login || !password) return { status: 400, error: 'login and password required' };
     if (login.length < LOGIN_MIN || login.length > LOGIN_MAX)
-        return res.status(400).json({ error: `login must be ${LOGIN_MIN}-${LOGIN_MAX} characters` });
-    if (login.startsWith('_')) return res.status(400).json({ error: 'login cannot start with "_"' });
-
-    if (getUserStmt.get(login)) return res.status(409).json({ error: 'login already taken' });
+        return { status: 400, error: `login must be ${LOGIN_MIN}-${LOGIN_MAX} characters` };
+    if (login.startsWith('_')) return { status: 400, error: 'login cannot start with "_"' };
+    if (getUserStmt.get(login)) return { status: 409, error: 'login already taken' };
 
     const passwordHash = await bcrypt.hash(password, 10);
     insertUserStmt.run(login, passwordHash, email || null);
+    return null;
+}
+
+app.post('/api/register', async (req, res) => {
+    const { login, password, email } = req.body || {};
+    const err = await registerAccount(login, password, email);
+    if (err) return res.status(err.status).json({ error: err.error });
     res.json({ ok: true });
+});
+
+/* GET, not POST: called by the modem itself (AT+HTTPACTION=0), which has
+   never implemented HTTP POST/AT+HTTPDATA — see doAutoRegister() in
+   Modem.cpp. The modem only ever inspects the numeric HTTP status (same
+   pattern already used for the plain internet-connectivity check), so no
+   response body is required; login/password ride in the query string
+   instead of a JSON body, same trade-off already accepted for the
+   magic-link token in GET /api/go/:username/:token below. */
+app.get('/api/register-device', async (req, res) => {
+    const { login, password } = req.query || {};
+    const err = await registerAccount(login, password, undefined);
+    if (err) return res.sendStatus(err.status);
+    res.sendStatus(200);
 });
 
 app.post('/api/login', async (req, res) => {

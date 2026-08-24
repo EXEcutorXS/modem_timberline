@@ -12,6 +12,15 @@
 #define MODEM_OTA_PAGE_SIZE   2048
 #define MODEM_OTA_PAGE_COUNT  80
 
+/* Baked-in fallback broker — applied by flash.cpp's sanitizeString() when
+   flash has never held a real value (genuinely erased, factory-fresh
+   flash), and mirrored in the Modem constructor below for the in-RAM
+   value before readSetup() runs. Lets a device auto-register (see
+   startAutoRegister()) without ever having been told a broker via SMS —
+   "server <host>" still overrides it same as always. One default for now;
+   picking between several per-region defaults is future work. */
+#define MODEM_DEFAULT_BROKER "multihot.duckdns.org"
+
 class Modem {
 public:
     /* ── Network / registration state ────────────────────────────────── */
@@ -107,8 +116,67 @@ public:
         bool      stagedValid;
         char      stagedVersion[24];
         uint32_t  stagedBytes;
+
+        /* Which device type this staged image is for, and the flash layout
+           to use when relaying it over CAN (see doCanRelay() in
+           Timberline.cpp) — fetched from "/firmware/<type>/profile.txt" by
+           doFetchProfile() right before the firmware download itself (see
+           ST_FETCH_PROFILE). Replaces the old MBC-2-only hardcoded
+           MBC2_APP_FLASH_BASE/sector-5-then-6 sequence, so a new device
+           type only needs a new profile.txt on the server, no modem
+           reflash. RAM-only, not persisted to flash alongside
+           stagedVersion/stagedBytes above — a reboot between "staged" and
+           "relay" loses this and needs a fresh otaStart (which re-fetches
+           the profile anyway), same as any other in-progress state this
+           firmware doesn't carry across a reset. */
+        uint8_t   deviceType;
+        uint32_t  flashBase;
+        uint8_t   eraseSectors[4];
+        uint8_t   eraseSectorCount;
     } ota;
-    void startOta(const char* version);  /* called from onMqttCommandReceived() */
+    void startOta(uint8_t deviceType, const char* version);  /* called from onMqttCommandReceived() */
+
+    /* Bootloader "algorithm" table — which PGN105/106 command sequence a
+       given bootloader version actually supports safely, since not every
+       bootloader out there behaves the same (some are known unstable and
+       must never be used for OTA). Fetched from "/bootloaders.txt" (the
+       whole table, not per-device — bootloader identity is independent of
+       which device type it's flashing) right alongside profile.txt, see
+       doFetchProfile(). Timberline::doCanRelay() looks up the bootloader's
+       own announced version (from its PGN=18 reply, see
+       ProcessCanMessage()'s case 123) via lookupBootloaderAlgorithm() once
+       it's detected, before doing anything destructive:
+         algorithm 0 (not found in the table) or 1 (known unstable, never
+           safe for OTA) — refuse, fail the relay immediately.
+         algorithm 2 — the current doCanRelay() sequence (set-address/erase/
+           flash/verify via PGN105 sub0-7), safe on every bootloader tested
+           so far.
+       A missing/unreachable bootloaders.txt does NOT fail the OTA download
+       itself (unlike profile.txt) — it just leaves the table empty, so any
+       later CAN relay attempt safely refuses (unknown algorithm) rather
+       than guessing. */
+    struct BootloaderEntry { uint8_t version[4]; uint8_t algorithm; };
+    enum { BOOTLOADER_TABLE_MAX = 16 };
+    BootloaderEntry bootloaderTable[BOOTLOADER_TABLE_MAX];
+    uint8_t bootloaderTableCount;
+    uint8_t lookupBootloaderAlgorithm(const uint8_t* version);
+
+    /* Auto-registration status, broadcast to the panel over CAN (PGN60 sub-
+       packet 4 — see canBroadcast() in work.cpp) since the panel has no MQTT
+       access of its own to watch ota-style status topics. Panel shows this
+       while waiting for connectionLink to arrive (see startAutoRegister()). */
+    enum AutoRegisterStatus { AUTOREG_IDLE, AUTOREG_BUSY, AUTOREG_DONE, AUTOREG_ERROR };
+    AutoRegisterStatus autoRegisterStatus;
+    void startAutoRegister(void);  /* called from Timberline's CAN dispatch */
+
+    /* Generates a fresh "getlink" token, publishes it retained, and builds
+       the resulting https://.../go/<user>/<token> URL directly into
+       internet.connectionLink (so dataActualizator.handler() picks up the
+       change and pushes it to flash + the panel over CAN, same as any other
+       tracked field) — the shared core of both the "getlink" SMS command
+       and a just-finished auto-registration. Requires mqtt.username/broker
+       already set. */
+    void publishLinkToken(void);
 
     /* Called when "<mqtt.username>/cmd/desired/<name>" arrives (name = last path segment) */
     void (*onMqttCommand)(const char* name, const char* payload);
@@ -225,7 +293,9 @@ private:
         ST_MQTT_SUB,
         ST_MQTT_PUB,
         ST_MQTT_TEARDOWN,
+        ST_FETCH_PROFILE,
         ST_OTA,
+        ST_AUTO_REGISTER,
     };
     ModemState state;
     int8_t     step;
@@ -392,6 +462,9 @@ private:
                                        mid-parseLine(), so it must not setState()
                                        directly out from under whatever state
                                        handler is currently running. */
+        uint8_t  deviceType;        /* requested target type — copied into ota.deviceType
+                                        once doFetchProfile() actually confirms a profile
+                                        exists for it, see ST_FETCH_PROFILE */
         char     version[24];
         uint32_t pageCrc[MODEM_OTA_PAGE_COUNT]; /* target CRC32 per page, from firmware.crc32 */
         uint8_t  retries;
@@ -404,10 +477,38 @@ private:
                               including the final "+HTTPREAD: 0" terminator, overwrites it. */
     } otaScratch;
     void     doOta(void);
+    void     doFetchProfile(void);  /* runs before doOta() — see ST_FETCH_PROFILE; also fetches
+                                        bootloaders.txt into bootloaderTable[], see its comment */
+    void     parseBootloaderTable(const char* buf);  /* fills bootloaderTable[]/bootloaderTableCount */
     void     refreshStagedInfo(void);  /* re-reads ota.stagedValid/stagedVersion/stagedBytes from flash */
 
+    /* ── Auto-registration scratch (see doAutoRegister(), startAutoRegister()) ── */
+    struct RegScratch {
+        bool    startRequested;  /* set by startAutoRegister(), consumed by doIdle() —
+                                     same reentrancy rationale as otaScratch.startRequested
+                                     above: the CAN dispatch that calls startAutoRegister()
+                                     must not setState() directly out from under whatever
+                                     state handler is currently running. */
+        char    login[16];       /* candidate login, regenerated on each retry after a 409 */
+        char    password[24];    /* generated once per attempt, kept across login retries */
+        uint8_t retries;
+    } regScratch;
+    void     doAutoRegister(void);
+
     /* ── RX line accumulator ─────────────────────────────────────────── */
-    static const uint16_t LINE_SIZE = 256;
+    /* 256 wasn't enough for a UCS2-hex-encoded SMS body (see
+       decodeUcs2Hex()): a single-segment UCS2 SMS carries up to 70
+       characters, hex-encoded as 4 digits each = 280 hex digits on that one
+       AT+CMGR body line alone — longer than the old 255 usable bytes
+       (LINE_SIZE-1, see the "c != '\r' && rx.len < LINE_SIZE-1" guard where
+       this gets filled). The line silently truncated mid-hex-digit, so
+       rx.len%4 no longer lined up with a whole number of UCS2 code units,
+       decodeUcs2Hex()'s all-hex/length%4==0 check correctly refused to
+       treat it as UCS2, and the raw (truncated) hex string got displayed
+       verbatim instead of decoded Cyrillic — confirmed on real hardware,
+       2026-08-24. 320 comfortably covers the 280-digit worst case with
+       margin. */
+    static const uint16_t LINE_SIZE = 320;
     struct RxLine {
         uint16_t cursor;
         char     buf[LINE_SIZE];

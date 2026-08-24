@@ -12,6 +12,10 @@
 0x0807F800    2КБ  Настройки модема (Config)
 
 
+121.0.0.7
+Firmware storing and updating added
+USB settings change added, 4g only sim support added
+UCS2 for receiving SMS support added
 121.0.0.6
 Internet reconnect bug fixed
 Telemetry interval now is flexible

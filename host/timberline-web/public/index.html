@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <title>Timberline control</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
 <script>
   /* Applied here, synchronously, before the stylesheet below ever paints —
      doing this in app.js instead (loaded at the bottom, after body) would
@@ -139,21 +144,27 @@
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     font-size: 13px; color: var(--muted);
   }
-  #mbcVersionText, #modemVersionText { font-weight: 600; color: var(--text); }
+  #modemVersionText { font-weight: 600; color: var(--text); }
   .ota-status-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
   }
-  #otaStatusText { font-size: 13px; color: var(--muted); }
+  .ota-status-row span { font-size: 13px; color: var(--muted); }
   /* Semantic (not accent) coloring — matches the pattern used for danger/
      errors elsewhere: state carried in color, not just text. */
-  #otaStatusText.ota-error { color: var(--danger); font-weight: 600; }
-  #otaStatusText.ota-done { color: var(--accent); font-weight: 600; }
-  #otaStartBtn:disabled { opacity: 0.5; cursor: default; }
-  #canRelayStatusText { font-size: 13px; color: var(--muted); }
-  #canRelayStatusText.ota-error { color: var(--danger); font-weight: 600; }
-  #canRelayStatusText.ota-done { color: var(--accent); font-weight: 600; }
-  #canRelayStartBtn:disabled { opacity: 0.5; cursor: default; }
+  .ota-status-row span.ota-error { color: var(--danger); font-weight: 600; }
+  .ota-status-row span.ota-done { color: var(--accent); font-weight: 600; }
+  .ota-status-row button:disabled { opacity: 0.5; cursor: default; }
+
+  .device-card {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+    margin-top: 10px;
+  }
+  .device-card-title { font-weight: 600; color: var(--text); font-size: 14px; }
+  .device-card-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .device-card .setting-row { margin-top: 8px; }
+  .device-card .ota-status-row { margin-top: 8px; padding-top: 8px; }
+  #otaNoDevicesText { font-size: 13px; color: var(--muted); margin-top: 10px; }
 
   #statusPre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 200px; overflow: auto; color: var(--text); }
   #err { color: var(--danger); font-size: 14px; }
@@ -371,35 +382,22 @@
       <summary>Misc</summary>
     </details>
     <details id="otaSettings" class="settings-group">
-      <summary id="otaSummary">MBC-2 Firmware</summary>
-      <!-- Two separate steps: (1) download a firmware image into the modem
-           itself (below) — the status row shows what's actually sitting in
-           the modem right now ("Loaded X.X.X.X" / "Empty"), independent of
-           whichever version MBC-2 itself is currently running (shown in
-           the top row, from its own PGN=18 broadcast); (2) relay the
-           loaded image onto the MBC-2 device over CAN (the relay row), a
-           separate user-initiated action once they're satisfied with
-           what's loaded. -->
+      <summary id="otaSummary">Devices</summary>
+      <!-- Any device on the CAN bus can show up here (see
+           Timberline::recordSeenDevice() on the modem side, which
+           publishes "dev<type>_<addr>" for every device it's seen a
+           PGN=18 announcement from). One card per device: pick a
+           version (GET /firmware/<type>/versions), "Load" downloads it
+           into the modem (Modem::startOta), "Flash" relays whatever's
+           currently loaded onto that specific device over CAN
+           (Timberline::startCanRelay) — only enabled once the staged
+           image actually matches this device's type (otaStagedType). -->
       <div class="ota-staged-row">
         <span id="modemVersionLabel">Modem version</span>
         <span id="modemVersionText"></span>
       </div>
-      <div class="ota-staged-row">
-        <span id="mbcVersionLabel">MBC-2 version</span>
-        <span id="mbcVersionText"></span>
-      </div>
-      <div class="setting-row">
-        <label><span id="otaVersionLabel">Version</span></label>
-        <select id="otaVersionSelect"></select>
-      </div>
-      <div class="ota-status-row">
-        <span id="otaStatusText"></span>
-        <button id="otaStartBtn">Load</button>
-      </div>
-      <div class="ota-status-row">
-        <span id="canRelayStatusText"></span>
-        <button id="canRelayStartBtn">Flash device</button>
-      </div>
+      <div id="deviceList"></div>
+      <div id="otaNoDevicesText"></div>
     </details>
     <div id="buttons"></div>
     <table id="statusTable"></table>
@@ -410,7 +408,7 @@
     <button id="logoutBtn">Log out</button>
   </div>
 
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="/vendor-mqtt.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

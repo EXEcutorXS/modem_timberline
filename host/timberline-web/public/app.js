@@ -66,10 +66,11 @@ const I18N = {
     deviceUnknown: 'Device: —', deviceOnline: 'Device online', deviceOffline: 'Device offline',
     linkInvalid: 'This link is invalid or expired — request a new one (send "getlink" via SMS).',
     waitingDevice: 'Waiting for the device to finish connecting…',
-    otaFirmware: 'MBC-2 Firmware', otaVersion: 'Version', otaUpdate: 'Load',
+    otaDevices: 'Devices', otaVersion: 'Version', otaUpdate: 'Load',
     otaNoVersions: 'No versions published', otaStatusStaging: 'Loading…',
     otaStatusError: 'Load failed', otaEmpty: 'Empty', otaLoadedPrefix: 'Loaded',
-    mbcVersionLabel: 'MBC-2 version', mbcVersionUnknown: 'unknown', modemVersionLabel: 'Modem version',
+    otaNoDevicesFound: 'No devices seen on the bus yet', deviceTypePrefix: 'Type',
+    deviceAddressLabel: 'Address', deviceVersionLabel: 'version', modemVersionLabel: 'Modem version',
     canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
     canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
     tankTemp: 'Tank temp', heaterTemp: 'Heater temp', voltage: 'Voltage', outdoorTemp: 'Outdoor temp',
@@ -98,10 +99,11 @@ const I18N = {
     deviceUnknown: 'Устройство: —', deviceOnline: 'Устройство онлайн', deviceOffline: 'Устройство офлайн',
     linkInvalid: 'Ссылка недействительна или устарела — запросите новую (отправьте SMS "getlink").',
     waitingDevice: 'Ожидание подключения устройства…',
-    otaFirmware: 'Прошивка MBC-2', otaVersion: 'Версия', otaUpdate: 'Загрузить',
+    otaDevices: 'Устройства', otaVersion: 'Версия', otaUpdate: 'Загрузить',
     otaNoVersions: 'Нет опубликованных версий', otaStatusStaging: 'Загрузка…',
     otaStatusError: 'Ошибка загрузки', otaEmpty: 'Пусто', otaLoadedPrefix: 'Загружено',
-    mbcVersionLabel: 'Версия MBC-2', mbcVersionUnknown: 'неизвестно', modemVersionLabel: 'Версия модема',
+    otaNoDevicesFound: 'На шине пока не видно устройств', deviceTypePrefix: 'Тип',
+    deviceAddressLabel: 'Адрес', deviceVersionLabel: 'версия', modemVersionLabel: 'Версия модема',
     canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
     canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
     tankTemp: 'Температура бака', heaterTemp: 'Температура котла', voltage: 'Напряжение', outdoorTemp: 'Уличная температура',
@@ -130,10 +132,11 @@ const I18N = {
     deviceUnknown: 'Gerät: —', deviceOnline: 'Gerät online', deviceOffline: 'Gerät offline',
     linkInvalid: 'Der Link ist ungültig oder abgelaufen — fordern Sie einen neuen an (SMS „getlink“ senden).',
     waitingDevice: 'Warte auf Verbindungsaufbau des Geräts…',
-    otaFirmware: 'MBC-2-Firmware', otaVersion: 'Version', otaUpdate: 'Laden',
+    otaDevices: 'Geräte', otaVersion: 'Version', otaUpdate: 'Laden',
     otaNoVersions: 'Keine Version veröffentlicht', otaStatusStaging: 'Wird geladen…',
     otaStatusError: 'Laden fehlgeschlagen', otaEmpty: 'Leer', otaLoadedPrefix: 'Geladen',
-    mbcVersionLabel: 'MBC-2-Version', mbcVersionUnknown: 'unbekannt', modemVersionLabel: 'Modem-Version',
+    otaNoDevicesFound: 'Noch keine Geräte auf dem Bus gesehen', deviceTypePrefix: 'Typ',
+    deviceAddressLabel: 'Adresse', deviceVersionLabel: 'Version', modemVersionLabel: 'Modem-Version',
     canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
     canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
     tankTemp: 'Tanktemperatur', heaterTemp: 'Kesseltemperatur', voltage: 'Spannung', outdoorTemp: 'Außentemperatur',
@@ -208,12 +211,8 @@ function applyStaticTranslations() {
   $('floorSettings').querySelector('summary').textContent = t('floorHeating');
   $('engineSettings').querySelector('summary').textContent = t('engineHeater');
   $('miscSettings').querySelector('summary').textContent = t('misc');
-  $('otaSummary').textContent = t('otaFirmware');
+  $('otaSummary').textContent = t('otaDevices');
   $('modemVersionLabel').textContent = t('modemVersionLabel');
-  $('mbcVersionLabel').textContent = t('mbcVersionLabel');
-  $('otaVersionLabel').textContent = t('otaVersion');
-  $('otaStartBtn').textContent = t('otaUpdate');
-  $('canRelayStartBtn').textContent = t('canRelayFlash');
   $('rawDetails').querySelector('summary').textContent = t('raw');
   $('logoutBtn').textContent = t('logOut');
   refreshStatusLabels();
@@ -1028,99 +1027,195 @@ function renderStatus() {
   renderOtaPanel();
 }
 
-/* ── MBC-2 firmware OTA ──────────────────────────────────────────────────
-   Version list comes from the server (GET /firmware/<type>/versions, see
-   server.js) — a plain HTTP fetch, nothing to do with MQTT. Status/progress
-   (rawStatus.otaStatus / rawStatus.otaProgress) arrive the normal way,
-   through the existing cmd/actual/# subscription, same as every other
-   read-only field — see Timberline::mqttActualizerHandler() on the modem
-   side (Timberline.cpp) for where those two topics get published. */
-let otaVersions = [];
-let otaVersionsFetched = false;
-
-async function fetchOtaVersions() {
+/* ── Generalized device firmware OTA ─────────────────────────────────────
+   Any device on the CAN bus can show up here, not just MBC-2 — the modem
+   publishes "dev<type>_<addr>" = "<v1>.<v2>.<v3>.<v4>" for every device it
+   has seen a PGN=18 announcement from (Timberline::recordSeenDevice()).
+   One card per device: version list comes from the server (GET
+   /firmware/<type>/versions, see server.js) per device type, fetched once
+   and cached. Status/progress (rawStatus.otaStatus/otaProgress/
+   otaStagedType, rawStatus.canRelayStatus/canRelayProgress) is global —
+   the modem can only load/flash one device at a time — so which card it
+   belongs to is tracked via otaStagedType (which device's image is
+   currently loaded) and lastOtaStartType (client-side, which device this
+   browser's own Load click targeted, for showing progress/error on the
+   right card while a download is in flight). */
+/* Device names come from the server (GET /device-types.json), not a
+   hardcoded client table — a bare device type isn't always enough to name
+   it (e.g. type 126 is "some control panel", but 126.3 vs 126.6 is the
+   difference between PU-28 Timberline and PU-28 Multihot CN; type 34's
+   second version byte likewise distinguishes a 12V from a 24V Бинар-10
+   build). Keyed by "<type>.<subtype>" (subtype = the version's 2nd byte,
+   e.g. "126.6"), falling back to a bare "<type>" entry, then a generic
+   "Type N" label — see deviceTypeName() below. Static file, so adding a
+   new device variant's name is just an edit + redeploy, no code change. */
+let deviceTypeNamesTable = null;
+let deviceTypeNamesFetched = false;
+async function fetchDeviceTypeNames() {
+  if (deviceTypeNamesFetched) return;
+  deviceTypeNamesFetched = true;
   try {
-    const r = await fetch('/firmware/mbc2/versions');
-    const data = await r.json();
-    otaVersions = Array.isArray(data.versions) ? data.versions : [];
+    const r = await fetch('/device-types.json');
+    deviceTypeNamesTable = await r.json();
   } catch (e) {
-    otaVersions = [];
+    deviceTypeNamesTable = {};
   }
-  otaVersionsFetched = true;
+  renderOtaPanel();
+}
+function deviceTypeName(type, subtype) {
+  const table = deviceTypeNamesTable || {};
+  if (table[`${type}.${subtype}`]) return table[`${type}.${subtype}`];
+  if (table[type]) return table[type];
+  return `${t('deviceTypePrefix')} ${type}`;
+}
+
+function getSeenDevices() {
+  const out = [];
+  for (const k in rawStatus) {
+    const m = /^dev(\d+)_(\d+)$/.exec(k);
+    if (!m) continue;
+    const parts = rawStatus[k].split('.');
+    out.push({
+      type: parseInt(m[1], 10), address: parseInt(m[2], 10),
+      subtype: parts[1] !== undefined ? parseInt(parts[1], 10) : null,
+      version: rawStatus[k], key: `${m[1]}_${m[2]}`,
+    });
+  }
+  out.sort((a, b) => a.type - b.type || a.address - b.address);
+  return out;
+}
+
+const otaVersionsByType = {};
+const otaVersionsFetchedTypes = new Set();
+async function fetchOtaVersionsForType(type) {
+  if (otaVersionsFetchedTypes.has(type)) return;
+  otaVersionsFetchedTypes.add(type);
+  let versions = [];
+  try {
+    const r = await fetch(`/firmware/${type}/versions`);
+    const data = await r.json();
+    versions = Array.isArray(data.versions) ? data.versions : [];
+  } catch (e) {
+    versions = [];
+  }
+  otaVersionsByType[type] = versions;
   renderOtaPanel();
 }
 
+let lastOtaStartType = null;
+
 function renderOtaPanel() {
-  const select = $('otaVersionSelect');
-  const btn = $('otaStartBtn');
-  const statusEl = $('otaStatusText');
-  const mbcVersionEl = $('mbcVersionText');
   const modemVersionEl = $('modemVersionText');
-  if (!select || !btn || !statusEl || !mbcVersionEl || !modemVersionEl) return; /* not logged in yet — controlBox not shown */
+  const listEl = $('deviceList');
+  const noneEl = $('otaNoDevicesText');
+  if (!modemVersionEl || !listEl || !noneEl) return; /* not logged in yet — controlBox not shown */
 
   /* rawStatus.modemVersion: the modem's own firmware version — a
      compile-time constant, published once per connection (see
      mqttActualizerHandler), so just show it verbatim once it arrives. */
   if (rawStatus.modemVersion) modemVersionEl.textContent = rawStatus.modemVersion;
 
-  /* rawStatus.mbcVersion: MBC-2's own currently-running app version, as it
-     actually broadcasts it (PGN=18) — published by the modem whenever
-     Timberline::MbcVersion changes (see mqttActualizerHandler). Empty or
-     undefined means no broadcast has been seen yet (device offline, still
-     in its bootloader, or the modem hasn't published it yet). Deliberately
-     separate from "what's loaded in the modem" below — those can differ
-     (e.g. a new version loaded but not yet flashed onto the device). */
-  mbcVersionEl.textContent = rawStatus.mbcVersion ? rawStatus.mbcVersion : t('mbcVersionUnknown');
-
-  if (document.activeElement !== select) {
-    const prevValue = select.value;
-    select.innerHTML = '';
-    if (otaVersionsFetched && otaVersions.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = t('otaNoVersions');
-      select.appendChild(opt);
-    } else {
-      otaVersions.forEach((v) => {
-        const opt = document.createElement('option');
-        opt.value = v;
-        opt.textContent = v;
-        select.appendChild(opt);
-      });
-    }
-    if (otaVersions.includes(prevValue)) select.value = prevValue;
+  const devices = getSeenDevices();
+  if (devices.length === 0) {
+    listEl.innerHTML = '';
+    noneEl.textContent = t('otaNoDevicesFound');
+    return;
   }
+  noneEl.textContent = '';
 
   const status = rawStatus.otaStatus; /* idle/staging/done/error, or undefined before the modem's first publish */
   const staging = status === 'staging';
-  select.disabled = staging || otaVersions.length === 0;
-  btn.disabled = staging || otaVersions.length === 0;
+  const relayStatus = rawStatus.canRelayStatus;
+  const relayStaging = relayStatus === 'staging';
+  const stagedType = rawStatus.otaStagedType ? parseInt(rawStatus.otaStagedType, 10) : null;
+  const stagedValid = !!rawStatus.otaStaged;
 
-  /* Reflects what's actually loaded in the modem right now
-     (rawStatus.otaStaged, see Modem::ota.stagedValid/stagedVersion) rather
-     than the ephemeral last-download outcome — "Up to date"/"Idle" wrongly
-     implied the *device* was current, when this only ever describes the
-     modem's own local copy waiting to be relayed. Only the in-progress and
-     error cases still come from otaStatus itself. */
-  statusEl.className = status === 'error' ? 'ota-error' : rawStatus.otaStaged ? 'ota-done' : '';
-  let text = '';
-  if (status === 'staging') text = `${t('otaStatusStaging')} ${rawStatus.otaProgress || ''}`;
-  else if (status === 'error') text = t('otaStatusError');
-  else text = rawStatus.otaStaged ? `${t('otaLoadedPrefix')} ${rawStatus.otaStaged}` : t('otaEmpty');
-  statusEl.textContent = text;
+  devices.forEach((dev) => {
+    fetchOtaVersionsForType(dev.type); /* no-op once fetched/in flight for this type */
+    fetchDeviceTypeNames(); /* no-op once fetched/in flight */
 
-  /* rawStatus.canRelayStatus/canRelayProgress: published by
-     Timberline::mqttActualizerHandler whenever Timberline::canRelay
-     changes — see Timberline::doCanRelay() on the modem side. Flashing
-     the device is only offered once something verified is actually
-     staged (rawStatus.otaStaged non-empty) and nothing else is already
-     running (a download or a relay). */
-  const relayBtn = $('canRelayStartBtn');
-  const relayEl = $('canRelayStatusText');
-  if (relayBtn && relayEl) {
-    const relayStatus = rawStatus.canRelayStatus;
-    const relayStaging = relayStatus === 'staging';
-    relayBtn.disabled = relayStaging || staging || !rawStatus.otaStaged;
+    let card = document.getElementById(`devcard_${dev.key}`);
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'device-card';
+      card.id = `devcard_${dev.key}`;
+      card.innerHTML =
+        '<div class="device-card-title" data-role="title"></div>' +
+        '<div class="device-card-sub" data-role="sub"></div>' +
+        '<div class="setting-row"><label><span data-role="versionLabel"></span></label>' +
+        '<select data-role="version"></select></div>' +
+        '<div class="ota-status-row"><span data-role="status"></span>' +
+        '<button data-role="load"></button></div>' +
+        '<div class="ota-status-row"><span data-role="relayStatus"></span>' +
+        '<button data-role="flash"></button></div>';
+      listEl.appendChild(card);
+      card.querySelector('[data-role="load"]').onclick = () => {
+        const v = card.querySelector('[data-role="version"]').value;
+        if (!v || !mqttClient) return;
+        lastOtaStartType = dev.type;
+        mqttClient.publish(`${mqttUsername}/cmd/desired/otaStart`, `${dev.type}:${v}`);
+      };
+      card.querySelector('[data-role="flash"]').onclick = () => {
+        if (!mqttClient) return;
+        mqttClient.publish(`${mqttUsername}/cmd/desired/canRelayStart`, `${dev.type}:${dev.address}`);
+      };
+    }
+
+    card.querySelector('[data-role="title"]').textContent = deviceTypeName(dev.type, dev.subtype);
+    card.querySelector('[data-role="sub"]').textContent =
+      `${t('deviceAddressLabel')} ${dev.address} · ${dev.version} ${t('deviceVersionLabel')}`;
+    card.querySelector('[data-role="versionLabel"]').textContent = t('otaVersion');
+    card.querySelector('[data-role="load"]').textContent = t('otaUpdate');
+    card.querySelector('[data-role="flash"]').textContent = t('canRelayFlash');
+
+    const versions = otaVersionsByType[dev.type];
+    const select = card.querySelector('[data-role="version"]');
+    if (document.activeElement !== select) {
+      const prevValue = select.value;
+      select.innerHTML = '';
+      if (versions && versions.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = t('otaNoVersions');
+        select.appendChild(opt);
+      } else {
+        (versions || []).forEach((v) => {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v;
+          select.appendChild(opt);
+        });
+      }
+      if (versions && versions.includes(prevValue)) select.value = prevValue;
+    }
+
+    const noVersions = !versions || versions.length === 0;
+    select.disabled = staging || noVersions;
+    card.querySelector('[data-role="load"]').disabled = staging || noVersions;
+
+    /* Reflects what's actually loaded in the modem right now for THIS
+       device (stagedValid && stagedType matches), rather than the
+       ephemeral last-download outcome — "Loaded"/"Empty" wrongly implied
+       the *device* was current, when this only ever describes the modem's
+       own local copy waiting to be relayed. In-progress/error only show on
+       the card this browser itself triggered the Load for. */
+    const isActiveTarget = lastOtaStartType === dev.type;
+    const thisStaged = stagedValid && stagedType === dev.type;
+    const statusEl = card.querySelector('[data-role="status"]');
+    statusEl.className = (isActiveTarget && status === 'error') ? 'ota-error' : thisStaged ? 'ota-done' : '';
+    let text = '';
+    if (isActiveTarget && status === 'staging') text = `${t('otaStatusStaging')} ${rawStatus.otaProgress || ''}`;
+    else if (isActiveTarget && status === 'error') text = t('otaStatusError');
+    else text = thisStaged ? `${t('otaLoadedPrefix')} ${rawStatus.otaStaged}` : t('otaEmpty');
+    statusEl.textContent = text;
+
+    /* rawStatus.canRelayStatus/canRelayProgress: published by
+       Timberline::mqttActualizerHandler whenever Timberline::canRelay
+       changes — see Timberline::doCanRelay() on the modem side. Flashing
+       is only offered once something verified is staged for THIS device
+       and nothing else is already running (a download or a relay). */
+    const relayEl = card.querySelector('[data-role="relayStatus"]');
+    card.querySelector('[data-role="flash"]').disabled = relayStaging || staging || !thisStaged;
     relayEl.className = relayStatus === 'error' ? 'ota-error' : relayStatus === 'done' ? 'ota-done' : '';
     let relayText = '';
     if (relayStatus === 'idle' || !relayStatus) relayText = t('canRelayStatusIdle');
@@ -1128,19 +1223,8 @@ function renderOtaPanel() {
     else if (relayStatus === 'done') relayText = t('canRelayStatusDone');
     else if (relayStatus === 'error') relayText = t('canRelayStatusError');
     relayEl.textContent = relayText;
-  }
+  });
 }
-
-$('otaStartBtn').onclick = () => {
-  const version = $('otaVersionSelect').value;
-  if (!version || !mqttClient) return;
-  mqttClient.publish(`${mqttUsername}/cmd/desired/otaStart`, version);
-};
-
-$('canRelayStartBtn').onclick = () => {
-  if (!mqttClient) return;
-  mqttClient.publish(`${mqttUsername}/cmd/desired/canRelayStart`, '1');
-};
 
 /* Visible, at-a-glance proof that *this browser* actually has a live MQTT
    session — separate from whether the modem itself is connected. The user
@@ -1245,7 +1329,6 @@ function connectMqtt(creds) {
   showBox('controlBox');
   renderButtons();
   renderStatus();
-  fetchOtaVersions();
 }
 
 async function api(path, body) {

@@ -110,7 +110,30 @@ void DataActualizator::handler(void) {
     if (canFieldsChanged) {
         sendSettings();
         anyChanged = true;
+        oldState.onlySmsMode  = newState.onlySmsMode;
+        oldState.faultReport  = newState.faultReport;
+        oldState.cmdAck       = newState.cmdAck;
+        oldState.tempUnit     = newState.tempUnit;
+        oldState.force2gOnly  = newState.force2gOnly;
+        oldState.allowRoaming = newState.allowRoaming;
     }
+
+    /* Every string field below goes through StringTransfer's own limited
+       (MAX_PENDING-slot) outgoing queue — sendString() returns false if it
+       had to drop the update because that queue was already full (e.g. a
+       burst of several fields changing in the same tick, or the round-robin
+       broadcast mid-transfer at that exact moment). Only advance this
+       field's oldState copy when it actually got sent/queued; leaving a
+       dropped field's oldState untouched means the diff still sees it as
+       "changed" on the next handler() call and retries automatically —
+       confirmed on real hardware (2026-08-22) that without this, a dropped
+       update (auto-registration changing username+password+connectionLink
+       all in the same tick was the case that first exposed it) was silently
+       lost forever: oldState used to get blanket-synced to newState right
+       after this whole block regardless of send success, so nothing ever
+       looked "changed" again. flash.writeSetup() below still persists the
+       real value immediately either way — that part never depended on the
+       CAN echo succeeding. */
 
     /* phones[0] = admin, phones[1..4] = trusted 1-4 — each has its own
        STRID (registerString() already serves these on-demand; this is the
@@ -121,14 +144,16 @@ void DataActualizator::handler(void) {
     };
     for (uint8_t i = 0; i < 5; i++) {
         if (strcmp(oldState.phones[i], newState.phones[i]) != 0) {
-            stringTransfer.sendString(newState.phones[i], phoneStrId[i], can.idType, can.idAddress);
             anyChanged = true;
+            if (stringTransfer.sendString(newState.phones[i], phoneStrId[i], can.idType, can.idAddress))
+                strcpy(oldState.phones[i], newState.phones[i]);
         }
     }
 
     if (strcmp(oldState.pin, newState.pin) != 0) {
-        stringTransfer.sendString(newState.pin, STRID_PIN, can.idType, can.idAddress);
         anyChanged = true;
+        if (stringTransfer.sendString(newState.pin, STRID_PIN, can.idType, can.idAddress))
+            strcpy(oldState.pin, newState.pin);
     }
 
     if (oldState.language != newState.language) {
@@ -136,38 +161,51 @@ void DataActualizator::handler(void) {
            no live "language changed" push mechanism yet. Still needs
            persisting like everything else here. */
         anyChanged = true;
+        oldState.language = newState.language;
     }
 
     if (strcmp(oldState.mqttBroker, newState.mqttBroker) != 0) {
-        stringTransfer.sendString(newState.mqttBroker, STRID_MQTT_BROKER, can.idType, can.idAddress);
         anyChanged = true;
+        if (stringTransfer.sendString(newState.mqttBroker, STRID_MQTT_BROKER, can.idType, can.idAddress))
+            strcpy(oldState.mqttBroker, newState.mqttBroker);
     }
     if (strcmp(oldState.mqttUsername, newState.mqttUsername) != 0) {
-        stringTransfer.sendString(newState.mqttUsername, STRID_MODEM_LOGIN, can.idType, can.idAddress);
         anyChanged = true;
+        if (stringTransfer.sendString(newState.mqttUsername, STRID_MODEM_LOGIN, can.idType, can.idAddress))
+            strcpy(oldState.mqttUsername, newState.mqttUsername);
     }
     if (strcmp(oldState.mqttPassword, newState.mqttPassword) != 0) {
-        stringTransfer.sendString(newState.mqttPassword, STRID_MODEM_PASSWORD, can.idType, can.idAddress);
         anyChanged = true;
+        if (stringTransfer.sendString(newState.mqttPassword, STRID_MODEM_PASSWORD, can.idType, can.idAddress))
+            strcpy(oldState.mqttPassword, newState.mqttPassword);
     }
     if (strcmp(oldState.internetCheckUrl, newState.internetCheckUrl) != 0) {
-        stringTransfer.sendString(newState.internetCheckUrl, STRID_INTERNET_CHECK_URL, can.idType, can.idAddress);
         anyChanged = true;
+        if (stringTransfer.sendString(newState.internetCheckUrl, STRID_INTERNET_CHECK_URL, can.idType, can.idAddress))
+            strcpy(oldState.internetCheckUrl, newState.internetCheckUrl);
     }
     if (strcmp(oldState.connectionLink, newState.connectionLink) != 0) {
-        stringTransfer.sendString(newState.connectionLink, STRID_CONNECTION_LINK, can.idType, can.idAddress);
         anyChanged = true;
+        if (stringTransfer.sendString(newState.connectionLink, STRID_CONNECTION_LINK, can.idType, can.idAddress))
+            strcpy(oldState.connectionLink, newState.connectionLink);
     }
 
+    /* apn/apnUsername/apnPassword/language have no STRID/echo (see comment
+       above) — nothing queued, so no drop risk; always safe to sync. */
     if (strcmp(oldState.apn, newState.apn) != 0) {
-        /* No STRID/echo — same as language, see the State comment. */
         anyChanged = true;
+        strcpy(oldState.apn, newState.apn);
     }
-    if (strcmp(oldState.apnUsername, newState.apnUsername) != 0) anyChanged = true;
-    if (strcmp(oldState.apnPassword, newState.apnPassword) != 0) anyChanged = true;
+    if (strcmp(oldState.apnUsername, newState.apnUsername) != 0) {
+        anyChanged = true;
+        strcpy(oldState.apnUsername, newState.apnUsername);
+    }
+    if (strcmp(oldState.apnPassword, newState.apnPassword) != 0) {
+        anyChanged = true;
+        strcpy(oldState.apnPassword, newState.apnPassword);
+    }
 
     if (anyChanged) {
-        oldState = newState;
         flash.writeSetup();
     }
 }

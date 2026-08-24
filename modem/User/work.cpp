@@ -97,12 +97,47 @@ void Work_C::canBroadcast(void) {
             0, d1, modem.network.csq, modem.network.networkAcT, 0xFF, 0xFF, 0xFF, 0xFF);
     }
 
+    /* Sub-packet 4: auto-registration status (see doAutoRegister() in
+     * Modem.cpp) — change-triggered, not tied to the 5s/10s periodic timers
+     * above, since the whole point is the panel seeing "busy" -> "done"/
+     * "error" within the few seconds the HTTP round-trip actually takes, not
+     * up to 10s late. idle<->busy<->done/error are the only transitions that
+     * matter here; no periodic safety-net resend needed since this isn't a
+     * persistent setting like sub-packets 0-3, just a one-shot status the
+     * panel is actively watching while the button's own screen is open. */
+    static uint8_t prevRegStatus = 0xFFu;
+    if ((uint8_t)modem.autoRegisterStatus != prevRegStatus) {
+        prevRegStatus = (uint8_t)modem.autoRegisterStatus;
+        can.SendMessage(id60,
+            4, prevRegStatus, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+    }
+
     if (dueForPeriodic) {
         uint32_t id18 = (18u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
                       | ((uint32_t)can.idType<<3) | can.idAddress;
         can.SendMessage(id18,
             VERSION_1, VERSION_2, VERSION_3, VERSION_4,
             0xFF, 0xFF, 0xFF, 0xFF);
+    }
+
+    /* PGN=1 [0,0] broadcast (toType=127/toAddr=7 — the all-bits-set
+       wildcard address, same convention PU28-Timberline's own messages.cpp
+       uses for its own broadcast queries) — "who are you". Now just a
+       last-resort fallback: Timberline::maybeQueryNewDevice() already
+       targets a PGN=6 [0,18] query at any newly-seen sender the moment it
+       first speaks (see ProcessCanMessage()), which every current device
+       type answers, PU-28's panel firmware included (see its own case 6
+       handler in messages.cpp) — so this broadcast only still matters for
+       a hypothetical device that speaks neither PGN=18 unprompted nor
+       PGN=6. Kept, but well below the 5s telemetry cadence — a minute's
+       discovery latency for that edge case is a non-issue, and this way it
+       isn't adding to the bus's regular 5s traffic. */
+    static uint32_t timerDiscoveryBroadcast = 0;
+    if ((core.getTick() - timerDiscoveryBroadcast) >= 60000) {
+        timerDiscoveryBroadcast = core.getTick();
+        uint32_t id1 = (1u<<20) | (127u<<13) | (7u<<10)
+                     | ((uint32_t)can.idType<<3) | can.idAddress;
+        can.SendMessage(id1, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
     }
 
     if ((core.getTick() - timerSlow) >= 10000) {

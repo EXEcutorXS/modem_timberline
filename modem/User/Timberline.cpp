@@ -11,6 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Defined further down (near doCanRelay()) — forward-declared here so
+   ProcessCanMessage()/maybeQueryNewDevice() near the top of this file can
+   use it too. */
+static uint32_t canId(uint16_t pgn, uint8_t toType, uint8_t toAddress);
+
 /* Convert °C to display unit — setpoints are stored internally in °C
    (the SMS parser converts on the way in; see toCelsius() there). */
 static int16_t dispTemp(int8_t c) {
@@ -70,6 +75,9 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
 
 
     if ((TransType==126 && TransAddr==1) || TransType==125) timberline.connected = true;
+    /* pgn==18 already delivers the sender's version directly (see case 18
+       below) — no need to also query it. */
+    if (pgn != 18) timberline.maybeQueryNewDevice(TransType, TransAddr);
     uint32_t ID, V32;
 
     uint8_t temp=0;
@@ -107,14 +115,30 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             //*(__IO uint32_t*) (NVIC_VectTab_RAM+1020) = 0x0016AA55;
             NVIC_SystemReset();
             break;
+        case 30: //Auto-register (panel "Авторегистрация" button)
+            /* Only meaningful on a never-configured device — ignore silently
+               if mqtt.username is already set, so an accidental/repeated
+               press can't clobber a real account. The panel button itself
+               only shows while modemData.newState.ConnectionLink is empty
+               (see PU28's ModemInternetInfo), which normally keeps this from
+               even being reachable once configured, but the guard belongs
+               here too since CAN messages aren't trustworthy on their own. */
+            if (modem.mqtt.username[0] == 0) modem.startAutoRegister();
+            break;
         default:
             can.SendMessage((2<<20)+(TransType<<13)+(TransAddr<<10)+(can.idType<<3)+can.idAddress,D[0],D[1],0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
         }
         break;
-    case 2: //
+    case 2: // reply to a PGN=1 [0,0] "who are you" broadcast (see work.cpp's
+             // canBroadcast()) — used by devices that don't self-announce via
+             // PGN=18 on their own (e.g. PU-28: control-panel firmware only
+             // answers this query, see PU28-Timberline's messages.cpp case 0).
+             // Version quad sits at D[2..5], not D[0..3] — D[0]/D[1] are just
+             // an echo of the query's own D[0]/D[1].
         switch((D[0]<<8)+D[1])
         {
-        case  0:// ?
+        case  0:
+            timberline.recordSeenDevice(TransType, TransAddr, &D[2]);
             break;
         }
         break;
@@ -204,6 +228,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         if (D[4]!=255) heaters.Instances[TransAddr].Toverheat = D[4]-75;
         break;
     case 18:
+        timberline.recordSeenDevice(TransType, TransAddr, D);
         switch(TransType)
         {
         case 23:
@@ -223,6 +248,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             break;
         case 123: //  Bootloader — see doCanRelay()'s bootloader-detection poll
             canRelay.bootloaderSeen = true;
+            memcpy(canRelay.bootloaderVersion, D, 4);
             break;
         }
         break;
@@ -469,8 +495,11 @@ void sendToHcu(uint16_t pgn,uint8_t* D)
    region Modem::ota's staging buffer mirrors byte-for-byte from offset 0),
    and the bootloader always identifies itself as device type 123
    regardless of the app's own type (125 for MBC-2) — see OmniProtocol.pdf's
-   device-type table and PGN=1/6/105/106 sections. */
-#define MBC2_APP_FLASH_BASE   0x08020000UL
+   device-type table and PGN=1/6/105/106 sections. Flash base address and
+   erase-sector list are no longer hardcoded here — they come from
+   modem.ota.flashBase/eraseSectors[], fetched from the target device
+   type's profile.txt on the server (see Modem::doFetchProfile()), so this
+   same relay logic works for any device type, not just MBC-2. */
 #define CAN_RELAY_FRAGMENT_SIZE 512
 
 /* Always-visible USB debug output for the relay, same idiom as Modem.cpp's
@@ -532,18 +561,91 @@ static uint32_t canId(uint16_t pgn, uint8_t toType, uint8_t toAddress) {
          | ((uint32_t)can.idType<<3) | can.idAddress;
 }
 
-void Timberline::startCanRelay(void) {
+void Timberline::startCanRelay(uint8_t targetType, uint8_t targetAddress) {
+    canRelay.targetType = targetType;
+    canRelay.targetAddress = targetAddress;
     canRelay.startRequested = true;
 }
 
-/* Replays Modem::ota's staged flash image onto MBC-2 over CAN. Steps:
-   0-1   switch the currently-connected app into the bootloader (PGN=1,
-         [0,22,0], addressed to its live hcuType/hcuAddress) and poll for
-         it reappearing as device type 123 (PGN=6 [0,18] version request,
-         answered by any device — see ProcessCanMessage's PGN=18 case).
-   2-3   erase all of MBC-2's flash (PGN=105 sub6, D[1]=255) — matches the
-         real PC tool's own flow (always erase-all up front, never
-         per-sector).
+/* Finds (or claims) this type+address's slot in seenDevices[] and, only if
+   the version actually changed (or the slot is brand new), publishes
+   "dev<type>_<addr>" = "<v1>.<v2>.<v3>.<v4>" over MQTT — deliberately NOT
+   unconditional, since PGN=18 announcements repeat periodically for every
+   device on the bus and modem.mqttPublish() has no diff-check of its own
+   (see its comment in Modem.cpp); calling it on every single announcement
+   would mark the same topic dirty forever, doing nothing but wasted AT
+   traffic. Table full (more than SEEN_DEVICE_MAX distinct type+address
+   pairs seen) — silently drop, same precedent as mqttPublish()'s own
+   full-queue behavior. */
+void Timberline::recordSeenDevice(uint8_t type, uint8_t address, const uint8_t* version) {
+    SeenDevice* slot = 0;
+    for (int i = 0; i < SEEN_DEVICE_MAX; i++) {
+        if (seenDevices[i].active && seenDevices[i].type == type && seenDevices[i].address == address) {
+            slot = &seenDevices[i];
+            break;
+        }
+    }
+    if (!slot) {
+        for (int i = 0; i < SEEN_DEVICE_MAX; i++) {
+            if (!seenDevices[i].active) { slot = &seenDevices[i]; break; }
+        }
+        if (!slot) return;
+        slot->active  = true;
+        slot->type    = type;
+        slot->address = address;
+        memset(slot->version, 0xFF, 4);  /* guarantees the memcmp below sees a change on first sight */
+    }
+    if (memcmp(slot->version, version, 4) == 0) return;
+    memcpy(slot->version, version, 4);
+
+    char topic[16];
+    int  n = 0;
+    const char* pre = "dev";
+    while (*pre) topic[n++] = *pre++;
+    n = appendUint(topic, n, type);
+    topic[n++] = '_';
+    n = appendUint(topic, n, address);
+    topic[n] = 0;
+
+    char value[20];
+    int  vn = 0;
+    vn = appendUint(value, vn, version[0]); value[vn++] = '.';
+    vn = appendUint(value, vn, version[1]); value[vn++] = '.';
+    vn = appendUint(value, vn, version[2]); value[vn++] = '.';
+    vn = appendUint(value, vn, version[3]); value[vn] = 0;
+
+    modem.mqttPublish(topic, value);
+}
+
+void Timberline::maybeQueryNewDevice(uint8_t type, uint8_t address) {
+    if (type == can.idType && address == can.idAddress) return;   /* not our own frames */
+    if (type == 127 && address == 7) return;                      /* broadcast sentinel, not a real sender */
+
+    for (int i = 0; i < SEEN_DEVICE_MAX; i++) {
+        if (seenDevices[i].active && seenDevices[i].type == type && seenDevices[i].address == address) return;
+    }
+    SeenDevice* slot = 0;
+    for (int i = 0; i < SEEN_DEVICE_MAX; i++) {
+        if (!seenDevices[i].active) { slot = &seenDevices[i]; break; }
+    }
+    if (!slot) return;
+    slot->active  = true;
+    slot->type    = type;
+    slot->address = address;
+    memset(slot->version, 0xFF, 4);
+
+    can.SendMessage(canId(6, type, address), 0,18, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+}
+
+/* Replays Modem::ota's staged flash image onto canRelay.targetType/
+   targetAddress over CAN. Steps:
+   0-1   switch the target device's app into the bootloader (PGN=1,
+         [0,22,0], addressed to canRelay.targetType/targetAddress) and poll
+         for it reappearing as device type 123 (PGN=6 [0,18] version
+         request, answered by any device — see ProcessCanMessage's PGN=18
+         case).
+   2-3   erase each sector listed in modem.ota.eraseSectors[] in turn
+         (PGN=105 sub6), fetched from the target type's profile.txt.
    10-18 per-fragment loop, one CAN_RELAY_FRAGMENT_SIZE (512 byte) fragment
          at a time: set the bootloader's write address (sub0/1), stream the
          fragment as raw 8-byte PGN=106 frames (one per doCanRelay() tick —
@@ -567,15 +669,15 @@ void Timberline::doCanRelay(void) {
     static uint32_t phaseStart = 0;
     static uint16_t byteOffset = 0;     /* 0..CAN_RELAY_FRAGMENT_SIZE, within the current fragment */
     static uint32_t fragCrc = 0;
-    static uint8_t  appType = 0, appAddress = 0; /* MBC-2's app-mode identity, captured before it switches away */
     static uint32_t lastFrameTick = 0;  /* paces the PGN=106 burst below — see its comment */
-    static uint8_t  eraseSector = 5;    /* case 2/3 erase both 5 and 6 in turn, see case 2's comment */
+    static uint8_t  eraseIndex = 0;     /* index into modem.ota.eraseSectors[0..eraseSectorCount-1], see case 2's comment */
 
     if (canRelay.status != RELAY_STAGING) {
         if (canRelay.startRequested) {
             canRelay.startRequested = false;
             if (!modem.ota.stagedValid || modem.ota.stagedBytes == 0
-                || (modem.ota.stagedBytes % CAN_RELAY_FRAGMENT_SIZE) != 0) {
+                || (modem.ota.stagedBytes % CAN_RELAY_FRAGMENT_SIZE) != 0
+                || modem.ota.eraseSectorCount == 0) {
                 canRelay.status = RELAY_ERROR;
                 return;
             }
@@ -584,21 +686,19 @@ void Timberline::doCanRelay(void) {
             canRelay.retries = 0;
             canRelay.fragment = 0;
             canRelay.fragmentTotal = (uint16_t)(modem.ota.stagedBytes / CAN_RELAY_FRAGMENT_SIZE);
-            appType = hcuType;
-            appAddress = hcuAddress;
-            eraseSector = 5;
+            eraseIndex = 0;
             step = 0;
             logRelayInfo("start");
             logRelayInfoNum("fragmentTotal", canRelay.fragmentTotal);
-            logRelayInfoNum("appType", appType);
-            logRelayInfoNum("appAddress", appAddress);
+            logRelayInfoNum("targetType", canRelay.targetType);
+            logRelayInfoNum("targetAddress", canRelay.targetAddress);
         }
         return;
     }
 
     switch (step) {
     case 0:
-        can.SendMessage(canId(1, appType, appAddress), 0,22,0, 0xFF,0xFF,0xFF,0xFF,0xFF);
+        can.SendMessage(canId(1, canRelay.targetType, canRelay.targetAddress), 0,22,0, 0xFF,0xFF,0xFF,0xFF,0xFF);
         canRelay.bootloaderSeen = false;
         t = core.getTick();
         phaseStart = t;
@@ -606,7 +706,23 @@ void Timberline::doCanRelay(void) {
         logRelayInfo("switch-to-bootloader sent, waiting for type 123...");
         break;
     case 1:
-        if (canRelay.bootloaderSeen) { logRelayInfo("bootloader detected"); step = 2; break; }
+        if (canRelay.bootloaderSeen) {
+            /* Which PGN105/106 sequence this specific bootloader actually
+               supports safely — not every one out there behaves the same,
+               some are known unstable and must never be used for OTA (see
+               Modem::lookupBootloaderAlgorithm()/bootloaderTable, fetched
+               from "/bootloaders.txt" alongside profile.txt). Algorithm 2
+               is the sequence implemented below (case 2 onward); anything
+               else (0 = version not in the table, 1 = known unstable) is
+               refused outright rather than attempting it and hoping. */
+            uint8_t algo = modem.lookupBootloaderAlgorithm(canRelay.bootloaderVersion);
+            if (algo != 2) {
+                logRelayFail(1, algo == 0 ? "bootloader-algorithm-unknown" : "bootloader-algorithm-unsafe", algo, false);
+                canRelay.failed = true; step = 30; break;
+            }
+            logRelayInfo("bootloader detected, algorithm 2");
+            step = 2; break;
+        }
         if ((core.getTick() - phaseStart) >= 15000) { logRelayFail(1, "bootloader-timeout", 0, false); canRelay.failed = true; step = 30; break; }
         if ((core.getTick() - t) >= 800) {
             can.SendMessage(canId(6, 123, 0), 0,18, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
@@ -614,34 +730,21 @@ void Timberline::doCanRelay(void) {
         }
         break;
     case 2:
-        /* Sectors 5 AND 6, not D[1]=255 ("erase all" — confirmed in the
-           real bootloader source, messages.cpp, this wipes sectors 2-7,
-           not just the ones the app lives in). MBC-2's real flash layout
-           (confirmed by the user directly, not just inferred from
-           hcu.sct):
-             0-1  Bootloader              0x08000000  (2x16 KB)
-             2    BLE_ID (shifted 256B)   0x08008000  (16 KB)
-             3    Config                  0x0800C000  (16 KB)  <- settings live here
-             4    BB_Common               0x08010000  (64 KB)
-             5    Main Program + Version  0x08020000  (128 KB) <- this OTA image
-             6    Main Program (spare)    0x08040000  (128 KB) <- currently unused, erased pre-emptively
-             7    BB_Errors_1             0x08060000  (128 KB)
-           The 128 KB staged here (LR_IROM1+LR_IROM2, see hcu.sct) fits
-           entirely inside sector 5 for the current firmware, but "Main
-           Program" is a 256 KB budget spanning 5+6 — erasing 6 too now
-           (it's already empty) means a future image that grows past
-           128 KB doesn't inherit stale leftover bytes there, without
-           needing to touch this erase sequence again later. Doesn't write
-           anything into sector 6 yet — the fragment loop below only
-           covers however many bytes are actually staged (see
-           modem.ota.stagedBytes), still 128 KB today. Config and
-           everything else stays untouched either way. */
-        can.SendMessage(canId(105, 123, 0), 6,eraseSector, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+        /* Erases every sector listed in modem.ota.eraseSectors[], one at a
+           time, not D[1]=255 ("erase all" — confirmed in the real
+           bootloader source, messages.cpp, this wipes sectors 2-7, not
+           just the ones the app lives in). The sector list itself comes
+           from the target device type's profile.txt on the server (see
+           Modem::doFetchProfile()) — flash layout, and which sectors are
+           safe to erase without touching settings/black-box data, is
+           specific to each device type/bootloader version, not something
+           this generic relay logic can assume. */
+        can.SendMessage(canId(105, 123, 0), 6,modem.ota.eraseSectors[eraseIndex], 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
         canRelay.eraseGotResp = false;
         t = core.getTick();
         canRelay.retries = 0;
         step = 3;
-        logRelayInfoNum("erase sector sent", eraseSector);
+        logRelayInfoNum("erase sector sent", modem.ota.eraseSectors[eraseIndex]);
         break;
     case 3:
         if (canRelay.eraseGotResp) {
@@ -651,8 +754,9 @@ void Timberline::doCanRelay(void) {
                 else step = 2;
                 break;
             }
-            logRelayInfoNum("erase ok, sector", eraseSector);
-            if (eraseSector == 5) { eraseSector = 6; step = 2; }
+            logRelayInfoNum("erase ok, sector", modem.ota.eraseSectors[eraseIndex]);
+            eraseIndex++;
+            if (eraseIndex < modem.ota.eraseSectorCount) { step = 2; }
             else step = 10;
         } else if ((core.getTick() - t) >= 8000) {
             logRelayFail(3, "erase-timeout-retries", canRelay.retries, false);
@@ -668,7 +772,7 @@ void Timberline::doCanRelay(void) {
         step = 11;
         break;
     case 11: {
-        uint32_t addr = MBC2_APP_FLASH_BASE + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
+        uint32_t addr = modem.ota.flashBase + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
         can.SendMessage(canId(105, 123, 0), 0,
             (uint8_t)(addr>>24), (uint8_t)(addr>>16), (uint8_t)(addr>>8), (uint8_t)addr,
             0xFF,0xFF,0xFF);
@@ -678,7 +782,7 @@ void Timberline::doCanRelay(void) {
         break;
     }
     case 12: {
-        uint32_t addr = MBC2_APP_FLASH_BASE + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
+        uint32_t addr = modem.ota.flashBase + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
         if (canRelay.setAddrGotResp) {
             if (canRelay.setAddrEcho != addr) {
                 logRelayFail(12, "setaddr-echo-mismatch(want)", addr, true);
@@ -969,27 +1073,36 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
         modem.mqtt.telemetryIntervalSec = (uint8_t)ival;
     }
     else if (!strcmp(name, "otaStart")) {
-        /* payload = MBC-2 firmware version string, becomes the
-           firmware/mbc2/<version>/ path segment the modem downloads from
-           (see Modem::startOta()/doOta() and host/README.md's "Firmware
-           OTA" section). Ignored while a download is already in progress —
-           re-publish the same otaStart value again once the current run
-           finishes (idle/done/error) to actually start a new one. */
+        /* payload = "<type>:<version>", e.g. "125:125.0.0.16" — type is the
+           target device's OmniProtocol type (first byte of its version
+           quad, see recordSeenDevice()/seenDevices[]), version becomes the
+           firmware/<type>/<version>/ path segment the modem downloads from
+           (see Modem::startOta()/doOta()). Ignored while a download is
+           already in progress — re-publish the same otaStart value again
+           once the current run finishes (idle/done/error) to actually
+           start a new one. */
         if (modem.ota.status == Modem::OTA_STAGING) return;
-        modem.startOta(payload);
+        const char* colon = strchr(payload, ':');
+        if (!colon || colon == payload) return;
+        uint8_t deviceType = (uint8_t)atoi(payload);
+        modem.startOta(deviceType, colon + 1);
     }
     else if (!strcmp(name, "canRelayStart")) {
-        /* Relays whatever's already staged+verified in the modem's own
-           flash onto MBC-2 over CAN — see Timberline::doCanRelay(). A
-           deliberately separate trigger from otaStart: the user reviews
-           the staged version (otaStaged, see Modem::ota.stagedVersion)
-           before committing to actually flashing the device. Payload
-           ignored; refuses while a relay or a download is already
-           running, or nothing valid is staged. */
+        /* payload = "<type>:<address>", e.g. "125:1" — the device to relay
+           whatever's already staged+verified in the modem's own flash onto,
+           over CAN (see Timberline::doCanRelay()). A deliberately separate
+           trigger from otaStart: the user reviews the staged version
+           (otaStaged, see Modem::ota.stagedVersion) before committing to
+           actually flashing the device. Refuses while a relay or a
+           download is already running, or nothing valid is staged. */
         if (timberline.canRelay.status == Timberline::RELAY_STAGING) return;
         if (modem.ota.status == Modem::OTA_STAGING) return;
         if (!modem.ota.stagedValid) return;
-        timberline.startCanRelay();
+        const char* colon = strchr(payload, ':');
+        if (!colon || colon == payload) return;
+        uint8_t targetType = (uint8_t)atoi(payload);
+        uint8_t targetAddress = (uint8_t)atoi(colon + 1);
+        timberline.startCanRelay(targetType, targetAddress);
     }
     else {
         uint8_t     zoneNum;
@@ -1071,36 +1184,10 @@ static const char HELP_SMS_DE[] =
 		"?\n";
 
 
-/* Lightweight, non-cryptographic token for "getlink" — this MCU has no
-   hardware RNG. Mixes the boot tick, a call counter and the device's own
-   IMEI through two rounds of a simple string hash so repeated calls produce
-   different values. Not resistant to a determined attacker who can guess
-   timing — accepted as a known limitation: guessing it also requires
-   already knowing the username, and a fresh "getlink" overwrites the
-   retained token, invalidating any previous one. */
-static void generateLinkToken(char* out, int outLen) {
-    static uint32_t counter = 0;
-    counter++;
-
-    char mix[32];
-    int  n = 0;
-    uint32_t tick = core.getTick();
-    for (int i = 0; i < 4; i++) mix[n++] = (char)(tick >> (i * 8));
-    for (int i = 0; i < 4; i++) mix[n++] = (char)(counter >> (i * 8));
-    for (int i = 0; modem.network.imei[i] && n < 30; i++) mix[n++] = modem.network.imei[i];
-
-    uint32_t h1 = 5381, h2 = 52711;
-    for (int i = 0; i < n; i++) {
-        h1 = h1 * 33 ^ (uint8_t)mix[i];
-        h2 = h2 * 33 ^ (uint8_t)mix[n - 1 - i];
-    }
-
-    static const char hex[] = "0123456789abcdef";
-    int p = 0;
-    for (int i = 7; i >= 0 && p < outLen - 1; i--) out[p++] = hex[(h1 >> (i * 4)) & 0xF];
-    for (int i = 7; i >= 0 && p < outLen - 1; i--) out[p++] = hex[(h2 >> (i * 4)) & 0xF];
-    out[p] = '\0';
-}
+/* generateLinkToken() and the "getlink" URL-building logic now live in
+   Modem.cpp as Modem::publishLinkToken() — shared with auto-registration
+   (see doAutoRegister()), which needs the exact same finishing step but has
+   no phone number to reply to. */
 
 static void onSmsReceived(const char* phone, const char* text) {
     /* Push the last-received SMS to the bus as soon as it arrives, regardless
@@ -1441,28 +1528,8 @@ static void onSmsReceived(const char* phone, const char* text) {
                                        : "Enable internet first: internet 1");
                 break;
             }
-            char token[17];
-            generateLinkToken(token, sizeof(token));
-            modem.mqttPublish("linkToken", token);
-
-            char* url = modem.internet.connectionLink;
-            int   n = 0;
-            const int urlMax = (int)sizeof(modem.internet.connectionLink) - 1;
-            /* https on the default port (443, terminated by nginx in front of
-               the web app) — not ":3000", which is the app's own plain-HTTP
-               port and has no TLS cert bound to it. Also requires mqttBroker
-               to hold a hostname (matching the cert's CN), not a bare IP. */
-            const char* pre = "https://";
-            while (*pre) url[n++] = *pre++;
-            for (const char* p = modem.mqtt.broker; *p && n < urlMax; ) url[n++] = *p++;
-            const char* mid = "/go/";
-            while (*mid && n < urlMax) url[n++] = *mid++;
-            for (const char* p = modem.mqtt.username; *p && n < urlMax; ) url[n++] = *p++;
-            if (n < urlMax) url[n++] = '/';
-            for (const char* p = token; *p && n < urlMax; ) url[n++] = *p++;
-            url[n] = '\0';
-
-            modem.sendSms(phone, url);
+            modem.publishLinkToken();
+            modem.sendSms(phone, modem.internet.connectionLink);
             /* Persisting + pushing to the panel (STRID_CONNECTION_LINK) is
                handled centrally by dataActualizator.handler(), same as
                every other field it tracks — no direct sendString()/
@@ -1552,6 +1619,7 @@ void Timberline::mqttActualizerHandler(void) {
        download run happened to be. */
     static char        prevStagedVersion[24];
     static bool        prevStagedValid;
+    static uint8_t     prevStagedType;
     /* Hardware-presence mirrors, not user controls — lets the web UI hide
        btnFloor/btnEngine on systems that don't have that hardware. */
     static bool        prevFloorConnected, prevEngineConnected;
@@ -1710,6 +1778,15 @@ void Timberline::mqttActualizerHandler(void) {
         strncpy(prevStagedVersion, modem.ota.stagedVersion, sizeof(prevStagedVersion) - 1);
         prevStagedVersion[sizeof(prevStagedVersion) - 1] = 0;
         modem.mqttPublish("otaStaged", modem.ota.stagedValid ? modem.ota.stagedVersion : "");
+    }
+    /* Which device type the staged image (above) is for — needed by the web
+       UI's per-device cards to know which device's "Flash" button to
+       enable, now that OTA/relay target any device on the bus, not only
+       MBC-2. */
+    if (modem.ota.deviceType != prevStagedType || justConnected) {
+        prevStagedType = modem.ota.deviceType;
+        char tbuf[4]; int tn = appendUint(tbuf, 0, modem.ota.deviceType); tbuf[tn] = 0;
+        modem.mqttPublish("otaStagedType", tbuf);
     }
     /* The modem's own firmware version (VERSION_1..4, a compile-time
        constant — see Version.h, same values already broadcast over CAN's

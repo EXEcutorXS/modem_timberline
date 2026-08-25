@@ -69,10 +69,14 @@ static int base64Encode(const uint8_t* data, int len, char* out) {
 void Timberline::ProcessCanMessage(CanRxMessage* msg)
 {
     uint16_t pgn = (msg->ExtId>>20)&0x1FF;
+	uint8_t RecType = (msg->ExtId>>13)&127;
+    uint8_t RecAddr = (msg->ExtId>>10)&7;
     uint8_t TransType = (msg->ExtId>>3)&127;
     uint8_t TransAddr = (msg->ExtId)&7;
     uint8_t* D = msg->Data;
 
+	if (RecType!=can.idType && RecType!=127) return;
+	if (RecAddr!=can.idAddress && RecAddr!=7) return;
 
     if ((TransType==126 && TransAddr==1) || TransType==125) timberline.connected = true;
     /* pgn==18 already delivers the sender's version directly (see case 18

@@ -8,20 +8,22 @@
 #define FLASH_SERIAL_ADDR               0x807F000       // Length 2 KB
 #define FLASH_SETUP_ADDR                0x807F800       // Length 2 KB
 
-/* OTA staging area for a *different* device's firmware image (the MBC-2
-   module) — this modem's own flash just holds it temporarily while it's
-   downloaded/verified over HTTP, before being replayed onto MBC-2 over CAN
+/* OTA staging area for a *different* device's firmware image (originally
+   sized for the MBC-2 module; now also used for ПУ28-Timberline) — this
+   modem's own flash just holds it temporarily while it's downloaded/
+   verified over HTTP, before being replayed onto the target device over CAN
    (OmniProtocol PGN=105/106, see Timberline.cpp). Sits right below
    FLASH_SERIAL_ADDR.
 
-   Sized 160 KB, not the 128 KB MBC-2's own flash sector 5 (its "Main
-   Program" region) would strictly need — MBC-2's real current build is
-   already ~112.5 KB (Code+RO-data+RW-data from its own build log), leaving
-   only ~15 KB of slack in a single 128 KB sector before it'd need sector 6
-   too. 160 KB buys about 32 KB more headroom for that growth without
-   having to revisit this buffer again immediately — see Timberline.cpp's
-   doCanRelay() case 2 for the sector 5+6 erase and MBC-2's own real sector
-   map (confirmed by the user, not just inferred from its .sct).
+   Sized 208 KB to fit ПУ28-Timberline's ~206 KB firmware image plus one
+   page (2 KB) of slack — deliberately tight, not generously oversized like
+   the original 160 KB (MBC-2's own 128 KB sector +32 KB headroom): the
+   whole [IROM1 code][OTA meta][OTA buffer] window between IROM1's start
+   (0x08030000) and FLASH_SERIAL_ADDR is only 316 KB total, so growing this
+   buffer eats directly into the modem app's own code budget. If a future
+   ПУ28-Timberline build grows past ~206 KB, or another target device needs
+   staging, this buffer (and IROM1's declared size below) needs revisiting
+   together, not just bumped in isolation.
 
    Confirmed on real hardware: this and FLASH_OTA_META_ADDR being merely
    *below* the app's own code was not enough to survive a reflash — Keil's
@@ -30,15 +32,19 @@
    size (Options for Target -> Target -> IROM1, mirrored into
    modem/Objects/modemDragonfly.sct as LR_IROM1's size field). Fixed by
    keeping IROM1's declared size well short of FLASH_OTA_META_ADDR below
-   (currently 0x26000 = 152 KB, ending at 0x08056000 — actual usage is
-   ~78 KB, still comfortable growth room) so reflashing the app can't reach
-   into this buffer or FLASH_SERIAL_ADDR above it. Below 0x08030000
-   (IROM1's own start) is this modem's own separate bootloader — it has an
-   OTA buffer of its own reserved there already; out of scope here, a
-   later task. FLASH_SETUP_ADDR was never at risk — it already sits just
-   past where IROM1 ends either way. */
-#define FLASH_OTA_BUF_ADDR              0x08057000
-#define FLASH_OTA_BUF_SIZE              (160*1024)
+   (0x1A000 = 104 KB, ending at 0x0804A000, 2 KB below FLASH_OTA_META_ADDR)
+   so reflashing the app can't reach into this buffer or FLASH_SERIAL_ADDR
+   above it. NOTE: this was previously declared as 0x26000 (152 KB) in a
+   comment here, but modem/modemDragonfly.uvprojx's IROM1 setting (and its
+   generated .sct) had never actually been shrunk to match — a real bug,
+   fixed alongside this resize; verify actual code+RO+RW usage still fits
+   under 104 KB after the next build (was ~78 KB under the old 152 KB
+   budget). Below 0x08030000 (IROM1's own start) is this modem's own
+   separate bootloader — it has an OTA buffer of its own reserved there
+   already; out of scope here, a later task. FLASH_SETUP_ADDR was never at
+   risk — it already sits just past where IROM1 ends either way. */
+#define FLASH_OTA_BUF_ADDR              0x0804B000
+#define FLASH_OTA_BUF_SIZE              (208*1024)
 #define FLASH_PAGE_SIZE                 2048
 #define FLASH_OTA_PAGE_COUNT            (FLASH_OTA_BUF_SIZE / FLASH_PAGE_SIZE)
 

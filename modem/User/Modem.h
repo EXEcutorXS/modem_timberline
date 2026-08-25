@@ -10,7 +10,7 @@
    static_asserts in Modem.cpp (this header intentionally doesn't include
    flash.h itself, to keep it out of Modem.h's public include surface). */
 #define MODEM_OTA_PAGE_SIZE   2048
-#define MODEM_OTA_PAGE_COUNT  80
+#define MODEM_OTA_PAGE_COUNT  104
 
 /* Baked-in fallback broker — applied by flash.cpp's sanitizeString() when
    flash has never held a real value (genuinely erased, factory-fresh

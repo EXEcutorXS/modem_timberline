@@ -31,6 +31,21 @@ static const char* UNIT_STR(void) { return modem.config.tempUnit == 1 ? "\xb0""F
 
 Timberline timberline;
 
+/* Совместимость с nations-bootloader: он читает метаданные из ADDRESS_CRC.
+   Вся страница 0x0802A000..0x0802A800 зарезервирована под футер — код и
+   таблица векторов начинаются со следующей страницы
+   (MAIN_PROGRAM_START_ADDRESS=0x0802A800), линкеру не нужно ничего
+   "обтекать" внутри кода (см. modemDragonfly.uvprojx IROM1 и main.h).
+   lenMain=0x55555555 → "debug mode" → загрузчик запускает приложение без
+   проверки CRC (тот же приём, что и в PU28-Timberline/User/Main/main.cpp). */
+const uint8_t _CRCR[FLASH_PAGE_SIZE] __attribute__((at(ADDRESS_CRC))) =
+{
+    0x55, 0x55, 0x55, 0x55,
+    0x55, 0x55,
+    VERSION_1, VERSION_2, VERSION_3, VERSION_4,
+    0x00
+};
+
 /* Minimal base64 encoder — no library in this codebase already provides
    one. Only used for the packed telemetry blob (see mqttTelemetryHandler);
    everything else this firmware publishes is plain decimal text. `out`
@@ -115,8 +130,8 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         case 4: //
             break;
         case 22://Reset CPU
-            //ToDo     AA 55
-            //*(__IO uint32_t*) (NVIC_VectTab_RAM+1020) = 0x0016AA55;
+            if (D[2]==0) *(__IO uint32_t*)BOOT_MAGIC_ADDR = 0x0016AA55; //войти в nations-bootloader
+            if (D[2]==1) *(__IO uint32_t*)BOOT_MAGIC_ADDR = 0x001655AA; //остаться/вернуться в приложение
             NVIC_SystemReset();
             break;
         case 30: //Auto-register (panel "Авторегистрация" button)

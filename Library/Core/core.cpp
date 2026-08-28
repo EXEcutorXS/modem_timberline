@@ -412,7 +412,9 @@ void Core::protectedFlash(void)
 //-----------------------------------------------------
 void Core::remapTable(void)
 {
-    NVIC_SetVectorTable(NVIC_VectTab_FLASH, 0x30000);
+    // MAIN_PROGRAM_START_ADDRESS (main.h) is where the app's own vector
+    // table actually lives now — see nations-bootloader's flash map.
+    NVIC_SetVectorTable(NVIC_VectTab_FLASH, MAIN_PROGRAM_START_ADDRESS - 0x08000000u);
 }
 //-----------------------------------------------------
 void Core::incTick(void)

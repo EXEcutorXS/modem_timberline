@@ -36,6 +36,15 @@
 #define MAIN_PROGRAM_START_ADDRESS  0x0802A800u   //таблица векторов приложения — на страницу дальше футера
 #define BOOT_MAGIC_ADDR              0x20023FFCu   //последнее слово физического ОЗУ — см. nations-bootloader
 
+/* BOOT_MAGIC_ADDR values — must match nations-bootloader's own main.h
+   (BOOT_MAGIC_ENTER_BOOT/ENTER_APP/UPDATE) byte-for-byte, that project is
+   what actually reads this word. Set from Timberline.cpp: case 22 (CAN
+   "Reset CPU", panel-triggered) for the first two; BOOT_MAGIC_UPDATE from
+   the "selfOtaApply" MQTT command — see onMqttCommandReceived(). */
+#define BOOT_MAGIC_ENTER_BOOT  0x0016AA55u   //войти в загрузчик и остаться в нём
+#define BOOT_MAGIC_ENTER_APP   0x001655AAu   //вернуться в приложение
+#define BOOT_MAGIC_UPDATE      0x00166699u   //обновление ПО — загрузчик прошьёт self-OTA образ поверх приложения и запустит его
+
 /* Pin mapping (NW452RE)
  *
  * CAN:

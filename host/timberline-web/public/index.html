@@ -396,6 +396,21 @@
         <span id="modemVersionLabel">Modem version</span>
         <span id="modemVersionText"></span>
       </div>
+      <!-- The modem's own firmware — not gated on CAN bus detection like
+           deviceList below (the modem obviously never "sees itself" as a
+           dev<type>_<addr> announcement), so it's a fixed card built once
+           renderOtaPanel() knows the modem's own type (parsed from
+           modemVersion). Load downloads+stages it into the modem's separate
+           self-OTA buffer (Modem::startOta with the modem's own type — see
+           doOta()'s "self" branch); there's no CAN relay/"Flash" button
+           here, applying a staged self-image isn't wired up yet. -->
+      <div id="selfOtaCard" class="device-card hidden">
+        <div class="device-card-title" id="selfOtaTitle"></div>
+        <div class="setting-row"><label><span id="selfOtaVersionLabel"></span></label>
+        <select id="selfOtaVersion"></select></div>
+        <div class="ota-status-row"><span id="selfOtaStatus"></span>
+        <button id="selfOtaLoad"></button></div>
+      </div>
       <div id="deviceList"></div>
       <div id="otaNoDevicesText"></div>
     </details>

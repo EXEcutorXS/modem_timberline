@@ -90,8 +90,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
     uint8_t TransAddr = (msg->ExtId)&7;
     uint8_t* D = msg->Data;
 
-	if (RecType!=can.idType && RecType!=127) return;
-	if (RecAddr!=can.idAddress && RecAddr!=7) return;
+
 
     if ((TransType==126 && TransAddr==1) || TransType==125) timberline.connected = true;
     /* pgn==18 already delivers the sender's version directly (see case 18
@@ -117,6 +116,8 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
     switch(pgn)
     {
     case 1: //
+				if (RecType!=can.idType && RecType!=127) return;
+				if (RecAddr!=can.idAddress && RecAddr!=7) return;
         ID=(2<<20)+(TransType<<13)+(TransAddr<<10)+(can.idType<<3)+can.idAddress;
         switch((D[0]<<8)+D[1])
         {
@@ -130,8 +131,8 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         case 4: //
             break;
         case 22://Reset CPU
-            if (D[2]==0) *(__IO uint32_t*)BOOT_MAGIC_ADDR = 0x0016AA55; //войти в nations-bootloader
-            if (D[2]==1) *(__IO uint32_t*)BOOT_MAGIC_ADDR = 0x001655AA; //остаться/вернуться в приложение
+            if (D[2]==0) *(__IO uint32_t*)BOOT_MAGIC_ADDR = BOOT_MAGIC_ENTER_BOOT; //войти в nations-bootloader
+            if (D[2]==1) *(__IO uint32_t*)BOOT_MAGIC_ADDR = BOOT_MAGIC_ENTER_APP;  //остаться/вернуться в приложение
             NVIC_SystemReset();
             break;
         case 30: //Auto-register (panel "Авторегистрация" button)
@@ -272,8 +273,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         }
         break;
     case 19:
-        hcuType = TransType;
-        hcuAddress = TransAddr;
+
         if (D[0]==1)
         {
             if (((D[4]>>0)&3)<2) DomesticWaterFlow = D[4]&1;
@@ -327,6 +327,8 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
 
 
     case 21:
+			  hcuType = TransType;
+        hcuAddress = TransAddr;
         if (D[2]!=0xFF) tankTemperature = D[2]-75;
         if (D[4]!=0xFF) outdoorTemperature = D[4]-75;
         if (D[5]!=0xFF) heaterStateIcon = (heaterStateIcon_t)D[5];
@@ -516,9 +518,9 @@ void sendToHcu(uint16_t pgn,uint8_t* D)
    regardless of the app's own type (125 for MBC-2) — see OmniProtocol.pdf's
    device-type table and PGN=1/6/105/106 sections. Flash base address and
    erase-sector list are no longer hardcoded here — they come from
-   modem.ota.flashBase/eraseSectors[], fetched from the target device
-   type's profile.txt on the server (see Modem::doFetchProfile()), so this
-   same relay logic works for any device type, not just MBC-2. */
+   modem.ota.flashBase/eraseSectors[], fetched from the target firmware's
+   own profile on the server (see Modem::doFetchProfile()), so this same
+   relay logic works for any device type, not just MBC-2. */
 #define CAN_RELAY_FRAGMENT_SIZE 512
 
 /* Always-visible USB debug output for the relay, same idiom as Modem.cpp's
@@ -664,7 +666,9 @@ void Timberline::maybeQueryNewDevice(uint8_t type, uint8_t address) {
          request, answered by any device — see ProcessCanMessage's PGN=18
          case).
    2-3   erase each sector listed in modem.ota.eraseSectors[] in turn
-         (PGN=105 sub6), fetched from the target type's profile.txt.
+         (PGN=105 sub6) — or, if the published firmware carried no sector
+         list at all, one D[1]=255 "erase all" instead — fetched from the
+         target firmware's own profile (see Modem::doFetchProfile()).
    10-18 per-fragment loop, one CAN_RELAY_FRAGMENT_SIZE (512 byte) fragment
          at a time: set the bootloader's write address (sub0/1), stream the
          fragment as raw 8-byte PGN=106 frames (one per doCanRelay() tick —
@@ -695,8 +699,7 @@ void Timberline::doCanRelay(void) {
         if (canRelay.startRequested) {
             canRelay.startRequested = false;
             if (!modem.ota.stagedValid || modem.ota.stagedBytes == 0
-                || (modem.ota.stagedBytes % CAN_RELAY_FRAGMENT_SIZE) != 0
-                || modem.ota.eraseSectorCount == 0) {
+                || (modem.ota.stagedBytes % CAN_RELAY_FRAGMENT_SIZE) != 0) {
                 canRelay.status = RELAY_ERROR;
                 return;
             }
@@ -730,7 +733,7 @@ void Timberline::doCanRelay(void) {
                supports safely — not every one out there behaves the same,
                some are known unstable and must never be used for OTA (see
                Modem::lookupBootloaderAlgorithm()/bootloaderTable, fetched
-               from "/bootloaders.txt" alongside profile.txt). Algorithm 2
+               from "/bootloaders.txt" alongside the profile). Algorithm 2
                is the sequence implemented below (case 2 onward); anything
                else (0 = version not in the table, 1 = known unstable) is
                refused outright rather than attempting it and hoping. */
@@ -748,23 +751,30 @@ void Timberline::doCanRelay(void) {
             t = core.getTick();
         }
         break;
-    case 2:
+    case 2: {
         /* Erases every sector listed in modem.ota.eraseSectors[], one at a
-           time, not D[1]=255 ("erase all" — confirmed in the real
-           bootloader source, messages.cpp, this wipes sectors 2-7, not
-           just the ones the app lives in). The sector list itself comes
-           from the target device type's profile.txt on the server (see
-           Modem::doFetchProfile()) — flash layout, and which sectors are
-           safe to erase without touching settings/black-box data, is
-           specific to each device type/bootloader version, not something
-           this generic relay logic can assume. */
-        can.SendMessage(canId(105, 123, 0), 6,modem.ota.eraseSectors[eraseIndex], 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+           time — *unless* the profile published no list at all
+           (eraseSectorCount==0, see Modem::doFetchProfile()), in which case
+           this deliberately sends D[1]=255 ("erase all") instead, as a
+           single command. 255 used to be avoided here entirely — confirmed
+           in the real bootloader source (messages.cpp) it wipes sectors
+           2-7, not just wherever the app happens to live — so it's only
+           safe when whoever published this specific firmware file actually
+           confirmed the broader erase is fine for that device/bootloader
+           (that's what an *absent* sector list in the filename now means,
+           see host/README.md). An explicit list stays the precise,
+           narrowly-scoped way to erase — device-type/bootloader-version
+           specific, not something this generic relay logic can assume on
+           its own. */
+        uint8_t sectorToErase = (modem.ota.eraseSectorCount == 0) ? 255 : modem.ota.eraseSectors[eraseIndex];
+        can.SendMessage(canId(105, 123, 0), 6, sectorToErase, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
         canRelay.eraseGotResp = false;
         t = core.getTick();
         canRelay.retries = 0;
         step = 3;
-        logRelayInfoNum("erase sector sent", modem.ota.eraseSectors[eraseIndex]);
+        logRelayInfoNum("erase sector sent", sectorToErase);
         break;
+    }
     case 3:
         if (canRelay.eraseGotResp) {
             if (canRelay.eraseResult != 0) {
@@ -773,9 +783,9 @@ void Timberline::doCanRelay(void) {
                 else step = 2;
                 break;
             }
-            logRelayInfoNum("erase ok, sector", modem.ota.eraseSectors[eraseIndex]);
+            logRelayInfoNum("erase ok, sector", (modem.ota.eraseSectorCount == 0) ? 255 : modem.ota.eraseSectors[eraseIndex]);
             eraseIndex++;
-            if (eraseIndex < modem.ota.eraseSectorCount) { step = 2; }
+            if (modem.ota.eraseSectorCount != 0 && eraseIndex < modem.ota.eraseSectorCount) { step = 2; }
             else step = 10;
         } else if ((core.getTick() - t) >= 8000) {
             logRelayFail(3, "erase-timeout-retries", canRelay.retries, false);
@@ -1049,7 +1059,7 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
     }
     else if (!strcmp(name, "btnEco")) {
         /* PGN19, sub-packet 1 (D[0]=1), D[4] bits 4-5 — matches how it's read
-           back in ProcessCanMessage (PGN1 D[0]==2, D[4]>>4). */
+           back in ProcessCanMessage (PGN19, case 19, D[0]==1, D[4]>>4). */
         D[0] = 1; D[4] = (uint8_t)(0xCF | (bval << 4));
         sendToHcu(19, D);
     }
@@ -1122,6 +1132,26 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
         uint8_t targetType = (uint8_t)atoi(payload);
         uint8_t targetAddress = (uint8_t)atoi(colon + 1);
         timberline.startCanRelay(targetType, targetAddress);
+    }
+    else if (!strcmp(name, "selfOtaApply")) {
+        /* No payload needed — always applies whatever's in modem.selfOta
+           right now, same "review what's staged, then commit separately"
+           split as canRelayStart above. Refuses while a download is still
+           running, or nothing valid is staged. Setting BOOT_MAGIC_UPDATE
+           and resetting hands off to nations-bootloader's
+           ApplySelfOtaImage() (see that project's main.cpp) — it erases
+           and reflashes the app region from the self-OTA buffer, deriving
+           a real footer from modem.selfOta's own meta record, then boots
+           the result. A bad/incomplete image there is caught before
+           anything is touched (meta checksum + whole-image CRC16 mismatch
+           just cancels the update and boots the current app after the
+           bootloader's usual grace period) or leaves the device parked in
+           the bootloader's CAN-recovery loop if a flash write partway
+           through actually failed — never a silent brick either way. */
+        if (modem.ota.status == Modem::OTA_STAGING) return;
+        if (!modem.selfOta.stagedValid) return;
+        *(__IO uint32_t*)BOOT_MAGIC_ADDR = BOOT_MAGIC_UPDATE;
+        NVIC_SystemReset();
     }
     else {
         uint8_t     zoneNum;
@@ -1610,14 +1640,13 @@ void Timberline::mqttActualizerHandler(void) {
     static bool        prevHtr, prevElement, prevFloor, prevEngine;
     static uint8_t     prevFloorSp, prevEngineSp, prevSysTimeLimit;
     static uint16_t    prevEngineDur;
-    static zoneState_t prevZoneState[ZONE_COUNT];
-    static uint8_t     prevZoneDaySp[ZONE_COUNT], prevZoneNightSp[ZONE_COUNT], prevZoneFanPct[ZONE_COUNT];
-    static bool        prevZoneFanManual[ZONE_COUNT];
-    /* Hardware-presence mirror per zone — lets the web UI show only zones
-       connected as a regular (1) or radiator (3) user-controllable zone,
-       not unconnected (0) or defrost (2, always-on, not user-controllable).
-       Same idiom as floorConnected/engineConnected above. */
-    static int8_t      prevZoneConnected[ZONE_COUNT];
+    /* One combined "cmd/actual/zn<N>" topic per zone now (see the zone loop
+       below), not six — connected/state/daySp/nightSp/fanPct/fanManual
+       packed into one underscore-delimited string, so this only needs to
+       remember the last string actually published per zone to diff
+       against, not one array per field. currentTemp/fanCurrent stay out
+       of this — see the zone loop's own comment. */
+    static char        prevZoneCombined[ZONE_COUNT][32];
     /* Read-only mirrors — no known HCU write protocol yet, see mqtt-topic-scheme memory.
        StorageButton/mainHeaterNum deliberately excluded — not needed. */
     static bool        prevEco;
@@ -1639,6 +1668,10 @@ void Timberline::mqttActualizerHandler(void) {
     static char        prevStagedVersion[24];
     static bool        prevStagedValid;
     static uint8_t     prevStagedType;
+    /* Same idea, for the modem's own separate self-OTA buffer — see
+       Modem::selfOta and the "selfOtaStaged" publish below. */
+    static char        prevSelfStagedVersion[24];
+    static bool        prevSelfStagedValid;
     /* Hardware-presence mirrors, not user controls — lets the web UI hide
        btnFloor/btnEngine on systems that don't have that hardware. */
     static bool        prevFloorConnected, prevEngineConnected;
@@ -1692,52 +1725,41 @@ void Timberline::mqttActualizerHandler(void) {
         modem.mqttPublish("sysTimeLimit", buf);
     }
 
-    static const char* zoneStateStr[]        = {"off", "heat", "vent"};
-    static const char* zoneTopicState[]       = {"zn1/state","zn2/state","zn3/state","zn4/state","zn5/state"};
-    static const char* zoneTopicDaySp[]       = {"zn1/daySp","zn2/daySp","zn3/daySp","zn4/daySp","zn5/daySp"};
-    static const char* zoneTopicNightSp[]     = {"zn1/nightSp","zn2/nightSp","zn3/nightSp","zn4/nightSp","zn5/nightSp"};
-    static const char* zoneTopicFanPct[]      = {"zn1/fanPct","zn2/fanPct","zn3/fanPct","zn4/fanPct","zn5/fanPct"};
-    static const char* zoneTopicFanManual[]   = {"zn1/fanManual","zn2/fanManual","zn3/fanManual","zn4/fanManual","zn5/fanManual"};
-    static const char* zoneTopicConnected[]   = {"zn1/connected","zn2/connected","zn3/connected","zn4/connected","zn5/connected"};
+    static const char* zoneTopic[] = {"zn1","zn2","zn3","zn4","zn5"};
 
+    /* One "cmd/actual/zn<N>" per zone: "<connected>_<state>_<daySp>_
+       <nightSp>_<fanPct>_<fanManual>" — was six separate topics (30 across
+       5 zones, the single biggest chunk of the MQTT_PUB_MAX table, see its
+       comment in Modem.h), now one per zone (5 total). Deliberately does
+       NOT include currentTemp/fanCurrent — those stay in the separate
+       "telemetry" blob (see mqttTelemetryHandler()), which exists
+       specifically so *fast-changing* per-zone values go out as 1 packet
+       instead of many; folding them in here would mean every temperature
+       tick republishes all 5 zone topics too, undoing exactly what
+       telemetry buys (tried this first, reverted — see the memory/commit
+       history if curious). state is the raw zoneState_t ordinal
+       (0=off/1=heat/2=vent), not the old "off"/"heat"/"vent" string —
+       app.js maps it back for display.
+
+       connected always reflects reality even for a zone that isn't a real
+       user zone (0=not present, 2=defrost) — state/setpoints/fan fields
+       just hold whatever's already in RAM for those (typically stale/zero,
+       never written by the HCU for a slot that doesn't exist) rather than
+       a dedicated "N/A" sentinel; the web UI already gates all of that on
+       `connected` before displaying it, same as before. */
     for (int i = 0; i < ZONE_COUNT; i++) {
-        /* zoneConnected: 0=not present, 1=regular user zone, 2=defrost
-           (always-on, not user-controllable), 3=radiator zone (also a real
-           user-controllable zone, just a different heat-emitter type).
-           Only 1 and 3 have meaningful state/setpoints/fan data worth
-           publishing — 0 and 2 would otherwise leak stale/not-applicable
-           values for a slot that isn't a real user zone. */
-        bool isRegularZone = (zoneConnected[i] == 1 || zoneConnected[i] == 3);
-        bool wasRegularZone = (prevZoneConnected[i] == 1 || prevZoneConnected[i] == 3);
-        bool zoneJustConnected = isRegularZone && !wasRegularZone;
-
-        if (zoneConnected[i] != prevZoneConnected[i] || justConnected) {
-            prevZoneConnected[i] = zoneConnected[i];
-            sprintf(buf, "%d", zoneConnected[i]);
-            modem.mqttPublish(zoneTopicConnected[i], buf);
-        }
-        if (isRegularZone && (zoneStates[i] != prevZoneState[i] || justConnected || zoneJustConnected)) {
-            prevZoneState[i] = zoneStates[i];
-            modem.mqttPublish(zoneTopicState[i], zoneStates[i] <= vent ? zoneStateStr[zoneStates[i]] : "off");
-        }
-        if (isRegularZone && (zoneDaySetpoint[i] != prevZoneDaySp[i] || justConnected || zoneJustConnected)) {
-            prevZoneDaySp[i] = zoneDaySetpoint[i];
-            sprintf(buf, "%d", zoneDaySetpoint[i]);
-            modem.mqttPublish(zoneTopicDaySp[i], buf);
-        }
-        if (isRegularZone && (zoneNightSetpoint[i] != prevZoneNightSp[i] || justConnected || zoneJustConnected)) {
-            prevZoneNightSp[i] = zoneNightSetpoint[i];
-            sprintf(buf, "%d", zoneNightSetpoint[i]);
-            modem.mqttPublish(zoneTopicNightSp[i], buf);
-        }
-        if (isRegularZone && (zoneManualFanPercent[i] != prevZoneFanPct[i] || justConnected || zoneJustConnected)) {
-            prevZoneFanPct[i] = zoneManualFanPercent[i];
-            sprintf(buf, "%d", zoneManualFanPercent[i]);
-            modem.mqttPublish(zoneTopicFanPct[i], buf);
-        }
-        if (isRegularZone && (zoneFanManualMode[i] != prevZoneFanManual[i] || justConnected || zoneJustConnected)) {
-            prevZoneFanManual[i] = zoneFanManualMode[i];
-            modem.mqttPublish(zoneTopicFanManual[i], zoneFanManualMode[i] ? "1" : "0");
+        char combined[32];
+        sprintf(combined, "%d_%d_%d_%d_%d_%d",
+            zoneConnected[i],
+            (int)zoneStates[i],
+            zoneDaySetpoint[i],
+            zoneNightSetpoint[i],
+            zoneManualFanPercent[i],
+            zoneFanManualMode[i] ? 1 : 0);
+        if (strcmp(combined, prevZoneCombined[i]) != 0 || justConnected) {
+            strncpy(prevZoneCombined[i], combined, sizeof(prevZoneCombined[i]) - 1);
+            prevZoneCombined[i][sizeof(prevZoneCombined[i]) - 1] = 0;
+            modem.mqttPublish(zoneTopic[i], combined);
         }
     }
 
@@ -1806,6 +1828,19 @@ void Timberline::mqttActualizerHandler(void) {
         prevStagedType = modem.ota.deviceType;
         char tbuf[4]; int tn = appendUint(tbuf, 0, modem.ota.deviceType); tbuf[tn] = 0;
         modem.mqttPublish("otaStagedType", tbuf);
+    }
+    /* What's staged in the modem's own separate self-OTA buffer (see
+       Modem::selfOta in Modem.h) — independent of otaStaged/otaStagedType
+       above, which only ever describe the shared target-device buffer.
+       No "type" companion needed here (unlike otaStagedType): this is
+       always the modem's own firmware, never CAN-relayed. */
+    if (modem.selfOta.stagedValid != prevSelfStagedValid
+        || strcmp(modem.selfOta.stagedVersion, prevSelfStagedVersion) != 0
+        || justConnected) {
+        prevSelfStagedValid = modem.selfOta.stagedValid;
+        strncpy(prevSelfStagedVersion, modem.selfOta.stagedVersion, sizeof(prevSelfStagedVersion) - 1);
+        prevSelfStagedVersion[sizeof(prevSelfStagedVersion) - 1] = 0;
+        modem.mqttPublish("selfOtaStaged", modem.selfOta.stagedValid ? modem.selfOta.stagedVersion : "");
     }
     /* The modem's own firmware version (VERSION_1..4, a compile-time
        constant — see Version.h, same values already broadcast over CAN's
@@ -1890,12 +1925,19 @@ void Timberline::mqttActualizerHandler(void) {
    cmd/desired/telemetryInt — see onMqttCommandReceived() and
    Modem::telemetryIntervalSec) — unlike
    mqttActualizerHandler's fields above, these change too often for
-   diff-publishing to save anything, and the same interval × ~40 separate
-   flat topics would mean ~40× the AT+CMQTT command round-trips every cycle
+   diff-publishing to save anything, and the same interval × ~13 separate
+   flat topics would mean ~13× the AT+CMQTT command round-trips every cycle
    on top of ~5x the raw bytes (see mqtt-topic-scheme memory for the
    numbers this was sized against — traffic stays trivial either way at
    this interval, the real cost is AT round-trips sharing the modem's one
-   state machine with SMS/CSQ/CREG/command-echo handling). Byte layout:
+   state machine with SMS/CSQ/CREG/command-echo handling). Per-zone current
+   temp/fan speed live here (raw[7..16]), not in the "zn<N>" actual topics
+   (mqttActualizerHandler's zone loop) — deliberately: those two are the
+   fastest-changing fields of the bunch, and this blob exists specifically
+   so fast-changing values go out as 1 packet on a timer instead of many;
+   folding them into the 5 per-zone topics was tried and reverted — it
+   meant every temperature tick republishing all 5 zone topics too,
+   undoing exactly what this buys. Byte layout:
      0    tankTemperature (int8)
      1    heater Tliquid (int8)
      2-3  heater Voltage, tenths of a volt, big-endian (uint16 — same scale

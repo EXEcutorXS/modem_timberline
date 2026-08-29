@@ -25,9 +25,9 @@ const ICONS = {
     viewBox: '0 0 511.999 511.999', fill: true,
     path: '<path d="M494.32,196.801l-4.858-8.131h-85.516v39.564h-8.557v-57.371h-44.32l-28.138-24.95h-46.53v-22.695h14.966V89.827H172.742v33.391h14.966v22.695h-48.443l-28.138,24.95H55.791v16.696v66.236h-22.4v-42.616H0v118.625h33.391v-42.617h22.4v66.236v16.696h83.474l58.709,52.054h197.414v-58.444h8.557v39.565h85.516l4.858-8.132c1.81-3.027,17.68-31.537,17.68-99.181S496.13,199.829,494.32,196.801z M221.101,123.22h21.909v22.695h-21.909V123.22z M468.927,369.902h-31.59v-39.565h-75.34v58.444H210.646l-58.709-52.054H89.183V204.255h34.617l28.138-24.95h158.32l28.138,24.95h23.601v57.371h75.34v-39.564h31.59c3.873,11.386,9.681,34.956,9.681,73.921C478.609,334.947,472.801,358.516,468.927,369.902z"/>',
   },
-  /* fan-svgrepo-com.svg — zn<N>/connected==1 zones (have a fan). Corner
+  /* fan-svgrepo-com.svg — zn<N> zones with connected==1 (have a fan). Corner
      badge on the zone card, see renderZoneRow(); spins via CSS while the
-     zone's live fan speed (telemetry.zoneFanPwm) is nonzero. */
+     zone's live fan speed (parseZoneStatus()'s fanCurrent) is nonzero. */
   fan: {
     viewBox: '0 0 24 24', fill: true,
     path: '<path d="M12,11a1,1,0,1,0,1,1,1,1,0,0,0-1-1m.5-9C17,2,17.1,5.57,14.73,6.75a3.36,3.36,0,0,0-1.62,2.47,3.17,3.17,0,0,1,1.23.91C18,8.13,22,8.92,22,12.5c0,4.5-3.58,4.6-4.75,2.23a3.44,3.44,0,0,0-2.5-1.62,3.24,3.24,0,0,1-.91,1.23c2,3.69,1.2,7.66-2.38,7.66C7,22,6.89,18.42,9.26,17.24a3.46,3.46,0,0,0,1.62-2.45,3,3,0,0,1-1.25-.92C5.94,15.85,2,15.07,2,11.5,2,7,5.54,6.89,6.72,9.26A3.39,3.39,0,0,0,9.2,10.87a2.91,2.91,0,0,1,.92-1.22C8.13,6,8.92,2,12.48,2Z"/>',
@@ -70,6 +70,7 @@ const I18N = {
     otaNoVersions: 'No versions published', otaStatusStaging: 'Loading…',
     otaStatusError: 'Load failed', otaEmpty: 'Empty', otaLoadedPrefix: 'Loaded',
     otaNoDevicesFound: 'No devices seen on the bus yet', deviceTypePrefix: 'Type',
+    ownFirmware: 'Modem firmware',
     deviceAddressLabel: 'Address', deviceVersionLabel: 'version', modemVersionLabel: 'Modem version',
     canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
     canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
@@ -103,6 +104,7 @@ const I18N = {
     otaNoVersions: 'Нет опубликованных версий', otaStatusStaging: 'Загрузка…',
     otaStatusError: 'Ошибка загрузки', otaEmpty: 'Пусто', otaLoadedPrefix: 'Загружено',
     otaNoDevicesFound: 'На шине пока не видно устройств', deviceTypePrefix: 'Тип',
+    ownFirmware: 'Прошивка модема',
     deviceAddressLabel: 'Адрес', deviceVersionLabel: 'версия', modemVersionLabel: 'Версия модема',
     canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
     canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
@@ -136,6 +138,7 @@ const I18N = {
     otaNoVersions: 'Keine Version veröffentlicht', otaStatusStaging: 'Wird geladen…',
     otaStatusError: 'Laden fehlgeschlagen', otaEmpty: 'Leer', otaLoadedPrefix: 'Geladen',
     otaNoDevicesFound: 'Noch keine Geräte auf dem Bus gesehen', deviceTypePrefix: 'Typ',
+    ownFirmware: 'Modem-Firmware',
     deviceAddressLabel: 'Adresse', deviceVersionLabel: 'Version', modemVersionLabel: 'Modem-Version',
     canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
     canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
@@ -298,7 +301,15 @@ const connectedState = {};
 const rawStatus = {};
 
 /* Mirrors the 20-byte packed struct built in Timberline::mqttTelemetryHandler
-   (modem/User/Timberline.cpp) — byte-for-byte, keep the two in sync. */
+   (modem/User/Timberline.cpp) — byte-for-byte, keep the two in sync.
+   Per-zone current temp/fan speed live here (zoneFanPwm/zoneCurrentTemp),
+   not in the "zn<N>" actual topics (parseZoneStatus() below) — deliberately:
+   those two are the fastest-changing fields, and this blob exists
+   specifically so fast-changing values go out as 1 packet on a timer
+   instead of many; folding them into the 5 per-zone topics was tried and
+   reverted (see mqtt-topic-scheme memory) — it meant every temperature
+   tick republishing all 5 zone topics too, undoing exactly what this
+   buys. */
 function decodeTelemetry(b64) {
   try {
     const bin = atob(b64);
@@ -330,6 +341,36 @@ function decodeTelemetry(b64) {
     console.error('bad telemetry payload', e);
     return null;
   }
+}
+
+/* zn<N> ("cmd/actual/zn<N>") — one combined topic per zone, replacing what
+   used to be six (connected/state/daySp/nightSp/fanPct/fanManual). Payload:
+   "<connected>_<state>_<daySp>_<nightSp>_<fanPct>_<fanManual>" — state is
+   the firmware's raw zoneState_t ordinal (0/1/2), mapped back to
+   "off"/"heat"/"vent" here so every existing string comparison (zone menu,
+   CSS state-<x> class, pending/confirmed tracking keyed by the old
+   "zn<N>/state" desired-topic name) keeps working unchanged.
+   connected/daySp/nightSp/fanPct/fanManual stay strings too, same reason.
+   Deliberately does NOT include current temp/fan speed — those stay in
+   `telemetry` (see decodeTelemetry()'s comment). Returns null if nothing's
+   arrived yet for this zone, or the payload doesn't parse (e.g. a stale
+   value from before this format existed — never valid, same "don't guess"
+   precedent as elsewhere). */
+const ZONE_STATE_NAMES = ['off', 'heat', 'vent'];
+function parseZoneStatus(z) {
+  const raw = rawStatus[`zn${z}`];
+  if (raw === undefined) return null;
+  const parts = raw.split('_');
+  if (parts.length !== 6) return null;
+  const [connected, state, daySp, nightSp, fanPct, fanManual] = parts;
+  return {
+    connected,
+    state: ZONE_STATE_NAMES[Number(state)] || 'off',
+    daySp,
+    nightSp,
+    fanPct,
+    fanManual,
+  };
 }
 
 function $(id) { return document.getElementById(id); }
@@ -441,16 +482,16 @@ function publishLang(value) {
   mqttClient.publish(`${mqttUsername}/web/lang`, value, { retain: true });
 }
 
-/* zn<N>/connected mirrors Timberline::zoneConnected: 0 = not connected,
-   1 = dependent heater (has a fan), 2 = defrost (always-on, not
+/* zn<N>'s connected field mirrors Timberline::zoneConnected: 0 = not
+   connected, 1 = dependent heater (has a fan), 2 = defrost (always-on, not
    user-controllable), 3 = radiator (no fan). 1 and 3 are shown — matches
    the same filter the firmware's own "status" SMS reply uses. Default (no
    data yet) is "not shown", same pattern as floorConnected/engineConnected. */
 function connectedZones() {
   const zones = [];
   for (let z = 1; z <= ZONE_COUNT; z++) {
-    const c = rawStatus[`zn${z}/connected`];
-    if (c === '1' || c === '3') zones.push(z);
+    const zs = parseZoneStatus(z);
+    if (zs && (zs.connected === '1' || zs.connected === '3')) zones.push(z);
   }
   return zones;
 }
@@ -478,10 +519,11 @@ function renderZoneRow() {
   if (!zoneManuallySelected || !zones.includes(selectedZone)) selectedZone = zones[0] || null;
 
   zones.forEach((z) => {
+    const zs = parseZoneStatus(z);
     const temp = telemetry ? telemetry.zoneCurrentTemp[z - 1] : undefined;
-    const zoneType = rawStatus[`zn${z}/connected`];
+    const zoneType = zs ? zs.connected : undefined;
     const stateTopic = `zn${z}/state`;
-    const confirmedState = rawStatus[stateTopic];
+    const confirmedState = zs ? zs.state : undefined;
     let pendingState = desiredValues[stateTopic];
     /* Device caught up — stop tracking it as pending. */
     if (pendingState !== undefined && confirmedState !== undefined && pendingState === confirmedState) {
@@ -608,7 +650,7 @@ function renderDrums() {
   const container = $('drumRow');
   container.innerHTML = '';
 
-  const zoneType = selectedZone ? rawStatus[`zn${selectedZone}/connected`] : null;
+  const zoneType = selectedZone ? (parseZoneStatus(selectedZone) || {}).connected : null;
   const hasFan = zoneType !== '3';
   const drums = DRUMS.filter((d) => !d.isFan || hasFan);
 
@@ -769,9 +811,14 @@ function wireLongPress(el, onLongPress) {
 }
 
 function buildDrum(d) {
+  /* topicName/manualTopic are still the "cmd/desired/zn<N>/<prop>" paths —
+     that side is untouched (see zonePrefix() in Timberline.cpp), only the
+     *confirmed* value now comes from the combined "zn<N>" actual topic
+     (parseZoneStatus()) instead of its own dedicated one. */
   const topicName = selectedZone ? `zn${selectedZone}/${d.key}` : null;
   const manualTopic = selectedZone ? `zn${selectedZone}/fanManual` : null;
-  const confirmed = topicName ? rawStatus[topicName] : undefined;
+  const zs = selectedZone ? parseZoneStatus(selectedZone) : null;
+  const confirmed = zs ? zs[d.key] : undefined;
   let pending = topicName ? desiredValues[topicName] : undefined;
   /* Device caught up to what was requested — stop tracking it as pending. */
   if (pending !== undefined && confirmed !== undefined && pending === confirmed) {
@@ -780,7 +827,7 @@ function buildDrum(d) {
   }
   const isPending = pending !== undefined;
   const raw = isPending ? pending : confirmed;
-  const isAuto = !!d.isFan && !!selectedZone && rawStatus[manualTopic] !== '1';
+  const isAuto = !!d.isFan && !!selectedZone && (!zs || zs.fanManual !== '1');
 
   const drum = document.createElement('div');
   drum.className = 'drum' + (d.isFan && selectedZone ? (isAuto ? ' auto' : ' manual') : '');
@@ -1104,6 +1151,76 @@ async function fetchOtaVersionsForType(type) {
 
 let lastOtaStartType = null;
 
+/* The modem's own firmware — a fixed card, not one generated per seen CAN
+   device (see the big comment on selfOtaCard in index.html): downloads go
+   through the exact same otaStart/doOta() machinery as any device (see
+   Modem::doOta()'s "self" branch, modem/User/Modem.cpp), just with the
+   modem's own type as target and no CAN-relay "Flash" step afterward.
+   "Own type" is parsed from modemVersion's first dot-segment rather than
+   hardcoded here, so this keeps working if the modem's product type ever
+   changes. Staged-state comes from rawStatus.selfOtaStaged (published by
+   Timberline::mqttActualizerHandler from Modem::selfOta) — independent of
+   otaStaged/otaStagedType, which only ever describe the shared
+   target-device buffer. */
+function updateSelfOtaCard(status, staging) {
+  const card = $('selfOtaCard');
+  if (!card) return;
+  const ownType = rawStatus.modemVersion ? parseInt(rawStatus.modemVersion.split('.')[0], 10) : null;
+  if (!ownType) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+
+  fetchOtaVersionsForType(ownType); /* no-op once fetched/in flight for this type */
+
+  card.querySelector('#selfOtaTitle').textContent = t('ownFirmware');
+  card.querySelector('#selfOtaVersionLabel').textContent = t('otaVersion');
+  const loadBtn = card.querySelector('#selfOtaLoad');
+  loadBtn.textContent = t('otaUpdate');
+  if (!loadBtn.dataset.wired) {
+    loadBtn.dataset.wired = '1';
+    loadBtn.onclick = () => {
+      const v = card.querySelector('#selfOtaVersion').value;
+      if (!v || !mqttClient) return;
+      lastOtaStartType = ownType;
+      mqttClient.publish(`${mqttUsername}/cmd/desired/otaStart`, `${ownType}:${v}`);
+    };
+  }
+
+  const versions = otaVersionsByType[ownType];
+  const select = card.querySelector('#selfOtaVersion');
+  if (document.activeElement !== select) {
+    const prevValue = select.value;
+    select.innerHTML = '';
+    if (versions && versions.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = t('otaNoVersions');
+      select.appendChild(opt);
+    } else {
+      (versions || []).forEach((v) => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        select.appendChild(opt);
+      });
+    }
+    if (versions && versions.includes(prevValue)) select.value = prevValue;
+  }
+
+  const noVersions = !versions || versions.length === 0;
+  select.disabled = staging || noVersions;
+  loadBtn.disabled = staging || noVersions;
+
+  const isActiveTarget = lastOtaStartType === ownType;
+  const selfStagedValid = !!rawStatus.selfOtaStaged;
+  const statusEl = card.querySelector('#selfOtaStatus');
+  statusEl.className = (isActiveTarget && status === 'error') ? 'ota-error' : selfStagedValid ? 'ota-done' : '';
+  let text = '';
+  if (isActiveTarget && status === 'staging') text = `${t('otaStatusStaging')} ${rawStatus.otaProgress || ''}`;
+  else if (isActiveTarget && status === 'error') text = t('otaStatusError');
+  else text = selfStagedValid ? `${t('otaLoadedPrefix')} ${rawStatus.selfOtaStaged}` : t('otaEmpty');
+  statusEl.textContent = text;
+}
+
 function renderOtaPanel() {
   const modemVersionEl = $('modemVersionText');
   const listEl = $('deviceList');
@@ -1115,6 +1232,13 @@ function renderOtaPanel() {
      mqttActualizerHandler), so just show it verbatim once it arrives. */
   if (rawStatus.modemVersion) modemVersionEl.textContent = rawStatus.modemVersion;
 
+  const status = rawStatus.otaStatus; /* idle/staging/done/error, or undefined before the modem's first publish */
+  const staging = status === 'staging';
+
+  /* Self-firmware card doesn't depend on any CAN device having been seen —
+     update it unconditionally, before the early-return below. */
+  updateSelfOtaCard(status, staging);
+
   const devices = getSeenDevices();
   if (devices.length === 0) {
     listEl.innerHTML = '';
@@ -1123,8 +1247,6 @@ function renderOtaPanel() {
   }
   noneEl.textContent = '';
 
-  const status = rawStatus.otaStatus; /* idle/staging/done/error, or undefined before the modem's first publish */
-  const staging = status === 'staging';
   const relayStatus = rawStatus.canRelayStatus;
   const relayStaging = relayStatus === 'staging';
   const stagedType = rawStatus.otaStagedType ? parseInt(rawStatus.otaStagedType, 10) : null;

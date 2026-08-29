@@ -12,6 +12,24 @@
 #define MODEM_OTA_PAGE_SIZE   2048
 #define MODEM_OTA_PAGE_COUNT  104
 
+/* Kept in sync with flash.h's FLASH_SELF_OTA_PAGE_COUNT — see the
+   static_assert in Modem.cpp. Separate (smaller) page count from
+   MODEM_OTA_PAGE_COUNT above: the self-OTA buffer downloads this modem's
+   own firmware (see Modem::ota's deviceType == VERSION_1 branch in
+   doOta()) into nations-bootloader's own reserved 128 KB region instead of
+   the 208 KB target-device staging buffer. */
+#define MODEM_SELF_OTA_PAGE_COUNT  64
+
+/* Cap on ota.eraseSectors[]/OtaScratch's expanded sector list — the
+   profile's "eraseSectors=" value can now be several comma-separated
+   items, each a single sector or an inclusive "first-last" range (e.g.
+   "2,5-15"), expanded into individual sector numbers by
+   Modem::doFetchProfile(). 32 bytes of RAM comfortably covers any
+   realistic device's sector count with headroom; a published profile
+   that expands past this is simply truncated (doFetchProfile() logs it),
+   same "fail closed, don't guess" spirit as its other parse failures. */
+#define MODEM_MAX_ERASE_SECTORS  32
+
 /* Baked-in fallback broker — applied by flash.cpp's sanitizeString() when
    flash has never held a real value (genuinely erased, factory-fresh
    flash), and mirrored in the Modem constructor below for the in-RAM
@@ -19,7 +37,7 @@
    startAutoRegister()) without ever having been told a broker via SMS —
    "server <host>" still overrides it same as always. One default for now;
    picking between several per-region defaults is future work. */
-#define MODEM_DEFAULT_BROKER "multihot.duckdns.org"
+#define MODEM_DEFAULT_BROKER "multihot.online"
 
 class Modem {
 public:
@@ -92,7 +110,7 @@ public:
     } mqtt;
 
     /* MBC-2 firmware OTA — see doOta() in Modem.cpp. Downloads
-       firmware/<version>/{firmware.crc32,firmware.bin} from the same host
+       firmware/<version>/{firmware.crc16,firmware.bin} from the same host
        as mqtt.broker over plain HTTP (AT+HTTPREAD), stages it page-by-page
        in this modem's own spare flash (FLASH_OTA_BUF_ADDR, see flash.h),
        verifying each page before writing it. The actual CAN relay onto
@@ -119,29 +137,66 @@ public:
 
         /* Which device type this staged image is for, and the flash layout
            to use when relaying it over CAN (see doCanRelay() in
-           Timberline.cpp) — fetched from "/firmware/<type>/profile.txt" by
-           doFetchProfile() right before the firmware download itself (see
-           ST_FETCH_PROFILE). Replaces the old MBC-2-only hardcoded
-           MBC2_APP_FLASH_BASE/sector-5-then-6 sequence, so a new device
-           type only needs a new profile.txt on the server, no modem
-           reflash. RAM-only, not persisted to flash alongside
-           stagedVersion/stagedBytes above — a reboot between "staged" and
-           "relay" loses this and needs a fresh otaStart (which re-fetches
-           the profile anyway), same as any other in-progress state this
-           firmware doesn't carry across a reset. */
+           Timberline.cpp) — fetched from "/firmware/<type>/<version>/profile"
+           by doFetchProfile() right before the firmware download itself
+           (see ST_FETCH_PROFILE). The server derives this on the fly from
+           the published firmware file's own name (see
+           host/README.md — "<version>_<flashBaseHex>[_<sectors>].bin",
+           no separate profile.txt/per-type file to keep in sync anymore),
+           so a new device type or a new flash layout for an existing one
+           only needs the right filename, no modem reflash. RAM-only, not
+           persisted to flash alongside stagedVersion/stagedBytes above — a
+           reboot between "staged" and "relay" loses this and needs a fresh
+           otaStart (which re-fetches the profile anyway), same as any
+           other in-progress state this firmware doesn't carry across a
+           reset.
+
+           eraseSectorCount==0 is a valid state now, not an error — it
+           means the published filename carried no sector list at all
+           ("erase the whole program region" — either because the target
+           bootloader is new enough to erase just its own program natively
+           without being told sectors, or because whoever published this
+           particular firmware confirmed the broad "erase everything"
+           command is safe for it). doCanRelay() branches on this — see its
+           own comment. */
         uint8_t   deviceType;
         uint32_t  flashBase;
-        uint8_t   eraseSectors[4];
+        uint8_t   eraseSectors[MODEM_MAX_ERASE_SECTORS];
         uint8_t   eraseSectorCount;
     } ota;
     void startOta(uint8_t deviceType, const char* version);  /* called from onMqttCommandReceived() */
+
+    /* This modem's own firmware — same download/verify machinery as ota
+       above (startOta() called with deviceType == VERSION_1, this modem's
+       own OmniProtocol product type — see doIdle()/doOta() branching on
+       that), just landing in the separate self-OTA region
+       nations-bootloader reserves for itself (FLASH_SELF_OTA_BUF_ADDR, see
+       flash.h) instead of the shared target-device buffer. A deliberately
+       separate struct, not folded into ota above: the two buffers are
+       physically independent flash regions and can each hold a genuinely
+       different staged image at the same time, so "what's staged for a
+       target device" and "what's staged for the modem itself" need to be
+       tracked (and shown in the web UI) independently. ota.status/page/
+       pageTotal above stay shared/global either way — only one HTTP
+       download can be in flight at once regardless of which buffer it's
+       headed for. Refreshed the same way as ota.stagedValid/... (see
+       refreshStagedInfo()). Actually *applying* a staged self-image
+       (rebooting into nations-bootloader and having it flash
+       MAIN_PROGRAM_START_ADDRESS from here) isn't implemented yet on the
+       bootloader side — out of scope here, a later task, same as the
+       target-device buffer originally was (see flash.h). */
+    struct SelfOtaState {
+        bool      stagedValid;
+        char      stagedVersion[24];
+        uint32_t  stagedBytes;
+    } selfOta;
 
     /* Bootloader "algorithm" table — which PGN105/106 command sequence a
        given bootloader version actually supports safely, since not every
        bootloader out there behaves the same (some are known unstable and
        must never be used for OTA). Fetched from "/bootloaders.txt" (the
        whole table, not per-device — bootloader identity is independent of
-       which device type it's flashing) right alongside profile.txt, see
+       which device type it's flashing) right alongside the profile, see
        doFetchProfile(). Timberline::doCanRelay() looks up the bootloader's
        own announced version (from its PGN=18 reply, see
        ProcessCanMessage()'s case 123) via lookupBootloaderAlgorithm() once
@@ -152,7 +207,7 @@ public:
            flash/verify via PGN105 sub0-7), safe on every bootloader tested
            so far.
        A missing/unreachable bootloaders.txt does NOT fail the OTA download
-       itself (unlike profile.txt) — it just leaves the table empty, so any
+       itself (unlike the profile) — it just leaves the table empty, so any
        later CAN relay attempt safely refuses (unknown algorithm) rather
        than guessing. */
     struct BootloaderEntry { uint8_t version[4]; uint8_t algorithm; };
@@ -404,15 +459,28 @@ private:
        will ever publish, not just how many can be dirty at once (though
        those happen to coincide today: justConnected in Timberline.cpp
        forces every mqttActualizerHandler field dirty on one pass, which is
-       the same worst case). Currently ~50: mqttActualizerHandler's ~47
-       (control mirrors + zn<N>/... + errors) + "telemetry" + "linkToken" +
-       "online" (published once per connect from doMqttStart(); the "0"
-       farewell in doMqttTeardown() is a one-off AT sequence, not queued
-       through here). A
-       full queue silently drops whatever doesn't fit. Kept with headroom
-       above that count since it's cheap (a few dozen bytes per extra slot)
-       and this count only ever grows as more fields get wired up. */
-    enum { MQTT_PUB_MAX = 56 };
+       the same worst case). A full queue silently drops whatever doesn't
+       fit — no error, no log, the name just never gets a slot and every
+       future mqttPublish() for it is a silent no-op forever (confirmed
+       root cause of a real "btnEco confirmation never arrives" report:
+       the table was full by the time btnEco's slot got requested). Count,
+       as of this writing:
+         - mqttActualizerHandler's own non-zone fields: 28 (control mirrors,
+           OTA/self-OTA/CAN-relay status, versions, errors, etc.)
+         - "zn<N>" (one combined topic per zone now, not six — see the zone
+           loop's own comment): 5
+         - "telemetry"/"linkToken"/"online" (doMqttStart()/publishLinkToken()/
+           mqttTelemetryHandler(), not mqttActualizerHandler): 3
+         - "dev<type>_<addr>" (Timberline::recordSeenDevice(), one per
+           distinct CAN device ever seen — a *different* function, easy to
+           forget when eyeballing mqttActualizerHandler alone, which is
+           exactly how this went stale before): up to SEEN_DEVICE_MAX (8)
+       = 44 worst case. Kept well above that (was raised to 96 when the
+       zn<N> topics were still 30 of the count, before they got collapsed
+       to one-per-zone — left at 96 rather than shrunk back down, since
+       headroom is cheap and this count only ever grows as more fields get
+       wired up). */
+    enum { MQTT_PUB_MAX = 96 };
     struct MqttPubEntry {
         char name[16];
         /* Must fit the largest single payload: the "errors" CSV topic's
@@ -466,7 +534,7 @@ private:
                                         once doFetchProfile() actually confirms a profile
                                         exists for it, see ST_FETCH_PROFILE */
         char     version[24];
-        uint32_t pageCrc[MODEM_OTA_PAGE_COUNT]; /* target CRC32 per page, from firmware.crc32 */
+        uint16_t pageCrc[MODEM_OTA_PAGE_COUNT]; /* target CRC16 per page, from firmware.crc16 */
         uint8_t  retries;
         bool     failed;
         uint8_t  chunkBuf[MODEM_OTA_PAGE_SIZE];  /* raw bytes just downloaded for the current page */

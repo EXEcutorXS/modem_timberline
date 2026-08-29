@@ -58,16 +58,46 @@
    of it. */
 #define FLASH_OTA_META_ADDR             (FLASH_OTA_BUF_ADDR - FLASH_PAGE_SIZE)
 
-/* Software CRC32 (poly 0xEDB88320, standard zlib/PKZIP/IEEE 802.3 reflected
-   variant) — shared by Flash_C::crc32OtaPage() (Library/Flash/flash.cpp)
-   and Modem::doOta() (modem/User/Modem.cpp, verifying a freshly-downloaded
-   HTTPREAD chunk before it's written to flash), so both use the exact same
-   implementation instead of two copies that could silently drift apart.
-   Matches host/tools/make_firmware_crc.js's independent JS implementation
-   of the same standard algorithm. len is uint32_t (not uint16_t) so it can
-   cover the whole staged OTA image (up to 128 KB) in one call, not just a
-   single page. */
-uint32_t flashCrc32(const uint8_t* data, uint32_t len);
+/* Self-OTA staging area — THIS modem's own new firmware image, downloaded
+   and page-verified the exact same way as a target device's image above
+   (see Modem::doOta(), branching on otaScratch.deviceType == VERSION_1),
+   but kept in a completely separate region: the one nations-bootloader
+   itself reserves below its own APP_REGION_START for exactly this purpose
+   (see that project's User/Main/version.h memory map — 0x0800A000, right
+   after the bootloader's own ~38 KB code and its footer page). Sized
+   128 KB to match MAIN_PROGRAM_MAX_SIZE there (this app's own code budget).
+
+   Only covers downloading+staging here — nations-bootloader doesn't yet
+   read this buffer/footer to actually (re)flash MAIN_PROGRAM_START_ADDRESS
+   from it (still "currently unused, reserved" on that side); applying a
+   staged self-image is a later task, same as the CAN-relay buffer above
+   originally was. */
+#define FLASH_SELF_OTA_BUF_ADDR         0x0800A000
+#define FLASH_SELF_OTA_BUF_SIZE         (128*1024)
+#define FLASH_SELF_OTA_PAGE_COUNT       (FLASH_SELF_OTA_BUF_SIZE / FLASH_PAGE_SIZE)
+
+/* One page, immediately below the self-image buffer — same footer-below-
+   buffer layout as FLASH_OTA_META_ADDR above, and matches
+   nations-bootloader's own memory map (0x08009800, right below its
+   0x0800A000 image buffer). */
+#define FLASH_SELF_OTA_META_ADDR        (FLASH_SELF_OTA_BUF_ADDR - FLASH_PAGE_SIZE)
+
+/* Software CRC16 (Modbus/CRC-16-ANSI: poly 0xA001, init 0xFFFF, no final
+   XOR) — the SAME algorithm this org uses everywhere else a firmware image
+   gets checksummed: nations-bootloader's own calcCrc() (validates the
+   app's footer on every boot) and every bootloader's PGN=105/106 CAN-relay
+   verify step. Previously this was a separate CRC32 (zlib/PKZIP) used only
+   for the HTTP-download integrity check — replaced with this one so the
+   OTA download path checks against the exact same algorithm the hardware
+   already trusts, instead of a second, unrelated one that happened to also
+   catch corruption. Shared by Flash_C::crc16OtaPage()/crc16SelfOtaPage()
+   (Library/Flash/flash.cpp) and Modem::doOta() (modem/User/Modem.cpp,
+   verifying a freshly-downloaded HTTPREAD chunk before it's written to
+   flash). len is uint32_t (not uint16_t) so it can cover a whole staged
+   OTA image in one call, not just a single page — see
+   nations-bootloader's ApplySelfOtaImage() (main.cpp), which does exactly
+   that against the self-OTA meta's totalCrc16. */
+uint16_t flashCrc16(const uint8_t* data, uint32_t len);
 
 /* Classes --------------------------------------------------------*/
 class Flash_C
@@ -90,25 +120,45 @@ class Flash_C
            dropped error here means flashing a bad image onto MBC-2. */
         bool     writeOtaPage(uint16_t pageIndex, const uint8_t* data);
         void     readOtaPage(uint16_t pageIndex, uint8_t* outBuf);
-        uint32_t crc32OtaPage(uint16_t pageIndex);
+        uint16_t crc16OtaPage(uint16_t pageIndex);
 
         /* Describes whatever is currently sitting in the OTA staging dump —
-           version string, byte length actually staged, CRC32 over that
+           version string, byte length actually staged, CRC16 over that
            whole span — written once a download finishes with every page
            individually verified (see Modem::doOta()'s cleanup step), so a
            later CAN relay onto MBC-2 (or a reboot in between) can tell
            what's really in the buffer instead of trusting stale RAM state
            or 128 KB of possibly-unrelated bytes. readOtaMeta() returns
-           false (outVersion/outTotalBytes/outTotalCrc32 left untouched) if
+           false (outVersion/outTotalBytes/outTotalCrc16 left untouched) if
            the sector is erased or its checksum doesn't match — same
            "erased flash reads as invalid, not garbage" contract as
            readSetup(). version must point at a buffer of at least 24 bytes
            (matches Modem::OtaScratch::version's own size). */
-        bool     writeOtaMeta(const char* version, uint32_t totalBytes, uint32_t totalCrc32);
-        bool     readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint32_t* outTotalCrc32);
+        bool     writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16);
+        bool     readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16);
+
+        /* Self-OTA staging area (see FLASH_SELF_OTA_BUF_ADDR above) — same
+           contract as writeOtaPage()/readOtaPage()/crc16OtaPage()/
+           writeOtaMeta()/readOtaMeta() above, just against the modem's own
+           separate image buffer/footer instead of the target-device one.
+           pageIndex is 0..FLASH_SELF_OTA_PAGE_COUNT-1. */
+        bool     writeSelfOtaPage(uint16_t pageIndex, const uint8_t* data);
+        void     readSelfOtaPage(uint16_t pageIndex, uint8_t* outBuf);
+        uint16_t crc16SelfOtaPage(uint16_t pageIndex);
+        bool     writeSelfOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16);
+        bool     readSelfOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16);
 
     private:
-        
+        /* Shared implementation behind writeOtaPage()/writeSelfOtaPage() etc.
+           above — the two staging areas differ only in base address and page
+           count, and the actual FLASH_Unlock()/EraseOnePage()/ProgramWord()
+           sequence is exactly the same either way; keeping one implementation
+           here means the two public pairs can't silently drift apart. */
+        bool     writePageAt(uint32_t bufAddr, uint16_t pageCount, uint16_t pageIndex, const uint8_t* data);
+        void     readPageAt(uint32_t bufAddr, uint16_t pageCount, uint16_t pageIndex, uint8_t* outBuf);
+        uint16_t crc16PageAt(uint32_t bufAddr, uint16_t pageCount, uint16_t pageIndex);
+        bool     writeMetaAt(uint32_t metaAddr, const char* version, uint32_t totalBytes, uint16_t totalCrc16);
+        bool     readMetaAt(uint32_t metaAddr, char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16);
 
 };
 extern Flash_C flash;

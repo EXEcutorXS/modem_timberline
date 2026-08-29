@@ -4,6 +4,7 @@
 #include "log.h"
 #include "operator_names.h"
 #include "flash.h"
+#include "Version.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -15,6 +16,7 @@ Modem   modem;
    FLASH_PAGE_SIZE/FLASH_OTA_PAGE_COUNT. */
 typedef char OtaPageSizeCheck[(MODEM_OTA_PAGE_SIZE == FLASH_PAGE_SIZE) ? 1 : -1];
 typedef char OtaPageCountCheck[(MODEM_OTA_PAGE_COUNT == FLASH_OTA_PAGE_COUNT) ? 1 : -1];
+typedef char SelfOtaPageCountCheck[(MODEM_SELF_OTA_PAGE_COUNT == FLASH_SELF_OTA_PAGE_COUNT) ? 1 : -1];
 
 
 extern "C" void USART1_IRQHandler(void) {
@@ -142,9 +144,13 @@ void Modem::initialize(void) {
    time the flash contents might have changed — right after boot and right
    after doOta() finishes. */
 void Modem::refreshStagedInfo(void) {
-    uint32_t crcUnused;
+    uint16_t crcUnused;
     ota.stagedValid = flash.readOtaMeta(ota.stagedVersion, &ota.stagedBytes, &crcUnused);
     if (!ota.stagedValid) { ota.stagedVersion[0] = 0; ota.stagedBytes = 0; }
+
+    uint16_t selfCrcUnused;
+    selfOta.stagedValid = flash.readSelfOtaMeta(selfOta.stagedVersion, &selfOta.stagedBytes, &selfCrcUnused);
+    if (!selfOta.stagedValid) { selfOta.stagedVersion[0] = 0; selfOta.stagedBytes = 0; }
 }
 
 /* ── handler ─────────────────────────────────────────────────────────── */
@@ -551,7 +557,7 @@ void Modem::parseLine(void) {
     }
     else if (starts(s,"+HTTPACTION: ")) {
         /* +HTTPACTION: <method>,<status>,<datalen> — status is 2nd field.
-           datalen (3rd field) is only used by doOta() (to size firmware.crc32's
+           datalen (3rd field) is only used by doOta() (to size firmware.crc16's
            one-shot read) — parsed here unconditionally anyway since it's free
            and doCheckInternet() just ignores http.dataLen. */
         const char* p = s + 13;
@@ -797,7 +803,12 @@ void Modem::doIdle(void) {
         ota.status = OTA_STAGING;
         ota.page = 0;
         otaScratch.failed = false;
-        setState(ST_FETCH_PROFILE);
+        /* deviceType == VERSION_1: this modem's own firmware, not a
+           CAN-relay target — skip ST_FETCH_PROFILE entirely (the profile/
+           bootloaders.txt only exist to tell doCanRelay() a target's flash
+           layout and safe bootloader algorithm; the self-OTA buffer has no
+           CAN relay step) and go straight to the download. */
+        setState(otaScratch.deviceType == VERSION_1 ? ST_OTA : ST_FETCH_PROFILE);
         return;
     }
 
@@ -1801,7 +1812,7 @@ void Modem::doMqttTeardown(void) {
 }
 
 /* ── OTA (MBC-2 firmware staging) ────────────────────────────────────────
-   Downloads firmware/mbc2/<version>/{firmware.crc32,firmware.bin} from the
+   Downloads firmware/mbc2/<version>/{firmware.crc16,firmware.bin} from the
    same host as mqtt.broker, plain HTTP on port 3000 (bypassing nginx/TLS —
    this AT+HTTP stack is only proven against plain http:// so far, see
    internet.internetCheckUrl's own default; unlike the getlink URL, this is fetched
@@ -1991,10 +2002,10 @@ static void buildOtaUrl(char* out, const char* mqttBroker, uint8_t deviceType, c
     out[n] = 0;
 }
 
-/* Builds "http://<mqttBroker>:3000/firmware/<deviceType>/profile.txt" —
-   fetched by doFetchProfile() before the firmware image itself. Same
-   plain-HTTP, port-3000, bypass-nginx path as buildOtaUrl() above (see its
-   comment) — not a per-version file, one profile per device type. */
+/* Builds "http://<mqttBroker>:3000/bootloaders.txt" — fetched by
+   doFetchProfile() right after the profile itself. Same plain-HTTP,
+   port-3000, bypass-nginx path as buildOtaUrl() above (see its comment) —
+   one shared table, not per-type/per-version like the profile is. */
 static void buildBootloaderTableUrl(char* out, const char* mqttBroker) {
     int n = 0;
     const char* pre = "http://";
@@ -2042,34 +2053,31 @@ void Modem::parseBootloaderTable(const char* buf) {
     }
 }
 
-static void buildProfileUrl(char* out, const char* mqttBroker, uint8_t deviceType) {
-    int n = 0;
-    const char* pre = "http://";
-    while (*pre) out[n++] = *pre++;
-    for (const char* p = mqttBroker; *p && n < 150; ) out[n++] = *p++;
-    const char* mid = ":3000/firmware/";
-    while (*mid && n < 150) out[n++] = *mid++;
-    n = appendUint(out, n, deviceType);
-    const char* suf = "/profile.txt";
-    for (const char* p = suf; *p && n < 155; ) out[n++] = *p++;
-    out[n] = 0;
-}
-
-/* Fetches "/firmware/<otaScratch.deviceType>/profile.txt" and parses it into
-   ota.flashBase/eraseSectors/eraseSectorCount — the per-device-type flash
+/* Fetches "/firmware/<otaScratch.deviceType>/<otaScratch.version>/profile"
+   (built with buildOtaUrl() above — same "<type>/<version>/<filename>"
+   shape as the firmware image itself, no separate URL builder needed) and
+   parses it into ota.flashBase/eraseSectors/eraseSectorCount — the flash
    layout doCanRelay() needs (base address, which sectors are safe to erase
-   without wiping settings/black-box) that used to be the hardcoded
-   MBC2_APP_FLASH_BASE/"sector 5 then 6" pair in Timberline.cpp. Runs once,
-   right before doOta() fetches the firmware image itself (see
-   ST_FETCH_PROFILE in doIdle()) — same proven HTTPINIT/HTTPPARA/
+   without wiping settings/black-box). Per-*version* now, not per-type: the
+   server derives this on the fly from the matched firmware file's own
+   name (see host/README.md), so different versions of the same device
+   type can carry different flash layouts (e.g. a gen2-bootloader build
+   needing an explicit sector list vs. a gen3 one that doesn't) without a
+   shared file going stale. Runs once, right before doOta() fetches the
+   firmware image itself (see ST_FETCH_PROFILE in doIdle()) — same proven
+   HTTPINIT/HTTPPARA/
    HTTPACTION/HTTPREAD(x2)/HTTPTERM sequence as doOta()'s own
-   firmware.crc32 fetch below, just against a much smaller plain-text file
+   firmware.crc16 fetch below, just against a much smaller plain-text file
    instead of a binary CRC array. Expected format, one KEY=VALUE per line:
      flashBase=0x08020000
      eraseSectors=5,6
-   A profile.txt that's missing, unreachable, or malformed fails the whole
-   otaStart the same way a missing firmware.crc32 already does — there's no
-   safe default flash layout to fall back to for an unknown device type. */
+   eraseSectors accepts comma-separated single numbers and/or inclusive
+   "first-last" ranges (e.g. "2,5-15"), and the whole line is optional —
+   see the parser below for what its absence means. A profile that's
+   missing, unreachable, or has a present-but-malformed field fails the
+   whole otaStart the same way a missing firmware.crc16 already does —
+   there's no safe default flash layout to fall back to for an unknown
+   device type/version. */
 void Modem::doFetchProfile(void) {
     static char cmd[192];
     static char url[160];
@@ -2081,7 +2089,7 @@ void Modem::doFetchProfile(void) {
     switch (step) {
     case 0: if (atCmd("AT+HTTPINIT\r\n", 2000)) step++; break;
     case 1: {
-        buildProfileUrl(url, mqtt.broker, otaScratch.deviceType);
+        buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "profile");
         int n = 0;
         const char* pre = "AT+HTTPPARA=\"URL\",\"";
         while (*pre) cmd[n++] = *pre++;
@@ -2135,7 +2143,7 @@ void Modem::doFetchProfile(void) {
             /* Hand-rolled KEY=VALUE scan — no sscanf/JSON parser anywhere in
                this firmware, same style as the rest of the AT-response
                parsing in this file. */
-            bool gotBase = false, gotSectors = false;
+            bool gotBase = false;
             const char* baseKey = strstr(profileBuf, "flashBase=");
             if (baseKey) {
                 const char* p = baseKey + 10;  /* strlen("flashBase=") */
@@ -2151,19 +2159,45 @@ void Modem::doFetchProfile(void) {
                 }
                 if (any) { ota.flashBase = v; gotBase = true; }
             }
+            /* eraseSectors= is optional now — its absence is a valid state
+               (eraseSectorCount stays 0, meaning "erase the whole program
+               region", see doCanRelay()), not a parse failure. When
+               present, each comma-separated item is either a bare sector
+               number or an inclusive "first-last" range (e.g.
+               "2,5-15") — expanded here into individual sector bytes so
+               doCanRelay()'s per-sector erase loop doesn't need to know
+               about ranges at all. Only a *malformed* eraseSectors= (the
+               key is there but nothing valid parses out of it) fails the
+               profile — same as a bad/missing flashBase. */
+            ota.eraseSectorCount = 0;
+            bool sectorsOk = true;
             const char* secKey = strstr(profileBuf, "eraseSectors=");
             if (secKey) {
                 const char* p = secKey + 13;  /* strlen("eraseSectors=") */
                 uint8_t count = 0;
-                while (*p && *p != '\n' && *p != '\r' && count < 4) {
+                bool any = false;
+                while (*p && *p != '\n' && *p != '\r' && count < MODEM_MAX_ERASE_SECTORS) {
                     if (*p < '0' || *p > '9') { p++; continue; }
-                    uint32_t v = 0;
-                    while (*p >= '0' && *p <= '9') { v = v * 10 + (uint8_t)(*p - '0'); p++; }
-                    ota.eraseSectors[count++] = (uint8_t)v;
+                    uint32_t first = 0;
+                    while (*p >= '0' && *p <= '9') { first = first * 10 + (uint8_t)(*p - '0'); p++; }
+                    uint32_t last = first;
+                    if (*p == '-') {
+                        p++;
+                        uint32_t v = 0; bool anyDigit = false;
+                        while (*p >= '0' && *p <= '9') { v = v * 10 + (uint8_t)(*p - '0'); p++; anyDigit = true; }
+                        if (anyDigit) last = v;
+                    }
+                    if (last < first) { uint32_t tmp = first; first = last; last = tmp; } /* defensive — malformed "b-a" */
+                    for (uint32_t s = first; s <= last && count < MODEM_MAX_ERASE_SECTORS; s++) {
+                        ota.eraseSectors[count++] = (uint8_t)s;
+                        any = true;
+                    }
+                    if (*p == ',') p++;
                 }
-                if (count > 0) { ota.eraseSectorCount = count; gotSectors = true; }
+                ota.eraseSectorCount = count;
+                if (!any) sectorsOk = false;
             }
-            if (!gotBase || !gotSectors) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
+            if (!gotBase || !sectorsOk) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
             else { ota.deviceType = otaScratch.deviceType; logOtaInfoNum("profile flashBase", ota.flashBase); logOtaInfoNum("profile eraseSectorCount", ota.eraseSectorCount); }
             step = 6;
         } else if ((core.getTick() - t) >= 8000) {
@@ -2175,15 +2209,15 @@ void Modem::doFetchProfile(void) {
         break;
     }
     /* Steps 6-10: fetch+parse "/bootloaders.txt" — the same HTTPINIT
-       session as profile.txt above, just a second HTTPPARA/HTTPACTION
-       cycle (same pattern doOta() uses for crc32-then-bin, no HTTPTERM/
-       HTTPINIT needed in between). Unlike profile.txt, a failure here does
+       session as the profile fetch above, just a second HTTPPARA/HTTPACTION
+       cycle (same pattern doOta() uses for crc16-then-bin, no HTTPTERM/
+       HTTPINIT needed in between). Unlike the profile, a failure here does
        NOT fail otaScratch/the whole OTA — the firmware download itself
        doesn't need this table, only the later CAN relay does (see
        Modem::lookupBootloaderAlgorithm()), and an empty table just makes
-       that step safely refuse rather than guess. Skipped entirely if
-       profile.txt itself already failed — no point spending a second HTTP
-       round-trip once otaScratch.failed is already true. */
+       that step safely refuse rather than guess. Skipped entirely if the
+       profile fetch itself already failed — no point spending a second
+       HTTP round-trip once otaScratch.failed is already true. */
     case 6: {
         if (otaScratch.failed) { step = 13; break; }
         buildBootloaderTableUrl(url, mqtt.broker);
@@ -2260,7 +2294,15 @@ void Modem::doOta(void) {
     static char url[160];
     static uint32_t t = 0;
 
-    /* Steps: 0-5 fetch+parse firmware.crc32 (one small HTTPACTION+HTTPREAD).
+    /* deviceType == VERSION_1: this modem's own firmware, staged into the
+       separate self-OTA buffer (FLASH_SELF_OTA_BUF_ADDR, see flash.h)
+       instead of the shared target-device one — same download/verify loop
+       below either way, just pointed at a different (smaller) flash region
+       via these two locals. */
+    const bool     self     = (otaScratch.deviceType == VERSION_1);
+    const uint16_t maxPages = self ? MODEM_SELF_OTA_PAGE_COUNT : MODEM_OTA_PAGE_COUNT;
+
+    /* Steps: 0-5 fetch+parse firmware.crc16 (one small HTTPACTION+HTTPREAD).
        6 scans all pages already in flash against it — if everything already
        matches (resuming a finished run, or restarting an unchanged version),
        skips straight to 20 without touching the network at all. Otherwise
@@ -2290,7 +2332,7 @@ void Modem::doOta(void) {
     switch (step) {
     case 0: if (atCmd("AT+HTTPINIT\r\n", 2000)) step++; break;
     case 1: {
-        buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "firmware.crc32");
+        buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "firmware.crc16");
         int n = 0;
         const char* pre = "AT+HTTPPARA=\"URL\",\"";
         while (*pre) cmd[n++] = *pre++;
@@ -2315,10 +2357,10 @@ void Modem::doOta(void) {
         } else if ((core.getTick() - t) >= 20000) { logOtaFail(3, "crc-http-timeout", 0); otaScratch.failed = true; step = 20; }
         break;
     case 4: {
-        /* Clamp to otaScratch.pageCrc's capacity (MODEM_OTA_PAGE_COUNT*4 bytes) —
-           a firmware.crc32 bigger than that would mean an image bigger than
-           the 128 KB staging area can hold, which is a server-side mistake,
-           not something to crash over here. */
+        /* Clamp to otaScratch.pageCrc's capacity (MODEM_OTA_PAGE_COUNT*2 bytes) —
+           a firmware.crc16 bigger than that would mean an image bigger than
+           the staging area can hold, which is a server-side mistake, not
+           something to crash over here. */
         uint16_t len = http.dataLen;
         if (len > sizeof(otaScratch.pageCrc)) len = sizeof(otaScratch.pageCrc);
         otaScratch.readLen = len;
@@ -2347,8 +2389,8 @@ void Modem::doOta(void) {
         if (answer & ANS_HTTPREAD_DONE) {
             rawCapture.dst = 0;
             if (rawCapture.got != len) { logOtaFail(5, "crc-len-mismatch", rawCapture.got); otaScratch.failed = true; step = 20; break; }
-            ota.pageTotal = (uint16_t)(rawCapture.got / 4);
-            if (ota.pageTotal > MODEM_OTA_PAGE_COUNT) ota.pageTotal = MODEM_OTA_PAGE_COUNT;
+            ota.pageTotal = (uint16_t)(rawCapture.got / 2);
+            if (ota.pageTotal > maxPages) ota.pageTotal = maxPages;
             ota.page = 0;
             logOtaInfoNum("crc-ok-pages", ota.pageTotal);
             step++;
@@ -2360,14 +2402,15 @@ void Modem::doOta(void) {
         break;
     }
     case 6: {
-        /* Cheap up-front scan (flash reads + CRC32 only, no network) — if
+        /* Cheap up-front scan (flash reads + CRC16 only, no network) — if
            every page this modem already has staged matches the target
            version, there is nothing to download at all. Re-running otaStart
            for an already-fully-staged version (or one identical to what's
            already there) becomes a near no-op instead of a full re-fetch. */
         bool allMatch = true;
         for (uint16_t p = 0; p < ota.pageTotal; p++) {
-            if (flash.crc32OtaPage(p) != otaScratch.pageCrc[p]) { allMatch = false; break; }
+            uint16_t pageCrc = self ? flash.crc16SelfOtaPage(p) : flash.crc16OtaPage(p);
+            if (pageCrc != otaScratch.pageCrc[p]) { allMatch = false; break; }
         }
         if (allMatch) { ota.page = ota.pageTotal; step = 20; }
         else { buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "firmware.bin"); step = 10; }
@@ -2393,7 +2436,7 @@ void Modem::doOta(void) {
        time and never comes near whatever its real limit is. */
     case 10:
         if (ota.page >= ota.pageTotal) { step = 20; break; }
-        if (flash.crc32OtaPage(ota.page) == otaScratch.pageCrc[ota.page]) {
+        if ((self ? flash.crc16SelfOtaPage(ota.page) : flash.crc16OtaPage(ota.page)) == otaScratch.pageCrc[ota.page]) {
             /* Already correct in flash — from a previous interrupted run,
                or unchanged from whatever version was staged before. Skip
                straight to the next page without touching the network. */
@@ -2482,7 +2525,7 @@ void Modem::doOta(void) {
         }
         break;
     case 16:
-        if (flashCrc32(otaScratch.chunkBuf, MODEM_OTA_PAGE_SIZE) != otaScratch.pageCrc[ota.page]) {
+        if (flashCrc16(otaScratch.chunkBuf, MODEM_OTA_PAGE_SIZE) != otaScratch.pageCrc[ota.page]) {
             if (++otaScratch.retries >= 5) { logOtaFail(16, "page-crc-mismatch-retries", ota.page); otaScratch.failed = true; step = 20; break; }
             step = 25;  /* re-fetch this page from scratch, via the spacer */
             break;
@@ -2490,11 +2533,11 @@ void Modem::doOta(void) {
         step++;
         break;
     case 17:
-        if (!flash.writeOtaPage(ota.page, otaScratch.chunkBuf)) { logOtaFail(17, "flash-write-failed", ota.page); otaScratch.failed = true; step = 20; break; }
+        if (!(self ? flash.writeSelfOtaPage(ota.page, otaScratch.chunkBuf) : flash.writeOtaPage(ota.page, otaScratch.chunkBuf))) { logOtaFail(17, "flash-write-failed", ota.page); otaScratch.failed = true; step = 20; break; }
         step++;
         break;
     case 18:
-        flash.readOtaPage(ota.page, otaScratch.verifyBuf);
+        if (self) flash.readSelfOtaPage(ota.page, otaScratch.verifyBuf); else flash.readOtaPage(ota.page, otaScratch.verifyBuf);
         if (memcmp(otaScratch.chunkBuf, otaScratch.verifyBuf, MODEM_OTA_PAGE_SIZE) != 0) {
             /* Flash write didn't take — retry the whole page (re-download
                included, in case otaScratch.chunkBuf itself was somehow the problem,
@@ -2521,10 +2564,10 @@ void Modem::doOta(void) {
     case 20:
         if (atCmd("AT+HTTPTERM\r\n", 2000)) {
             if (!otaScratch.failed) {
-                /* Every page was individually CRC32-verified against the
-                   server's firmware.crc32 on its way into flash, but that
+                /* Every page was individually CRC16-verified against the
+                   server's firmware.crc16 on its way into flash, but that
                    verification only ever lived in RAM (otaScratch.pageCrc)
-                   — a reset right after "DONE" would leave 128 KB of
+                   — a reset right after "DONE" would leave the staged image
                    otherwise-unremarkable flash bytes with nothing recording
                    which version they are or whether they're still intact.
                    Persist it now, once, while everything's confirmed good:
@@ -2532,8 +2575,9 @@ void Modem::doOta(void) {
                    own sector instead of living in the regular settings
                    blob. */
                 uint32_t totalBytes = (uint32_t)ota.pageTotal * MODEM_OTA_PAGE_SIZE;
-                uint32_t totalCrc32 = flashCrc32((const uint8_t*)FLASH_OTA_BUF_ADDR, totalBytes);
-                flash.writeOtaMeta(otaScratch.version, totalBytes, totalCrc32);
+                uint16_t totalCrc16 = flashCrc16((const uint8_t*)(self ? FLASH_SELF_OTA_BUF_ADDR : FLASH_OTA_BUF_ADDR), totalBytes);
+                if (self) flash.writeSelfOtaMeta(otaScratch.version, totalBytes, totalCrc16);
+                else      flash.writeOtaMeta(otaScratch.version, totalBytes, totalCrc16);
                 refreshStagedInfo();  /* re-read rather than trust the write blindly succeeded */
             }
             ota.status = otaScratch.failed ? OTA_ERROR : OTA_DONE;

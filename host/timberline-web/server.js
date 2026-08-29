@@ -58,72 +58,179 @@ const upsertSessionStmt = db.prepare(`
 
 app.use(express.json());
 
-/* ── Firmware slice endpoint ──────────────────────────────────────────────
-   The modem stages an OTA firmware.bin page by page (2048 bytes each) but
-   its AT+HTTP command set turned out not to support HTTP Range requests on
+/* ── Firmware storage ────────────────────────────────────────────────────
+   One file per published version, flat under public/firmware/<type>/ — no
+   per-version subfolder, no profile.txt, no crc sidecar. Everything else
+   (flash base address, which sectors to erase, per-page CRC16) is derived
+   from this single file: its name and its bytes. See host/README.md for
+   the full naming convention and rationale; in short:
+
+     125.0.0.15_0x08020000_5-6.bin     erase sectors 5 and 6 before flashing
+     121.0.0.8_0x0802A800.bin          erase the whole program region
+
+   Filename: "<version>_0x<flashBase>[_<sectors>].bin" — version is this
+   org's usual 1-4 dot-separated decimal bytes (matches what the CAN
+   bootloader itself reports, OmniProtocol PGN=6 param 18); flashBase is
+   hex (any digit count, whatever the file was named with); sectors, if
+   present, is comma-separated single sector numbers and/or inclusive
+   "first-last" ranges (e.g. "2,5-15") — omitted entirely means "erase the
+   whole program region" (see Timberline::doCanRelay() on the modem side
+   for what that becomes on the wire). */
+const FIRMWARE_TYPE_RE = /^[a-z0-9_-]+$/i;
+const FIRMWARE_VERSION_RE = /^[0-9.]+$/;
+const FIRMWARE_FILENAME_RE = /^([0-9]+(?:\.[0-9]+){0,3})_0x([0-9A-Fa-f]+)(?:_([0-9,-]+))?\.bin$/;
+const FIRMWARE_PAGE_SIZE = 2048;
+
+/* Lists every published version for a type, parsed straight from the
+   filenames on disk — nothing cached, these directories are tiny (a
+   handful of versions per type) and change rarely, so a fresh
+   readdirSync per request is not worth the staleness risk of caching. */
+function listFirmwareFiles(type) {
+    const typeDir = path.join(__dirname, 'public', 'firmware', type);
+    let entries;
+    try {
+        entries = fs.readdirSync(typeDir, { withFileTypes: true });
+    } catch (e) {
+        return []; /* type not published yet — not an error */
+    }
+    const out = [];
+    for (const e of entries) {
+        if (!e.isFile()) continue;
+        const m = FIRMWARE_FILENAME_RE.exec(e.name);
+        if (!m) continue;
+        out.push({ fileName: e.name, version: m[1], flashBaseHex: m[2], sectorSpec: m[3] || null });
+    }
+    return out;
+}
+
+function resolveFirmwareFile(type, version) {
+    return listFirmwareFiles(type).find((f) => f.version === version) || null;
+}
+
+/* Software CRC16 (Modbus/CRC-16-ANSI: poly 0xA001, init 0xFFFF, no final
+   XOR) — must match modem_timberline's flashCrc16() (Library/Flash/
+   flash.cpp) and nations-bootloader's calcCrc() (User/Main/main.cpp)
+   bit-for-bit; this is the one algorithm every firmware checksum in this
+   org now uses, not a separate download-only one. */
+function crc16(buf) {
+    let crc = 0xFFFF;
+    for (let i = 0; i < buf.length; i++) {
+        let nextByte = buf[i];
+        for (let bit = 0; bit < 8; bit++) {
+            const bt = crc & 1;
+            crc >>= 1;
+            if ((nextByte & 1) !== bt) crc ^= 0xA001;
+            nextByte >>= 1;
+        }
+    }
+    return crc & 0xFFFF;
+}
+
+/* ── Firmware slice/full-download endpoint ───────────────────────────────
+   The modem stages an OTA image page by page (2048 bytes each) but its
+   AT+HTTP command set turned out not to support HTTP Range requests on
    real hardware (AT+HTTPPARA="USERDATA" — the usual SIMCOM way to inject a
    custom header — came back ERROR). Rather than depend on the module
    supporting Range at all, offset/len are handled server-side: the modem
    just asks for firmware.bin?offset=X&len=Y and gets back a plain 200
-   response containing exactly those bytes, same as any other small file it
-   already knows how to fetch. Registered before express.static below so it
-   intercepts requests carrying the query params; a plain request with
-   neither falls through to static's normal full-file serving (browsers
-   downloading the whole image, the CRC-sidecar fetch, etc). */
-const FIRMWARE_SLICE_TYPE_RE = /^[a-z0-9_-]+$/i;
-const FIRMWARE_SLICE_VERSION_RE = /^[0-9.]+$/;
+   response containing exactly those bytes. A request past the end of the
+   real file (the last page, almost always — published .bin files aren't
+   pre-padded to a page boundary anymore, unlike the old make_firmware_crc.js
+   step) is padded with 0xFF, same filler byte erased flash reads as, so
+   the modem's per-page CRC16 always covers a full, predictable 2048 bytes
+   regardless of the real file's exact length. A plain request (no
+   offset/len — a browser downloading the file, or a human inspecting it)
+   gets the raw bytes exactly as published, no padding. */
 const FIRMWARE_SLICE_MAX_LEN = 4096;
-app.get('/firmware/:type/:version/firmware.bin', (req, res, next) => {
-    if (req.query.offset === undefined || req.query.len === undefined) return next();
-    if (!FIRMWARE_SLICE_TYPE_RE.test(req.params.type) || !FIRMWARE_SLICE_VERSION_RE.test(req.params.version)) {
+app.get('/firmware/:type/:version/firmware.bin', (req, res) => {
+    if (!FIRMWARE_TYPE_RE.test(req.params.type) || !FIRMWARE_VERSION_RE.test(req.params.version)) {
         return res.status(400).end();
+    }
+    const match = resolveFirmwareFile(req.params.type, req.params.version);
+    if (!match) return res.status(404).end();
+    const filePath = path.join(__dirname, 'public', 'firmware', req.params.type, match.fileName);
+
+    if (req.query.offset === undefined && req.query.len === undefined) {
+        return res.sendFile(filePath);
     }
     const offset = Number(req.query.offset);
     const len = Number(req.query.len);
     if (!Number.isInteger(offset) || !Number.isInteger(len) || offset < 0 || len <= 0 || len > FIRMWARE_SLICE_MAX_LEN) {
         return res.status(400).end();
     }
-    const filePath = path.join(__dirname, 'public', 'firmware', req.params.type, req.params.version, 'firmware.bin');
     fs.open(filePath, 'r', (openErr, fd) => {
         if (openErr) return res.status(404).end();
-        const buf = Buffer.alloc(len);
-        fs.read(fd, buf, 0, len, offset, (readErr, bytesRead) => {
+        const buf = Buffer.alloc(len, 0xFF); /* pre-filled — fs.read below only overwrites what actually exists on disk */
+        fs.read(fd, buf, 0, len, offset, (readErr) => {
             fs.close(fd, () => {});
             if (readErr) return res.status(500).end();
             res.set('Content-Type', 'application/octet-stream');
-            res.status(200).send(buf.subarray(0, bytesRead));
+            res.status(200).send(buf);
         });
     });
 });
 
+/* ── Firmware CRC16 endpoint ─────────────────────────────────────────────
+   Replaces the old precomputed firmware.crc32 sidecar file — computed on
+   the fly from the single published .bin instead, so publishing a new
+   version is really just dropping one correctly-named file, nothing to
+   run first. One little-endian uint16 CRC16 per 2048-byte page (last page
+   0xFF-padded, same as the slice endpoint above, so this always matches
+   what the modem itself computes over what it downloaded). Files here are
+   at most a couple hundred KB — recomputing per request is microseconds,
+   not worth caching. */
+app.get('/firmware/:type/:version/firmware.crc16', (req, res) => {
+    if (!FIRMWARE_TYPE_RE.test(req.params.type) || !FIRMWARE_VERSION_RE.test(req.params.version)) {
+        return res.status(400).end();
+    }
+    const match = resolveFirmwareFile(req.params.type, req.params.version);
+    if (!match) return res.status(404).end();
+    const filePath = path.join(__dirname, 'public', 'firmware', req.params.type, match.fileName);
+    fs.readFile(filePath, (err, data) => {
+        if (err) return res.status(404).end();
+        const pageCount = Math.ceil(data.length / FIRMWARE_PAGE_SIZE);
+        const out = Buffer.alloc(pageCount * 2);
+        const page = Buffer.alloc(FIRMWARE_PAGE_SIZE);
+        for (let p = 0; p < pageCount; p++) {
+            const start = p * FIRMWARE_PAGE_SIZE;
+            const end = Math.min(start + FIRMWARE_PAGE_SIZE, data.length);
+            page.fill(0xFF);
+            data.copy(page, 0, start, end);
+            out.writeUInt16LE(crc16(page), p * 2);
+        }
+        res.set('Content-Type', 'application/octet-stream');
+        res.status(200).send(out);
+    });
+});
+
+/* ── Firmware profile endpoint ───────────────────────────────────────────
+   Replaces the old per-type profile.txt — synthesized on the fly from the
+   matched file's own name (see the naming convention above), per
+   *version* now rather than per type, so different versions of the same
+   device type can carry different flash layouts (e.g. a gen2-bootloader
+   build needing an explicit sector list vs. a gen3 one that doesn't)
+   without a shared file going stale. Same KEY=VALUE text format
+   Modem::doFetchProfile() already parses; eraseSectors is simply omitted
+   when the filename carried no sector spec. */
+app.get('/firmware/:type/:version/profile', (req, res) => {
+    if (!FIRMWARE_TYPE_RE.test(req.params.type) || !FIRMWARE_VERSION_RE.test(req.params.version)) {
+        return res.status(400).end();
+    }
+    const match = resolveFirmwareFile(req.params.type, req.params.version);
+    if (!match) return res.status(404).end();
+    let body = `flashBase=0x${match.flashBaseHex}\n`;
+    if (match.sectorSpec) body += `eraseSectors=${match.sectorSpec}\n`;
+    res.set('Content-Type', 'text/plain');
+    res.status(200).send(body);
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
-/* ── Firmware OTA listing ──────────────────────────────────────────────────
-   The actual .bin/.crc32 files are served by express.static above (they
-   just live under public/firmware/<type>/<version>/) — this is only the
-   directory-listing piece static serving doesn't provide on its own.
-   Version directory names follow this org's device version scheme: 4
-   dot-separated bytes matching what the CAN bootloader itself reports
-   (VER_PRODUCT_TYPE.VER_VOLTAGE.VER_PRODUCT_SUBTYPE.VER_ASSEMBLAGE_NUMBER —
-   see the OmniProtocol PGN=6 param 18 query), e.g. "125.0.0.15" for MBC-2
-   (type 125; VER_VOLTAGE unused for this device, always 0). No auth — same
-   as the firmware files themselves and the rest of public/. */
-const FIRMWARE_TYPE_RE = /^[a-z0-9_-]+$/i;
+/* ── Firmware OTA listing ────────────────────────────────────────────────
+   No auth — same as the firmware files themselves and the rest of public/. */
 app.get('/firmware/:type/versions', (req, res) => {
     if (!FIRMWARE_TYPE_RE.test(req.params.type)) return res.status(400).json({ error: 'invalid type' });
-    const typeDir = path.join(__dirname, 'public', 'firmware', req.params.type);
-    let entries;
-    try {
-        entries = fs.readdirSync(typeDir, { withFileTypes: true });
-    } catch (e) {
-        return res.json({ versions: [] }); /* type not published yet — not an error */
-    }
-    const versions = entries
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name)
-        .filter((name) => fs.existsSync(path.join(typeDir, name, 'firmware.bin'))
-                        && fs.existsSync(path.join(typeDir, name, 'firmware.crc32')))
-        .sort();
+    const versions = listFirmwareFiles(req.params.type).map((f) => f.version).sort();
     res.json({ versions });
 });
 

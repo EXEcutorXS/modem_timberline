@@ -7,6 +7,11 @@
 # runs every script in that directory after each successful issue/renewal.
 set -euo pipefail
 
+# The cert *lineage* name, not necessarily the only hostname it covers —
+# additional domains (e.g. multihot.online) get added as SANs to this same
+# lineage via `certbot --expand` rather than as a separate certificate, so
+# this stays the one path to update regardless of how many domains the
+# site answers to. See host/README.md's TLS section.
 CERT_DOMAIN="multihot.duckdns.org"
 SRC="/etc/letsencrypt/live/$CERT_DOMAIN"
 DST="/etc/mosquitto/certs"

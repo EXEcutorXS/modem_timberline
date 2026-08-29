@@ -1,60 +1,57 @@
 #!/usr/bin/env python3
 """Converts a Keil-produced Intel HEX firmware image (e.g. "43.2.6.13_STM_Main.hex")
-into the firmware.bin + firmware.crc32 pair the web app's OTA pipeline expects
-under host/timberline-web/public/firmware/<type>/<version>/ — see server.js's
-/firmware/:type/:version/firmware.bin and /firmware/:type/versions routes, and
+into the single self-describing .bin file the web app's OTA pipeline now expects
+under host/timberline-web/public/firmware/<type>/ — see server.js's
+/firmware/:type/:version/{firmware.bin,firmware.crc16,profile} routes and
 Modem::doOta() on the modem side which downloads+verifies page by page.
 
-firmware.crc32 format/algorithm matches host/tools/make_firmware_crc.js exactly
-(one little-endian uint32 CRC32 per 2048-byte page, standard zlib/PKZIP poly
-0xEDB88320, same as Flash_C::crc32OtaPage() on the modem) — this script just
-also does the .hex -> .bin step make_firmware_crc.js doesn't, in one pass.
+Filename: "<version>_0x<flashBase>[_<sectors>].bin" — no per-version
+subfolder, no profile.txt, no crc sidecar; everything else the modem needs
+(flash base address, which sectors to erase, per-page CRC16) is derived by
+the server from this one file's name and bytes. See host/README.md for the
+full convention.
 
-Version (and therefore the destination folder) is read from the hex filename
-itself: "<type>.<v2>.<v3>.<v4>_..." — matching how firmware is actually named
-on disk already (e.g. "43.2.6.13_STM_Main.hex" -> type 43, version 43.2.6.13).
-Pass --type/--version explicitly to override if a file isn't named that way.
+Version (and therefore the device-type folder) is read from the hex
+filename itself: "<type>.<v2>.<v3>.<v4>_..." — matching how firmware is
+already named on disk (e.g. "43.2.6.13_STM_Main.hex" -> type 43, version
+43.2.6.13). Pass --type/--version explicitly to override if a file isn't
+named that way.
 
-The image's start address defaults to the lowest address present in the hex
-file itself (this is how the existing 125.0.0.15 image was built — the linker
-already places the app at its real flash base, e.g. 0x08020000, so the hex
-file's own addresses are already correct and don't need a separate --base).
-Gaps between records are filled with 0xFF (erased-flash value), and the whole
-image is padded up to a multiple of 2048 bytes the same way
-make_firmware_crc.js does.
+flashBase defaults to the lowest address present in the hex file itself
+(the linker already places the app at its real flash base, e.g.
+0x08020000, so the hex file's own addresses are already correct and don't
+need a separate --base). Gaps between records are filled with 0xFF
+(erased-flash value); the image is NOT padded to a page boundary anymore —
+the server pads the tail with 0xFF on the fly when a page is requested, so
+what lands on disk here is exactly the hex file's own content.
 
-This script only produces firmware.bin/firmware.crc32 — it does NOT touch
-profile.txt (flashBase/eraseSectors, used by the modem's CAN relay step, see
-Timberline::doCanRelay()). If firmware/<type>/profile.txt doesn't exist yet
-for this device type, create it by hand once (flashBase should equal this
-script's own printed "image starts at" address).
+--sectors is optional and is *not* something this script can infer — which
+sectors are safe to erase without touching settings/black-box data is a
+per-device/per-bootloader safety decision, not something derivable from the
+hex file. Pass it explicitly (e.g. --sectors 5-6 or --sectors 2,5-15,
+comma-separated single numbers and/or inclusive ranges); omitting it
+publishes a file with no sector list at all, which the modem's CAN relay
+then erases via the *whole program region* command instead of an explicit
+list (see Timberline::doCanRelay()) — only appropriate once you've actually
+confirmed that broad erase is safe for this specific device/bootloader.
 
 Usage:
-    python hex_to_ota.py <firmware.hex> [<firmware2.hex> ...]
-    python hex_to_ota.py --type 43 --version 43.2.6.13 43.2.6.13_STM_Main.hex
+    python hex_to_ota.py --sectors 5-6 <firmware.hex> [<firmware2.hex> ...]
+    python hex_to_ota.py --type 43 --version 43.2.6.13 --sectors 5,6 43.2.6.13_STM_Main.hex
 """
 import argparse
 import os
 import re
 import sys
 
-PAGE_SIZE = 2048
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # host/
 FIRMWARE_ROOT = os.path.join(REPO_ROOT, 'timberline-web', 'public', 'firmware')
 
-
-def crc32(data: bytes) -> int:
-    crc = 0xFFFFFFFF
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            mask = -(crc & 1) & 0xFFFFFFFF
-            crc = (crc >> 1) ^ (0xEDB88320 & mask)
-    return (~crc) & 0xFFFFFFFF
+SECTOR_SPEC_RE = re.compile(r'^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$')
 
 
 def parse_intel_hex(path: str) -> bytes:
-    """Returns a flat bytes image starting at the lowest address in the file,
+    """Returns (base_address, flat bytes image starting at that address),
     gaps filled with 0xFF. Supports record types 00/01/02/04 (data, EOF,
     extended segment address, extended linear address) — the ones a Keil/ARMCC
     toolchain actually emits; anything else is ignored, matching how a
@@ -100,39 +97,29 @@ def parse_intel_hex(path: str) -> bytes:
     return base, bytes(image)
 
 
-def build_one(hex_path: str, dev_type: str, version: str):
+def build_one(hex_path: str, dev_type: str, version: str, sectors: str):
     base, image = parse_intel_hex(hex_path)
 
-    pad = (PAGE_SIZE - (len(image) % PAGE_SIZE)) % PAGE_SIZE
-    if pad:
-        image += b'\xFF' * pad
+    name = f'{version}_0x{base:08X}'
+    if sectors:
+        name += f'_{sectors}'
+    name += '.bin'
 
-    page_count = len(image) // PAGE_SIZE
-    crc_bytes = bytearray(page_count * 4)
-    for page in range(page_count):
-        page_crc = crc32(image[page * PAGE_SIZE:(page + 1) * PAGE_SIZE])
-        crc_bytes[page * 4:page * 4 + 4] = page_crc.to_bytes(4, 'little')
-
-    out_dir = os.path.join(FIRMWARE_ROOT, dev_type, version)
+    out_dir = os.path.join(FIRMWARE_ROOT, dev_type)
     os.makedirs(out_dir, exist_ok=True)
-    bin_path = os.path.join(out_dir, 'firmware.bin')
-    crc_path = os.path.join(out_dir, 'firmware.crc32')
+    bin_path = os.path.join(out_dir, name)
     with open(bin_path, 'wb') as f:
         f.write(image)
-    with open(crc_path, 'wb') as f:
-        f.write(crc_bytes)
 
     print(f'{hex_path}')
-    print(f'  image starts at 0x{base:08X}, {len(image)} bytes, {page_count} pages')
+    print(f'  image starts at 0x{base:08X}, {len(image)} bytes')
     print(f'  -> {bin_path}')
-    print(f'  -> {crc_path}')
-
-    profile_path = os.path.join(FIRMWARE_ROOT, dev_type, 'profile.txt')
-    if not os.path.exists(profile_path):
-        print(f'  NOTE: {profile_path} does not exist yet — the CAN relay step '
-              f'(flashing this onto a real device) needs it. flashBase should be '
-              f'0x{base:08X}; eraseSectors depends on this device\'s own flash '
-              f'layout, fill in by hand.')
+    if not sectors:
+        print(f'  NOTE: no --sectors given — this publishes with no erase-sector list at '
+              f'all, meaning the modem will erase the *whole program region* in one shot '
+              f'when relaying it (see Timberline::doCanRelay()). Only fine if you\'ve '
+              f'actually confirmed that\'s safe for this device/bootloader; otherwise '
+              f're-run with --sectors.')
 
 
 FILENAME_VERSION_RE = re.compile(r'^(\d+)\.(\d+)\.(\d+)\.(\d+)')
@@ -143,10 +130,13 @@ def main():
     ap.add_argument('hex_files', nargs='+')
     ap.add_argument('--type', help='device type (overrides parsing it from the filename)')
     ap.add_argument('--version', help='full version, e.g. 43.2.6.13 (overrides parsing it from the filename; only valid with a single hex file)')
+    ap.add_argument('--sectors', help='erase-sector spec, e.g. "5-6" or "2,5-15" — see the module docstring; omit to publish with no explicit list')
     args = ap.parse_args()
 
     if args.version and len(args.hex_files) != 1:
         ap.error('--version only makes sense with a single input file')
+    if args.sectors and not SECTOR_SPEC_RE.match(args.sectors):
+        ap.error(f'--sectors {args.sectors!r} does not look like "5-6" or "2,5-15"')
 
     for hex_path in args.hex_files:
         if args.version:
@@ -160,7 +150,7 @@ def main():
                 sys.exit(1)
             version = '.'.join(m.groups())
             dev_type = args.type or m.group(1)
-        build_one(hex_path, dev_type, version)
+        build_one(hex_path, dev_type, version, args.sectors)
 
 
 if __name__ == '__main__':

@@ -30,15 +30,14 @@ host/
   letsencrypt/timberline-mosquitto.sh  # -> /etc/letsencrypt/renewal-hooks/deploy/
   systemd/timberline-web.service    # -> /etc/systemd/system/
   at-bridge-relay.py                # run by whoever is physically next to the modem
-  tools/make_firmware_crc.js        # generates firmware.crc32 sidecar files, see "Firmware OTA" below
+  tools/hex_to_ota.py               # converts a Keil .hex into a publishable firmware file, see "Firmware OTA" below
   timberline-web/                   # -> /opt/timberline-web on the server
     server.js
     package.json
     public/index.html
     public/app.js
     public/at-console.html
-    public/firmware/<deviceType>/<version>/firmware.bin
-    public/firmware/<deviceType>/<version>/firmware.crc32
+    public/firmware/<deviceType>/<version>_0x<flashBase>[_<sectors>].bin
 ```
 
 ## Architecture, in one paragraph
@@ -132,56 +131,99 @@ needs the `Upgrade`/`Connection` headers for this one path specifically
 (see `nginx/timberline-web.conf`) — everything else on this site is plain
 HTTP through nginx (MQTT's own wss on 8083 bypasses nginx entirely).
 
-## Firmware OTA (MBC-2)
+## Firmware OTA
 
-The modem downloads a firmware image for the MBC-2 module it talks to over
-CAN, from this server, over plain HTTP (`AT+HTTPREAD`) — no MQTT involved.
-It stages the image page-by-page in its own spare flash, verifying each
-page's CRC32 before writing (and skipping any page whose flash contents
-already match — makes an interrupted download resumable, and re-running an
-`otaStart` for the same version a no-op past the first successful run), then
-replays the CAN bootloader protocol onto MBC-2 itself. See
+The modem downloads a firmware image — either for a target device it talks
+to over CAN (e.g. MBC-2), or its own — from this server, over plain HTTP
+(`AT+HTTPREAD`), no MQTT involved. It stages the image page-by-page in its
+own spare flash, verifying each page's CRC16 before writing (and skipping
+any page whose flash contents already match — makes an interrupted
+download resumable, and re-running an `otaStart` for the same version a
+no-op past the first successful run), then either replays the CAN
+bootloader protocol onto the target device, or (for the modem's own
+firmware) waits for a separate `selfOtaApply` command. See
 `modem/User/Modem.cpp`/`Timberline.cpp` for the modem side.
 
-**Version naming**: this org's device version scheme is 8 dot-separated
-bytes; for firmware directories only the first 4 are used, matching what
-the CAN bootloader itself reports on request (OmniProtocol PGN=6, param 18 —
-`VER_PRODUCT_TYPE.VER_VOLTAGE.VER_PRODUCT_SUBTYPE.VER_ASSEMBLAGE_NUMBER`).
-For MBC-2 (device type 125, `VER_VOLTAGE` unused/always 0) that looks like
-`125.0.0.15`. Using the bootloader's own reported tuple as the directory
-name means "what version is currently on the device" and "what's the latest
-available" are always directly comparable strings, no separate mapping.
+**One file per published version** — no per-version subfolder, no
+`profile.txt`, no CRC sidecar file. Everything the modem needs (flash base
+address, which sectors to erase, per-page CRC16) is derived by the server
+from a single file's name and bytes:
 
-Publishing a new version:
-```bash
-mkdir -p host/timberline-web/public/firmware/mbc2/125.0.0.15
-cp your-built-firmware.bin host/timberline-web/public/firmware/mbc2/125.0.0.15/firmware.bin
-node host/tools/make_firmware_crc.js host/timberline-web/public/firmware/mbc2/125.0.0.15/firmware.bin
-scp -r host/timberline-web/public/firmware/mbc2/125.0.0.15 user@vps:/opt/timberline-web/public/firmware/mbc2/
 ```
-`make_firmware_crc.js` pads `firmware.bin` in place to a multiple of 2048
-bytes (0xFF filler — so the modem's last downloaded page is always exactly
-2048 bytes, no special-casing a short one) and writes `firmware.crc32` next
-to it: one little-endian uint32 CRC32 per page, same algorithm
-(`Flash_C::crc32OtaPage()` in `Library/Flash/flash.cpp`) the modem uses to
-verify what it downloaded. This CRC32 is only for the HTTP download's
-integrity — it has nothing to do with the separate checksum MBC-2's own CAN
-bootloader computes during the actual flashing step.
+public/firmware/<type>/<version>_0x<flashBase>[_<sectors>].bin
+```
+
+- `<version>` — this org's device version scheme, 1-4 dot-separated
+  decimal bytes, matching what the CAN bootloader itself reports on
+  request (OmniProtocol PGN=6, param 18 —
+  `VER_PRODUCT_TYPE.VER_VOLTAGE.VER_PRODUCT_SUBTYPE.VER_ASSEMBLAGE_NUMBER`).
+  For MBC-2 (device type 125, `VER_VOLTAGE` unused/always 0) that looks
+  like `125.0.0.15`. Using the bootloader's own reported tuple means "what
+  version is currently on the device" and "what's the latest available"
+  are always directly comparable strings, no separate mapping.
+- `<flashBase>` — hex, where the image's first byte lands on the *target*
+  device's own flash (its vector table address, e.g. `08020000`).
+- `<sectors>` — optional, comma-separated single sector numbers and/or
+  inclusive `first-last` ranges (e.g. `5-6` or `2,5-15`), the exact
+  sectors `Timberline::doCanRelay()` erases before flashing. **Omit it
+  entirely to mean "erase the whole program region" instead** — safe only
+  once you've actually confirmed the broad erase (CAN `D[1]=255`, or the
+  target bootloader's own native "erase program" command on a newer
+  generation) doesn't touch anything outside the app on that specific
+  device/bootloader. An explicit list stays the precise, narrowly-scoped
+  default; don't drop it just to shorten the filename.
+
+Example: `125.0.0.15_0x08020000_5-6.bin`, or `121.0.0.8_0x0802A800.bin`
+(the modem's own firmware, self-OTA — see below — never needs a sector
+list since there's no CAN relay for it at all).
+
+**Publishing a new version** — from a Keil-produced `.hex`:
+```bash
+python host/tools/hex_to_ota.py --sectors 5-6 host/build/125.0.0.15_STM_Main.hex
+scp host/timberline-web/public/firmware/125/125.0.0.15_0x08020000_5-6.bin \
+    user@vps:/opt/timberline-web/public/firmware/125/
+```
+`hex_to_ota.py` reads the flash base straight from the hex file's own
+lowest address (the linker already placed the app there) and parses
+`<type>.<v2>.<v3>.<v4>` off the front of the filename for `<version>` —
+pass `--type`/`--version` to override either. It does **not** infer
+`--sectors`; that's a per-device safety call only a human can make (the
+script prints a clear warning if you omit it). If you already have a raw
+`.bin` (not `.hex`), just `cp`/rename it to match the naming convention
+directly — no tool needed, the server derives everything else on the fly.
 
 Files under `public/firmware/` are served by the same unauthenticated
-`express.static` as everything else in `public/` — no login, same as
-`index.html`/`app.js` today. The version string a device requests
-(`cmd/desired/otaStart` payload) becomes the `<version>` path segment
-verbatim, so keep it filesystem-safe (no `/`, no `..`).
+`express.static` as everything else in `public/` for their literal
+filename, but the modem never asks for that — it hits
+`/firmware/<type>/<version>/{firmware.bin,firmware.crc16,profile}`
+(`server.js` resolves `<version>` to whichever published file's name
+starts with it). `firmware.bin` supports `?offset=&len=` slicing (the
+modem's own AT+HTTP stack can't do real HTTP Range — see the comment in
+`server.js`) and pads any request past the real end of the file with
+`0xFF`, same filler byte erased flash reads as, so the last (short) page
+still comes back as a clean 2048 bytes. `firmware.crc16` and `profile` are
+both computed on request, not precomputed — `profile` just echoes
+`flashBase`/`eraseSectors` parsed back out of the matched filename, in the
+same `KEY=VALUE` text `Modem::doFetchProfile()` already parses.
 
-**Listing available versions**: `GET /firmware/<type>/versions` (added in
-`server.js`, since static file serving alone doesn't do directory listings)
-returns `{"versions": ["125.0.0.15", ...]}` — every subdirectory under
-`public/firmware/<type>/` that actually has both `firmware.bin` and
-`firmware.crc32`, sorted. No auth, same as the files themselves. E.g.:
+**Listing available versions**: `GET /firmware/<type>/versions` returns
+`{"versions": ["125.0.0.15", ...]}` — every matching filename under
+`public/firmware/<type>/`, sorted. No auth, same as the files themselves.
 ```bash
-curl https://multihot.duckdns.org/firmware/mbc2/versions
+curl https://multihot.duckdns.org/firmware/125/versions
 ```
+
+**The modem's own firmware**: publishing works exactly the same way, just
+using the modem's own device type (`121`) — e.g.
+`public/firmware/121/121.0.0.8_0x0802A800.bin` — and `otaStart` payload
+`121:121.0.0.8`. The download/page-verify machinery is identical
+(`Modem::doOta()` branches on `deviceType == VERSION_1`), but the image
+lands in a separate, smaller (128 KB) self-OTA buffer reserved by
+`nations-bootloader` instead of the shared target-device buffer, and
+there's no CAN-relay step afterward — instead, once staged, the
+`selfOtaApply` MQTT command reboots into `nations-bootloader`, which
+flashes the running app from that buffer itself (see that project's
+`ApplySelfOtaImage()`, `User/Main/main.cpp`).
 
 ## TLS (Let's Encrypt)
 
@@ -219,6 +261,36 @@ device still pointed at the bare IP** needs a one-time
 `server multihot.duckdns.org` SMS to fix its `getlink` links going forward.
 The modem's own raw MQTT connection (port 1883) works the same either way,
 since 1883 doesn't care about hostnames vs. IPs or certs.
+
+**Adding a second domain to an already-live server** (e.g. `multihot.online`
+pointed at the same IP as an alias): point its DNS A record at the VPS
+first, then, on the server:
+```bash
+sudo certbot --nginx -d multihot.duckdns.org -d multihot.online --expand
+sudo nginx -t && sudo systemctl reload nginx
+```
+`--expand` adds the new domain as a SAN to the *existing* cert lineage
+(named after whichever domain got it first, `multihot.duckdns.org`) instead
+of issuing a separate certificate — deliberately, since
+`timberline-mosquitto.sh`'s deploy-hook is hardcoded to that one lineage
+name (`CERT_DOMAIN`, see the script) and mosquitto's wss listener only
+binds one cert file regardless of which hostname a browser used to
+connect. The `--nginx` plugin also adds the new domain to the existing
+`server_name` line(s) in the live nginx config on its own — no manual edit
+needed there (the repo's `nginx/timberline-web.conf` template was updated
+to list both domains too, for the next fresh-box provision, but that
+template isn't what's live on an already-running server). Since a
+certificate was (re)installed, the deploy-hook fires automatically and
+refreshes mosquitto's copy — confirm with `sudo systemctl status
+mosquitto` and `sudo certbot certificates` (should list both domains under
+one lineage) afterward.
+
+This only adds the domain as a working **alias** — `mqttBroker` (and
+`MODEM_DEFAULT_BROKER` in `Modem.h`) stay `multihot.duckdns.org` for both
+existing devices and new registrations. Making `multihot.online` the
+*primary* domain instead (new registrations' `getlink` links, the firmware
+default) is a separate decision — worth doing deliberately if that's the
+goal, not as a side effect of just wanting the cert to work.
 
 ## Running `setup.sh` on a fresh VPS
 

@@ -218,24 +218,30 @@ uint8_t Flash_C::getHardwareVersion(void)
     return *(__IO uint8_t*)(0x801C00A);
 }
 
-/* See the declaration in flash.h — shared with Modem::doOta(). Table-free
-   bitwise form — called at most a few dozen times per OTA (once per flash
+/* See the declaration in flash.h — shared with Modem::doOta(). Bit-by-bit
+   form matching nations-bootloader's calcCrc() (main.cpp) exactly, just
+   parameterized over a buffer pointer instead of reading straight from a
+   flash address — called at most a few dozen times per OTA (once per flash
    page, plus once per downloaded HTTP chunk, plus once over the whole
-   staged image at the end), not worth a 1 KB lookup table for that. */
-uint32_t flashCrc32(const uint8_t* data, uint32_t len) {
-    uint32_t crc = 0xFFFFFFFF;
+   staged image at the end), not worth a lookup table for that. */
+uint16_t flashCrc16(const uint8_t* data, uint32_t len) {
+    uint16_t crc = 0xFFFF;
     for (uint32_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (uint8_t bit = 0; bit < 8; bit++)
-            crc = (crc >> 1) ^ (0xEDB88320 & (uint32_t)(-(int32_t)(crc & 1)));
+        uint8_t nextByte = data[i];
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            uint8_t bt = crc & 1;
+            crc >>= 1;
+            if ((nextByte & 1) != bt) crc ^= 0xA001;
+            nextByte >>= 1;
+        }
     }
-    return ~crc;
+    return crc;
 }
 
-bool Flash_C::writeOtaPage(uint16_t pageIndex, const uint8_t* data)
+bool Flash_C::writePageAt(uint32_t bufAddr, uint16_t pageCount, uint16_t pageIndex, const uint8_t* data)
 {
-    if (pageIndex >= FLASH_OTA_PAGE_COUNT) return false;
-    uint32_t pageAddr = FLASH_OTA_BUF_ADDR + (uint32_t)pageIndex * FLASH_PAGE_SIZE;
+    if (pageIndex >= pageCount) return false;
+    uint32_t pageAddr = bufAddr + (uint32_t)pageIndex * FLASH_PAGE_SIZE;
 
     FLASH_Unlock();
     bool ok = (FLASH_EraseOnePage(pageAddr) == FLASH_COMPL);
@@ -250,28 +256,36 @@ bool Flash_C::writeOtaPage(uint16_t pageIndex, const uint8_t* data)
     return ok;
 }
 
-void Flash_C::readOtaPage(uint16_t pageIndex, uint8_t* outBuf)
+void Flash_C::readPageAt(uint32_t bufAddr, uint16_t pageCount, uint16_t pageIndex, uint8_t* outBuf)
 {
-    if (pageIndex >= FLASH_OTA_PAGE_COUNT) return;
-    uint32_t pageAddr = FLASH_OTA_BUF_ADDR + (uint32_t)pageIndex * FLASH_PAGE_SIZE;
+    if (pageIndex >= pageCount) return;
+    uint32_t pageAddr = bufAddr + (uint32_t)pageIndex * FLASH_PAGE_SIZE;
     for (uint32_t a = 0; a < FLASH_PAGE_SIZE; a++)
         outBuf[a] = *(__IO uint8_t*)(pageAddr + a);
 }
 
-uint32_t Flash_C::crc32OtaPage(uint16_t pageIndex)
+uint16_t Flash_C::crc16PageAt(uint32_t bufAddr, uint16_t pageCount, uint16_t pageIndex)
 {
-    if (pageIndex >= FLASH_OTA_PAGE_COUNT) return 0;
-    uint32_t pageAddr = FLASH_OTA_BUF_ADDR + (uint32_t)pageIndex * FLASH_PAGE_SIZE;
-    return flashCrc32((const uint8_t*)pageAddr, FLASH_PAGE_SIZE);
+    if (pageIndex >= pageCount) return 0;
+    uint32_t pageAddr = bufAddr + (uint32_t)pageIndex * FLASH_PAGE_SIZE;
+    return flashCrc16((const uint8_t*)pageAddr, FLASH_PAGE_SIZE);
 }
+
+bool     Flash_C::writeOtaPage(uint16_t pageIndex, const uint8_t* data) { return writePageAt(FLASH_OTA_BUF_ADDR, FLASH_OTA_PAGE_COUNT, pageIndex, data); }
+void     Flash_C::readOtaPage(uint16_t pageIndex, uint8_t* outBuf)     { readPageAt(FLASH_OTA_BUF_ADDR, FLASH_OTA_PAGE_COUNT, pageIndex, outBuf); }
+uint16_t Flash_C::crc16OtaPage(uint16_t pageIndex)                     { return crc16PageAt(FLASH_OTA_BUF_ADDR, FLASH_OTA_PAGE_COUNT, pageIndex); }
+
+bool     Flash_C::writeSelfOtaPage(uint16_t pageIndex, const uint8_t* data) { return writePageAt(FLASH_SELF_OTA_BUF_ADDR, FLASH_SELF_OTA_PAGE_COUNT, pageIndex, data); }
+void     Flash_C::readSelfOtaPage(uint16_t pageIndex, uint8_t* outBuf)     { readPageAt(FLASH_SELF_OTA_BUF_ADDR, FLASH_SELF_OTA_PAGE_COUNT, pageIndex, outBuf); }
+uint16_t Flash_C::crc16SelfOtaPage(uint16_t pageIndex)                     { return crc16PageAt(FLASH_SELF_OTA_BUF_ADDR, FLASH_SELF_OTA_PAGE_COUNT, pageIndex); }
 
 /* Record layout (36 bytes, same "explicit fields + trailing sum byte"
    convention as writeSetup()/readSetup() above — not a struct memcpy, so
    the on-flash format never silently shifts if the struct's own padding
-   ever changes): version[24], totalBytes (4 bytes LE), totalCrc32 (4 bytes
-   LE), 3 reserved/padding bytes, checksum byte. Only ever needs the one
+   ever changes): version[24], totalBytes (4 bytes LE), totalCrc16 (2 bytes
+   LE), 5 reserved/padding bytes, checksum byte. Only ever needs the one
    page FLASH_OTA_META_ADDR reserves. */
-bool Flash_C::writeOtaMeta(const char* version, uint32_t totalBytes, uint32_t totalCrc32)
+bool Flash_C::writeMetaAt(uint32_t metaAddr, const char* version, uint32_t totalBytes, uint16_t totalCrc16)
 {
     uint8_t array[36];
     uint16_t a = 0, x;
@@ -279,39 +293,44 @@ bool Flash_C::writeOtaMeta(const char* version, uint32_t totalBytes, uint32_t to
     for (x = 0; x < 24; x++) array[a++] = (uint8_t)version[x];
     array[a++] = (uint8_t)(totalBytes);       array[a++] = (uint8_t)(totalBytes >> 8);
     array[a++] = (uint8_t)(totalBytes >> 16); array[a++] = (uint8_t)(totalBytes >> 24);
-    array[a++] = (uint8_t)(totalCrc32);       array[a++] = (uint8_t)(totalCrc32 >> 8);
-    array[a++] = (uint8_t)(totalCrc32 >> 16); array[a++] = (uint8_t)(totalCrc32 >> 24);
-    array[a++] = 0; array[a++] = 0; array[a++] = 0; /* reserved */
+    array[a++] = (uint8_t)(totalCrc16);       array[a++] = (uint8_t)(totalCrc16 >> 8);
+    array[a++] = 0; array[a++] = 0; array[a++] = 0; array[a++] = 0; array[a++] = 0; /* reserved */
 
     uint8_t sum = 0;
     for (a = 0; a < 35; a++) sum += array[a];
     array[35] = sum;
 
     FLASH_Unlock();
-    bool ok = (FLASH_EraseOnePage(FLASH_OTA_META_ADDR) == FLASH_COMPL);
+    bool ok = (FLASH_EraseOnePage(metaAddr) == FLASH_COMPL);
     if (ok) {
         for (a = 0; a < 36; a += 4) {
             uint32_t word = (uint32_t)array[a] | ((uint32_t)array[a+1] << 8)
                            | ((uint32_t)array[a+2] << 16) | ((uint32_t)array[a+3] << 24);
-            if (FLASH_ProgramWord(FLASH_OTA_META_ADDR + a, word) != FLASH_COMPL) { ok = false; break; }
+            if (FLASH_ProgramWord(metaAddr + a, word) != FLASH_COMPL) { ok = false; break; }
         }
     }
     FLASH_Lock();
     return ok;
 }
 
-bool Flash_C::readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint32_t* outTotalCrc32)
+bool Flash_C::readMetaAt(uint32_t metaAddr, char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16)
 {
     uint8_t array[36];
     uint16_t a;
     uint8_t sum = 0;
 
-    for (a = 0; a < 36; a++) array[a] = *(__IO uint8_t*)(FLASH_OTA_META_ADDR + a);
+    for (a = 0; a < 36; a++) array[a] = *(__IO uint8_t*)(metaAddr + a);
     for (a = 0; a < 35; a++) sum += array[a];
     if (sum != array[35]) return false;
 
     for (a = 0; a < 24; a++) outVersion[a] = (char)array[a];
-    *outTotalBytes  = (uint32_t)array[24] | ((uint32_t)array[25] << 8) | ((uint32_t)array[26] << 16) | ((uint32_t)array[27] << 24);
-    *outTotalCrc32  = (uint32_t)array[28] | ((uint32_t)array[29] << 8) | ((uint32_t)array[30] << 16) | ((uint32_t)array[31] << 24);
+    *outTotalBytes = (uint32_t)array[24] | ((uint32_t)array[25] << 8) | ((uint32_t)array[26] << 16) | ((uint32_t)array[27] << 24);
+    *outTotalCrc16 = (uint16_t)array[28] | ((uint16_t)array[29] << 8);
     return true;
 }
+
+bool Flash_C::writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16) { return writeMetaAt(FLASH_OTA_META_ADDR, version, totalBytes, totalCrc16); }
+bool Flash_C::readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16) { return readMetaAt(FLASH_OTA_META_ADDR, outVersion, outTotalBytes, outTotalCrc16); }
+
+bool Flash_C::writeSelfOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16) { return writeMetaAt(FLASH_SELF_OTA_META_ADDR, version, totalBytes, totalCrc16); }
+bool Flash_C::readSelfOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16) { return readMetaAt(FLASH_SELF_OTA_META_ADDR, outVersion, outTotalBytes, outTotalCrc16); }

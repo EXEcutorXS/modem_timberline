@@ -166,6 +166,19 @@
   .device-card .ota-status-row { margin-top: 8px; padding-top: 8px; }
   #otaNoDevicesText { font-size: 13px; color: var(--muted); margin-top: 10px; }
 
+  /* CAN-relay fragment transfer — only shown while canRelayStep is
+     "transferring" (see renderOtaPanel() in app.js); empty track + filled
+     bar, same "outline + solid fill" idiom as .fan-level above, just
+     horizontal instead of vertical. */
+  .relay-progress-bar {
+    margin-top: 8px; height: 6px; border-radius: 3px;
+    background: var(--border); overflow: hidden;
+  }
+  .relay-progress-fill {
+    height: 100%; background: var(--accent);
+    transition: width 0.3s ease;
+  }
+
   #statusPre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 200px; overflow: auto; color: var(--text); }
   #err { color: var(--danger); font-size: 14px; }
   #smsCommand { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; white-space: pre-wrap; color: var(--text); }
@@ -381,6 +394,28 @@
     <details id="miscSettings" class="settings-group">
       <summary>Misc</summary>
     </details>
+    <details id="selfOtaSettings" class="settings-group">
+      <summary id="selfOtaSummary">Modem firmware</summary>
+      <!-- The modem's own firmware — separate section from "Devices" below
+           (own shared modem.ota state, but a fixed single card, not one
+           generated per seen CAN device, and no CAN relay/"Flash" step —
+           applying a staged self-image isn't wired up yet). Built once
+           renderOtaPanel() knows the modem's own type (parsed from
+           modemVersion). Load downloads+stages it into the modem's separate
+           self-OTA buffer (Modem::startOta with the modem's own type — see
+           doOta()'s "self" branch). -->
+      <div class="ota-staged-row">
+        <span id="modemVersionLabel">Modem version</span>
+        <span id="modemVersionText"></span>
+      </div>
+      <div id="selfOtaCard" class="device-card hidden">
+        <div class="device-card-title" id="selfOtaTitle"></div>
+        <div class="setting-row"><label><span id="selfOtaVersionLabel"></span></label>
+        <select id="selfOtaVersion"></select></div>
+        <div class="ota-status-row"><span id="selfOtaStatus"></span>
+        <button id="selfOtaLoad"></button></div>
+      </div>
+    </details>
     <details id="otaSettings" class="settings-group">
       <summary id="otaSummary">Devices</summary>
       <!-- Any device on the CAN bus can show up here (see
@@ -392,25 +427,6 @@
            currently loaded onto that specific device over CAN
            (Timberline::startCanRelay) — only enabled once the staged
            image actually matches this device's type (otaStagedType). -->
-      <div class="ota-staged-row">
-        <span id="modemVersionLabel">Modem version</span>
-        <span id="modemVersionText"></span>
-      </div>
-      <!-- The modem's own firmware — not gated on CAN bus detection like
-           deviceList below (the modem obviously never "sees itself" as a
-           dev<type>_<addr> announcement), so it's a fixed card built once
-           renderOtaPanel() knows the modem's own type (parsed from
-           modemVersion). Load downloads+stages it into the modem's separate
-           self-OTA buffer (Modem::startOta with the modem's own type — see
-           doOta()'s "self" branch); there's no CAN relay/"Flash" button
-           here, applying a staged self-image isn't wired up yet. -->
-      <div id="selfOtaCard" class="device-card hidden">
-        <div class="device-card-title" id="selfOtaTitle"></div>
-        <div class="setting-row"><label><span id="selfOtaVersionLabel"></span></label>
-        <select id="selfOtaVersion"></select></div>
-        <div class="ota-status-row"><span id="selfOtaStatus"></span>
-        <button id="selfOtaLoad"></button></div>
-      </div>
       <div id="deviceList"></div>
       <div id="otaNoDevicesText"></div>
     </details>

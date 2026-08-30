@@ -38,8 +38,26 @@ confirmed that broad erase is safe for this specific device/bootloader.
 Usage:
     python hex_to_ota.py --sectors 5-6 <firmware.hex> [<firmware2.hex> ...]
     python hex_to_ota.py --type 43 --version 43.2.6.13 --sectors 5,6 43.2.6.13_STM_Main.hex
+
+Batch mode — converts a whole tree of hex files in one pass, e.g. a working
+folder laid out as <root>/<type>/<version>[_suffix].hex (matching how
+public/firmware_hex/ is already organized):
+    python hex_to_ota.py --batch host/timberline-web/public/firmware_hex
+Per-type --sectors comes from a small JSON file (default
+host/tools/firmware_sectors.json, next to this script — see its own
+"_readme" key) instead of one CLI flag, since a batch run covers many
+device types at once, each with its own answer. A type with no entry (or
+an explicit `null`) defaults to full erase (empty sectors, same as an
+explicit "") — a deliberate call: the single-file CLI still requires
+--sectors to be passed explicitly if you want anything *other* than full
+erase, this file is just how --batch expresses the same per-type default
+without having to list every type that hasn't earned a narrower one yet.
+Already-published versions (any existing "<version>_0x*.bin" under that
+type's output folder) are skipped unless --force.
 """
 import argparse
+import glob
+import json
 import os
 import re
 import sys
@@ -124,15 +142,95 @@ def build_one(hex_path: str, dev_type: str, version: str, sectors: str):
 
 FILENAME_VERSION_RE = re.compile(r'^(\d+)\.(\d+)\.(\d+)\.(\d+)')
 
+DEFAULT_SECTORS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'firmware_sectors.json')
+
+
+def already_published(dev_type: str, version: str) -> bool:
+    """True if some "<version>_0x*.bin" already exists under this type's
+    output folder — flashBase/sectors can vary between runs (a different
+    hex build, a config change), but the *version* being present at all is
+    what "already published" actually means. """
+    pattern = os.path.join(FIRMWARE_ROOT, dev_type, f'{version}_0x*.bin')
+    return len(glob.glob(pattern)) > 0
+
+
+def run_batch(src_root: str, sectors_file: str, force: bool):
+    try:
+        with open(sectors_file) as f:
+            sectors_map = json.load(f)
+    except FileNotFoundError:
+        print(f'--sectors-file {sectors_file!r} not found', file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f'--sectors-file {sectors_file!r} is not valid JSON: {e}', file=sys.stderr)
+        sys.exit(1)
+
+    converted = skipped_existing = defaulted_types = failed = 0
+    noted_types = set()
+
+    for dev_type in sorted(d for d in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, d))):
+        type_dir = os.path.join(src_root, dev_type)
+        hex_files = sorted(f for f in os.listdir(type_dir) if f.lower().endswith('.hex'))
+        if not hex_files:
+            continue
+
+        # No entry (or explicit null) = full erase, same as an explicit "" —
+        # user's call: unlike the single-file CLI (where omitting --sectors
+        # is a one-off you'd notice), a --batch run covers many types at
+        # once, and requiring every one to be listed here just to get the
+        # already-intended default was pure friction.
+        sectors = sectors_map.get(dev_type) or ''
+        if dev_type not in sectors_map or sectors_map[dev_type] is None:
+            if dev_type not in noted_types:
+                noted_types.add(dev_type)
+                print(f'type {dev_type}: no --sectors entry in {sectors_file} — defaulting to full erase.')
+            defaulted_types += 1
+
+        for fname in hex_files:
+            hex_path = os.path.join(type_dir, fname)
+            m = FILENAME_VERSION_RE.match(fname)
+            if not m:
+                print(f'{hex_path}: filename does not start with "<type>.<v2>.<v3>.<v4>" — skipping', file=sys.stderr)
+                failed += 1
+                continue
+            version = '.'.join(m.groups())
+
+            if not force and already_published(dev_type, version):
+                skipped_existing += 1
+                continue
+
+            try:
+                build_one(hex_path, dev_type, version, sectors)
+                converted += 1
+            except (ValueError, OSError) as e:
+                print(f'{hex_path}: {e}', file=sys.stderr)
+                failed += 1
+
+    print(f'\nDone: {converted} converted, {skipped_existing} already published, '
+          f'{defaulted_types} type(s) defaulted to full erase (no sectors entry), {failed} failed.')
+    if failed:
+        sys.exit(1)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('hex_files', nargs='+')
+    ap.add_argument('hex_files', nargs='*')
     ap.add_argument('--type', help='device type (overrides parsing it from the filename)')
     ap.add_argument('--version', help='full version, e.g. 43.2.6.13 (overrides parsing it from the filename; only valid with a single hex file)')
     ap.add_argument('--sectors', help='erase-sector spec, e.g. "5-6" or "2,5-15" — see the module docstring; omit to publish with no explicit list')
+    ap.add_argument('--batch', metavar='DIR', help='batch-convert every <type>/<version>*.hex under DIR instead of listing files individually — see the module docstring')
+    ap.add_argument('--sectors-file', default=DEFAULT_SECTORS_FILE, help=f'per-type sectors JSON for --batch (default: {DEFAULT_SECTORS_FILE})')
+    ap.add_argument('--force', action='store_true', help='--batch only: re-convert versions that already have a published .bin')
     args = ap.parse_args()
 
+    if args.batch:
+        if args.hex_files or args.type or args.version or args.sectors:
+            ap.error('--batch does not take individual hex files or --type/--version/--sectors — use --sectors-file instead')
+        run_batch(args.batch, args.sectors_file, args.force)
+        return
+
+    if not args.hex_files:
+        ap.error('pass one or more hex files, or use --batch DIR')
     if args.version and len(args.hex_files) != 1:
         ap.error('--version only makes sense with a single input file')
     if args.sectors and not SECTOR_SPEC_RE.match(args.sectors):

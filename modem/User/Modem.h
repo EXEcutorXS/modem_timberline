@@ -20,16 +20,6 @@
    the 208 KB target-device staging buffer. */
 #define MODEM_SELF_OTA_PAGE_COUNT  64
 
-/* Cap on ota.eraseSectors[]/OtaScratch's expanded sector list — the
-   profile's "eraseSectors=" value can now be several comma-separated
-   items, each a single sector or an inclusive "first-last" range (e.g.
-   "2,5-15"), expanded into individual sector numbers by
-   Modem::doFetchProfile(). 32 bytes of RAM comfortably covers any
-   realistic device's sector count with headroom; a published profile
-   that expands past this is simply truncated (doFetchProfile() logs it),
-   same "fail closed, don't guess" spirit as its other parse failures. */
-#define MODEM_MAX_ERASE_SECTORS  32
-
 /* Baked-in fallback broker — applied by flash.cpp's sanitizeString() when
    flash has never held a real value (genuinely erased, factory-fresh
    flash), and mirrored in the Modem constructor below for the in-RAM
@@ -135,34 +125,34 @@ public:
         char      stagedVersion[24];
         uint32_t  stagedBytes;
 
-        /* Which device type this staged image is for, and the flash layout
-           to use when relaying it over CAN (see doCanRelay() in
+        /* Which device type this staged image is for, and the flash base
+           address to use when relaying it over CAN (see doCanRelay() in
            Timberline.cpp) — fetched from "/firmware/<type>/<version>/profile"
            by doFetchProfile() right before the firmware download itself
            (see ST_FETCH_PROFILE). The server derives this on the fly from
            the published firmware file's own name (see
-           host/README.md — "<version>_<flashBaseHex>[_<sectors>].bin",
-           no separate profile.txt/per-type file to keep in sync anymore),
-           so a new device type or a new flash layout for an existing one
-           only needs the right filename, no modem reflash. RAM-only, not
-           persisted to flash alongside stagedVersion/stagedBytes above — a
-           reboot between "staged" and "relay" loses this and needs a fresh
+           host/README.md — "<version>_<flashBaseHex>.bin"), so a new
+           device type or a new flash base for an existing one only needs
+           the right filename, no modem reflash. RAM-only, not persisted to
+           flash alongside stagedVersion/stagedBytes above — a reboot
+           between "staged" and "relay" loses this and needs a fresh
            otaStart (which re-fetches the profile anyway), same as any
            other in-progress state this firmware doesn't carry across a
            reset.
 
-           eraseSectorCount==0 is a valid state now, not an error — it
-           means the published filename carried no sector list at all
-           ("erase the whole program region" — either because the target
-           bootloader is new enough to erase just its own program natively
-           without being told sectors, or because whoever published this
-           particular firmware confirmed the broad "erase everything"
-           command is safe for it). doCanRelay() branches on this — see its
-           own comment. */
+           No per-sector erase list any more (removed 2026-08-29, see
+           doCanRelay()'s case 2 comment) — every relay onto a gen2
+           bootloader (the only algorithm implemented) now always sends the
+           bootloader's own broad "erase sectors 2-7" command (D[1]=255)
+           instead of an explicit, narrower list. Simpler and matches what
+           CAN-Tool has always done; the earlier narrower-list design was
+           trying to avoid touching BLE_ID/Config/BB_Common, but that
+           safety property turned out not to be worth the complexity and
+           RAM-only-persistence fragility it added (a whole bricking
+           incident traced back to this power-cycle-losing eraseSectors[]
+           the same day it was removed). */
         uint8_t   deviceType;
         uint32_t  flashBase;
-        uint8_t   eraseSectors[MODEM_MAX_ERASE_SECTORS];
-        uint8_t   eraseSectorCount;
     } ota;
     void startOta(uint8_t deviceType, const char* version);  /* called from onMqttCommandReceived() */
 
@@ -194,27 +184,44 @@ public:
     /* Bootloader "algorithm" table — which PGN105/106 command sequence a
        given bootloader version actually supports safely, since not every
        bootloader out there behaves the same (some are known unstable and
-       must never be used for OTA). Fetched from "/bootloaders.txt" (the
-       whole table, not per-device — bootloader identity is independent of
-       which device type it's flashing) right alongside the profile, see
-       doFetchProfile(). Timberline::doCanRelay() looks up the bootloader's
-       own announced version (from its PGN=18 reply, see
-       ProcessCanMessage()'s case 123) via lookupBootloaderAlgorithm() once
-       it's detected, before doing anything destructive:
+       must never be used for OTA). Compiled-in only (see
+       BUILTIN_BOOTLOADERS in Modem.cpp) — no runtime fetch of any kind
+       (removed 2026-08-29, user's call: a version missing from this table
+       means the modem's own firmware needs an update, not a retry or a
+       download). Timberline::doCanRelay() looks up the bootloader's own
+       announced version (from its PGN=18 reply, see CanRelay's own
+       ProcessCanMessage()) via lookupBootloaderAlgorithm() once it's
+       detected, before doing anything destructive:
          algorithm 0 (not found in the table) or 1 (known unstable, never
            safe for OTA) — refuse, fail the relay immediately.
          algorithm 2 — the current doCanRelay() sequence (set-address/erase/
            flash/verify via PGN105 sub0-7), safe on every bootloader tested
            so far.
-       A missing/unreachable bootloaders.txt does NOT fail the OTA download
-       itself (unlike the profile) — it just leaves the table empty, so any
-       later CAN relay attempt safely refuses (unknown algorithm) rather
-       than guessing. */
-    struct BootloaderEntry { uint8_t version[4]; uint8_t algorithm; };
-    enum { BOOTLOADER_TABLE_MAX = 16 };
-    BootloaderEntry bootloaderTable[BOOTLOADER_TABLE_MAX];
-    uint8_t bootloaderTableCount;
+
+       Each entry also carries which device *types* that bootloader build
+       is actually meant for (user's call, 2026-08-29: "очень важно не
+       прошить программу не по адресу" — a bootloader version is built for
+       one specific hardware family; using it to relay a firmware image
+       staged for some OTHER device type is a real bricking risk distinct
+       from the algorithm question, since the target's actual hardware
+       (flash layout, peripherals) may not match what that image expects
+       at all). Known families as of this table:
+         123.0.2.x — MBC-2 only (type 125)
+         123.0.0.x — the Binar family (types 23,27,34,35,43,44)
+         123.0.3.x — control panels (type 126)
+       isDeviceTypeSupportedByBootloader() checks this; CanRelay::handler()
+       refuses the relay if the operator's requested targetType isn't in
+       the detected bootloader's own list, even when the algorithm itself
+       would otherwise be safe. */
+    struct BootloaderEntry {
+        uint8_t version[4];
+        uint8_t algorithm;
+        uint8_t supportedTypes[8]; /* device types this bootloader build is valid for;
+                                       unused trailing slots are 0 (never a real device
+                                       type — see CAN protocol doc) and end the list */
+    };
     uint8_t lookupBootloaderAlgorithm(const uint8_t* version);
+    bool    isDeviceTypeSupportedByBootloader(const uint8_t* version, uint8_t deviceType);
 
     /* Auto-registration status, broadcast to the panel over CAN (PGN60 sub-
        packet 4 — see canBroadcast() in work.cpp) since the panel has no MQTT
@@ -482,7 +489,16 @@ private:
        wired up). */
     enum { MQTT_PUB_MAX = 96 };
     struct MqttPubEntry {
-        char name[16];
+        /* Must fit the longest topic name with room to spare — "canRelayProgress"
+           is exactly 16 characters, one past what the old name[16] could hold
+           (15 chars + null), and mqttPublish()'s strncpy silently truncated it
+           to "canRelayProgres" with no error anywhere. The modem kept publishing
+           that truncated name correctly the whole time (confirmed in the raw AT
+           log); the web UI just never matched it since it was looking for the
+           full "canRelayProgress" key — looked exactly like a rendering bug
+           from the browser side, but the real bug was this buffer being one
+           byte too small for this one name. Found on real hardware 2026-08-29. */
+        char name[24];
         /* Must fit the largest single payload: the "errors" CSV topic's
            worst case (8 codes × 3 digits + 7 commas + null = 32) is
            currently the biggest, just ahead of "telemetry"'s 24-char
@@ -545,9 +561,7 @@ private:
                               including the final "+HTTPREAD: 0" terminator, overwrites it. */
     } otaScratch;
     void     doOta(void);
-    void     doFetchProfile(void);  /* runs before doOta() — see ST_FETCH_PROFILE; also fetches
-                                        bootloaders.txt into bootloaderTable[], see its comment */
-    void     parseBootloaderTable(const char* buf);  /* fills bootloaderTable[]/bootloaderTableCount */
+    void     doFetchProfile(void);  /* runs before doOta() — see ST_FETCH_PROFILE */
     void     refreshStagedInfo(void);  /* re-reads ota.stagedValid/stagedVersion/stagedBytes from flash */
 
     /* ── Auto-registration scratch (see doAutoRegister(), startAutoRegister()) ── */

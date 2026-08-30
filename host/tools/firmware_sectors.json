@@ -1,0 +1,4 @@
+{
+  "_readme": "Per-device-type erase-sector spec used by hex_to_ota.py --batch. Key = device type (string, matches the firmware_hex/<type>/ folder name). Value = the --sectors string to use for every hex under that type (e.g. \"5-6\" or \"2,5-15\"). A type with no entry here (or an explicit null) defaults to full erase, same as an explicit \"\" — only list a type here if it needs a narrower, explicit sector list instead of that default. This is a per-device/per-bootloader safety decision (which sectors are safe to erase without touching settings/black-box data) — not something derivable from the hex file. See host/README.md's Firmware OTA section.",
+  "125": "5,6"
+}

@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 8
+#define VERSION_4 9
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,9 @@
 0x20023FFC     4 B      BOOT_MAGIC_ADDR — флаг "войти в загрузчик / в приложение"
 
 
+121.0.0.9
+Bootloader find filter bug fixed
+bootloader table lazy load added + hardcoded table of known bootloaders
 121.0.0.8
 Adapted for 123.0.4.13 bootloader
 Type/adr filter now works only for commands

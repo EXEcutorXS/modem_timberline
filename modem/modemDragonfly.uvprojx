@@ -453,6 +453,11 @@
               <FileType>8</FileType>
               <FilePath>.\User\Timberline.cpp</FilePath>
             </File>
+            <File>
+              <FileName>CanRelay.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>.\User\CanRelay.cpp</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

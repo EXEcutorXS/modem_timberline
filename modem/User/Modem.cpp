@@ -55,8 +55,7 @@ Modem::Modem()
     config.cmdAck = true;
     ota.status = OTA_IDLE; ota.page = 0; ota.pageTotal = 0;
     ota.stagedValid = false; ota.stagedVersion[0] = 0; ota.stagedBytes = 0;
-    ota.deviceType = 0; ota.flashBase = 0; ota.eraseSectorCount = 0;
-    bootloaderTableCount = 0;
+    ota.deviceType = 0; ota.flashBase = 0;
 
     sms.pending = false; sms.slot = 0; sms.notifySlot = 0; sms.notifyPending = false;
     timers.csq = 0; timers.creg = 0; timers.net = 0; timers.mqttRetry = 0; timers.smsPoll = 0;
@@ -145,8 +144,35 @@ void Modem::initialize(void) {
    after doOta() finishes. */
 void Modem::refreshStagedInfo(void) {
     uint16_t crcUnused;
-    ota.stagedValid = flash.readOtaMeta(ota.stagedVersion, &ota.stagedBytes, &crcUnused);
-    if (!ota.stagedValid) { ota.stagedVersion[0] = 0; ota.stagedBytes = 0; }
+    /* flashBase is persisted alongside version/bytes now (see
+       Flash_C::writeOtaMeta()'s own comment) — fixed 2026-08-29 after a
+       real bricking incident traced to flashBase staying 0 across a
+       reboot while the web UI, thanks to the deviceType-restore fix right
+       below, showed "Loaded, ready to Flash" as if everything were fine.
+       Timberline::doCanRelay() still has its own flashBase==0 refuse-to-
+       proceed check as a hard backstop — this restore just means that
+       check won't normally fire any more. */
+    ota.stagedValid = flash.readOtaMeta(ota.stagedVersion, &ota.stagedBytes, &crcUnused, &ota.flashBase);
+    if (!ota.stagedValid) { ota.stagedVersion[0] = 0; ota.stagedBytes = 0; ota.flashBase = 0; }
+    else {
+        /* ota.deviceType itself isn't persisted directly — but a version
+           string's first component IS the device type by convention (see
+           the CAN protocol doc — every version quad's first byte is the
+           product type), so it can be recovered from stagedVersion alone.
+           Confirmed missing on real hardware 2026-08-29: after a modem
+           reboot, otaStaged correctly republished the staged version, but
+           otaStagedType stayed 0 (never having been re-derived), so the web
+           UI's per-device-card matching (app.js, `dev.type === stagedType`)
+           never matched any real device and the card silently showed
+           nothing staged, looking exactly like the modem had "forgotten"
+           what firmware it was holding. */
+        uint32_t t = 0;
+        for (const char* p = ota.stagedVersion; *p && *p != '.'; p++) {
+            if (*p < '0' || *p > '9') { t = 0; break; }
+            t = t * 10 + (uint32_t)(*p - '0');
+        }
+        ota.deviceType = (t <= 255) ? (uint8_t)t : 0;
+    }
 
     uint16_t selfCrcUnused;
     selfOta.stagedValid = flash.readSelfOtaMeta(selfOta.stagedVersion, &selfOta.stagedBytes, &selfCrcUnused);
@@ -1642,6 +1668,17 @@ void Modem::doMqttSub(void) {
 
 void Modem::doMqttPub(void) {
     static uint8_t  pubIdx = 0;
+    static uint8_t  scanFrom = 0;        /* round-robin cursor for case 0's scan below —
+                                             resume just past the last-serviced slot instead
+                                             of always rescanning from index 0, so a low-index
+                                             field that's dirty on every pass (e.g. a fast-
+                                             churning device-discovery entry) can't starve a
+                                             rarer, higher-index one indefinitely. Confirmed on
+                                             real hardware 2026-08-29: canRelayStep/canRelayProgress
+                                             (registered late, high slot index) got starved during
+                                             a CAN relay by lower-index traffic, hiding the web
+                                             UI's progress bar even though the relay itself
+                                             finished successfully. */
     static char     topicBuf[64];
     static char     cmdBuf[32];
     static uint32_t t = 0;
@@ -1656,27 +1693,49 @@ void Modem::doMqttPub(void) {
 
     switch (step) {
     case 0: {
-        bool found = false;
-        for (uint8_t i = 0; i < MQTT_PUB_MAX; i++)
-            if (mqttScratch.pubQueue[i].dirty) { pubIdx = i; found = true; break; }
-        if (!found) { setState(ST_IDLE); return; }
+        /* atCmd() only actually (re-)transmits when its command STRING's hash
+           changes — while step stays 0 waiting for a response, case 0 keeps
+           re-running every tick, so picking pubIdx/building cmdBuf must
+           happen exactly once per attempt, not on every re-entry. The old
+           "always scan from index 0" version got away with rebuilding on
+           every re-entry because it deterministically re-found the same
+           entry each time (same string -> same hash -> atCmd() recognised
+           it as still in flight). The round-robin scan below advances
+           scanFrom as soon as an entry is picked, so a naive rebuild on
+           every re-entry would pick a DIFFERENT entry each tick before the
+           first one's response ever arrived — confirmed on real hardware
+           2026-08-29: a storm of distinct AT+CMQTTTOPIC commands fired ~1ms
+           apart, each abandoning the previous still-unanswered one. Gating
+           the pick behind `picked` restores the one-attempt-per-command
+           invariant regardless of scan order. */
+        static bool picked = false;
+        if (!picked) {
+            bool found = false;
+            for (uint8_t n = 0; n < MQTT_PUB_MAX; n++) {
+                uint8_t i = (uint8_t)((scanFrom + n) % MQTT_PUB_MAX);
+                if (mqttScratch.pubQueue[i].dirty) { pubIdx = i; found = true; break; }
+            }
+            if (!found) { setState(ST_IDLE); return; }
+            scanFrom = (uint8_t)((pubIdx + 1) % MQTT_PUB_MAX);
+            picked = true;
 
-        pubFailed = false;
+            pubFailed = false;
 
-        int n = 0;
-        const int topicMax = (int)sizeof(topicBuf) - 1;
-        for (const char* p = mqtt.username; *p && n < topicMax; ) topicBuf[n++] = *p++;
-        const char* mid = "/cmd/actual/";
-        for (const char* p = mid; *p && n < topicMax; ) topicBuf[n++] = *p++;
-        for (const char* p = mqttScratch.pubQueue[pubIdx].name; *p && n < topicMax; ) topicBuf[n++] = *p++;
-        topicBuf[n] = 0;
+            int n = 0;
+            const int topicMax = (int)sizeof(topicBuf) - 1;
+            for (const char* p = mqtt.username; *p && n < topicMax; ) topicBuf[n++] = *p++;
+            const char* mid = "/cmd/actual/";
+            for (const char* p = mid; *p && n < topicMax; ) topicBuf[n++] = *p++;
+            for (const char* p = mqttScratch.pubQueue[pubIdx].name; *p && n < topicMax; ) topicBuf[n++] = *p++;
+            topicBuf[n] = 0;
+        }
 
         int cn = 0;
         const char* pre = "AT+CMQTTTOPIC=0,";
         while (*pre) cmdBuf[cn++] = *pre++;
-        cn = appendUint(cmdBuf, cn, (uint16_t)n);
+        cn = appendUint(cmdBuf, cn, (uint16_t)strlen(topicBuf));
         cmdBuf[cn++] = '\r'; cmdBuf[cn++] = '\n'; cmdBuf[cn] = 0;
-        if (atCmd(cmdBuf, 2000)) { if (answer & ANS_ERROR) pubFailed = true; step++; }
+        if (atCmd(cmdBuf, 2000)) { if (answer & ANS_ERROR) pubFailed = true; step++; picked = false; }
         break;
     }
     case 1:
@@ -2002,88 +2061,103 @@ static void buildOtaUrl(char* out, const char* mqttBroker, uint8_t deviceType, c
     out[n] = 0;
 }
 
-/* Builds "http://<mqttBroker>:3000/bootloaders.txt" — fetched by
-   doFetchProfile() right after the profile itself. Same plain-HTTP,
-   port-3000, bypass-nginx path as buildOtaUrl() above (see its comment) —
-   one shared table, not per-type/per-version like the profile is. */
-static void buildBootloaderTableUrl(char* out, const char* mqttBroker) {
-    int n = 0;
-    const char* pre = "http://";
-    while (*pre) out[n++] = *pre++;
-    for (const char* p = mqttBroker; *p && n < 150; ) out[n++] = *p++;
-    const char* suf = ":3000/bootloaders.txt";
-    for (const char* p = suf; *p && n < 175; ) out[n++] = *p++;
-    out[n] = 0;
+/* Known bootloader versions and which relay algorithm is safe for each —
+   the sole source of truth (2026-08-29, user's call: "никаких загрузок
+   списков бутлодеров. Только то что есть - если нет в списке - значит
+   пора обновлять сам модем" — no downloading bootloader lists at all; if a
+   version isn't in this compiled-in table, that means the modem's own
+   firmware needs updating, not a runtime fetch). Previously fetched from
+   "/bootloaders.txt" at relay time (and, before that, alongside a Load) —
+   both fetch paths removed the same day; update this array by hand and
+   ship a new modem build when a new bootloader version needs adding. */
+#define BINAR_TYPES 23,27,34,35,43,44,0,0
+static const Modem::BootloaderEntry BUILTIN_BOOTLOADERS[] = {
+    { {123,0,0,4},  1, {BINAR_TYPES} },
+    { {123,0,0,11}, 2, {BINAR_TYPES} },
+    { {123,0,0,13}, 3, {BINAR_TYPES} },
+    { {123,0,2,4},  1, {125,0,0,0,0,0,0,0} },
+    { {123,0,2,5},  1, {125,0,0,0,0,0,0,0} },
+    { {123,0,2,6},  2, {125,0,0,0,0,0,0,0} },
+    { {123,0,2,7},  2, {125,0,0,0,0,0,0,0} },
+    { {123,0,2,13}, 3, {125,0,0,0,0,0,0,0} },
+		{ {123,0,3,13}, 3, {126,0,0,0,0,0,0,0} },
+};
+#undef BINAR_TYPES
+static const uint8_t BUILTIN_BOOTLOADERS_COUNT = sizeof(BUILTIN_BOOTLOADERS) / sizeof(BUILTIN_BOOTLOADERS[0]);
+
+/* Matches a reported version against a BUILTIN_BOOTLOADERS entry ignoring
+   byte[1] — that's the supply-voltage variant (0=12V, 1=24V per the CAN
+   protocol doc), which doesn't affect the flashing protocol or which
+   device types a build targets, and isn't used for anything else in this
+   codebase yet (user's call, 2026-08-29: "вторая цифра... пока нигде не
+   используется, но пусть пока её не будет проверять"). byte[0] (123,
+   fixed) and byte[2] (the family selector — see BootloaderEntry's comment
+   in Modem.h) are what actually distinguish entries; byte[3] (specific
+   build) still has to match exactly, since different builds within the
+   same family can carry different algorithm safety. Without ignoring
+   byte[1], a real 24V device's bootloader would never match a table built
+   from 12V samples at all, even though it's otherwise the identical
+   build. */
+static bool bootloaderVersionMatches(const uint8_t* tableVersion, const uint8_t* reportedVersion) {
+    return tableVersion[0] == reportedVersion[0]
+        && tableVersion[2] == reportedVersion[2]
+        && tableVersion[3] == reportedVersion[3];
 }
 
 uint8_t Modem::lookupBootloaderAlgorithm(const uint8_t* version) {
-    for (uint8_t i = 0; i < bootloaderTableCount; i++)
-        if (memcmp(bootloaderTable[i].version, version, 4) == 0) return bootloaderTable[i].algorithm;
+    for (uint8_t i = 0; i < BUILTIN_BOOTLOADERS_COUNT; i++)
+        if (bootloaderVersionMatches(BUILTIN_BOOTLOADERS[i].version, version)) return BUILTIN_BOOTLOADERS[i].algorithm;
     return 0;  /* not found — Timberline::doCanRelay() treats 0 the same as
-                  a known-unsafe algorithm and refuses to relay */
+                  a known-unsafe algorithm and refuses to relay; the fix is
+                  a modem firmware update that adds this version above, not
+                  a retry */
 }
 
-/* Hand-rolled "<v1>.<v2>.<v3>.<v4>=<algorithm>" line scanner for
-   bootloaders.txt, same style as the rest of this file's AT-response
-   parsing — no sscanf/JSON. Malformed lines are just skipped (scan resumes
-   at the next '\n'), so one bad line doesn't lose the rest of the table. */
-void Modem::parseBootloaderTable(const char* buf) {
-    bootloaderTableCount = 0;
-    const char* p = buf;
-    while (*p && bootloaderTableCount < BOOTLOADER_TABLE_MAX) {
-        uint8_t ver[4]; uint8_t vi = 0;
-        while (vi < 4 && *p >= '0' && *p <= '9') {
-            uint32_t v = 0;
-            while (*p >= '0' && *p <= '9') { v = v * 10 + (uint8_t)(*p - '0'); p++; }
-            ver[vi++] = (uint8_t)v;
-            if (*p == '.') p++;
-        }
-        if (vi == 4 && *p == '=') {
-            p++;
-            uint32_t algo = 0; bool any = false;
-            while (*p >= '0' && *p <= '9') { algo = algo * 10 + (uint8_t)(*p - '0'); p++; any = true; }
-            if (any) {
-                memcpy(bootloaderTable[bootloaderTableCount].version, ver, 4);
-                bootloaderTable[bootloaderTableCount].algorithm = (uint8_t)algo;
-                bootloaderTableCount++;
-            }
-        }
-        while (*p && *p != '\n') p++;
-        if (*p == '\n') p++;
+/* Refuses a relay whose target device type doesn't match what this
+   specific bootloader build is actually meant for — see BootloaderEntry's
+   own comment in Modem.h for the known families and why this check exists
+   separately from the algorithm one above (a safe *protocol* doesn't mean
+   the *image* is right for this hardware). Returns false for a version not
+   in the table at all too — lookupBootloaderAlgorithm() already refuses
+   that case (algorithm 0), this is just consistent about it rather than
+   claiming "supported" by default. */
+bool Modem::isDeviceTypeSupportedByBootloader(const uint8_t* version, uint8_t deviceType) {
+    for (uint8_t i = 0; i < BUILTIN_BOOTLOADERS_COUNT; i++) {
+        if (!bootloaderVersionMatches(BUILTIN_BOOTLOADERS[i].version, version)) continue;
+        for (uint8_t j = 0; j < 8 && BUILTIN_BOOTLOADERS[i].supportedTypes[j] != 0; j++)
+            if (BUILTIN_BOOTLOADERS[i].supportedTypes[j] == deviceType) return true;
+        return false;
     }
+    return false;
 }
 
 /* Fetches "/firmware/<otaScratch.deviceType>/<otaScratch.version>/profile"
    (built with buildOtaUrl() above — same "<type>/<version>/<filename>"
    shape as the firmware image itself, no separate URL builder needed) and
-   parses it into ota.flashBase/eraseSectors/eraseSectorCount — the flash
-   layout doCanRelay() needs (base address, which sectors are safe to erase
-   without wiping settings/black-box). Per-*version* now, not per-type: the
-   server derives this on the fly from the matched firmware file's own
-   name (see host/README.md), so different versions of the same device
-   type can carry different flash layouts (e.g. a gen2-bootloader build
-   needing an explicit sector list vs. a gen3 one that doesn't) without a
-   shared file going stale. Runs once, right before doOta() fetches the
-   firmware image itself (see ST_FETCH_PROFILE in doIdle()) — same proven
-   HTTPINIT/HTTPPARA/
-   HTTPACTION/HTTPREAD(x2)/HTTPTERM sequence as doOta()'s own
-   firmware.crc16 fetch below, just against a much smaller plain-text file
-   instead of a binary CRC array. Expected format, one KEY=VALUE per line:
+   parses it into ota.flashBase — the one piece of flash layout
+   doCanRelay() needs now (see its case 2 comment for why there's no
+   per-sector erase list any more, removed 2026-08-29). Per-*version* now,
+   not per-type: the server derives this on the fly from the matched
+   firmware file's own name (see host/README.md), so different versions of
+   the same device type can carry different flash bases without a shared
+   file going stale. Runs once, right before doOta() fetches the firmware
+   image itself (see ST_FETCH_PROFILE in doIdle()) — same proven
+   HTTPINIT/HTTPPARA/HTTPACTION/HTTPREAD(x2)/HTTPTERM sequence as doOta()'s
+   own firmware.crc16 fetch below, just against a much smaller plain-text
+   file instead of a binary CRC array. Expected format, one KEY=VALUE per
+   line:
      flashBase=0x08020000
-     eraseSectors=5,6
-   eraseSectors accepts comma-separated single numbers and/or inclusive
-   "first-last" ranges (e.g. "2,5-15"), and the whole line is optional —
-   see the parser below for what its absence means. A profile that's
-   missing, unreachable, or has a present-but-malformed field fails the
-   whole otaStart the same way a missing firmware.crc16 already does —
-   there's no safe default flash layout to fall back to for an unknown
-   device type/version. */
+   A profile that's missing, unreachable, or has a malformed/missing
+   flashBase= fails the whole otaStart the same way a missing
+   firmware.crc16 already does — there's no safe default flash base to
+   fall back to for an unknown device type/version (unlike the erase
+   command, this one genuinely differs per firmware and can't be a single
+   hardcoded constant). */
 void Modem::doFetchProfile(void) {
     static char cmd[192];
     static char url[160];
     static char profileBuf[96];
     static uint16_t profileLen;
-    static char bootloaderBuf[512];
     static uint32_t t = 0;
 
     switch (step) {
@@ -2159,124 +2233,14 @@ void Modem::doFetchProfile(void) {
                 }
                 if (any) { ota.flashBase = v; gotBase = true; }
             }
-            /* eraseSectors= is optional now — its absence is a valid state
-               (eraseSectorCount stays 0, meaning "erase the whole program
-               region", see doCanRelay()), not a parse failure. When
-               present, each comma-separated item is either a bare sector
-               number or an inclusive "first-last" range (e.g.
-               "2,5-15") — expanded here into individual sector bytes so
-               doCanRelay()'s per-sector erase loop doesn't need to know
-               about ranges at all. Only a *malformed* eraseSectors= (the
-               key is there but nothing valid parses out of it) fails the
-               profile — same as a bad/missing flashBase. */
-            ota.eraseSectorCount = 0;
-            bool sectorsOk = true;
-            const char* secKey = strstr(profileBuf, "eraseSectors=");
-            if (secKey) {
-                const char* p = secKey + 13;  /* strlen("eraseSectors=") */
-                uint8_t count = 0;
-                bool any = false;
-                while (*p && *p != '\n' && *p != '\r' && count < MODEM_MAX_ERASE_SECTORS) {
-                    if (*p < '0' || *p > '9') { p++; continue; }
-                    uint32_t first = 0;
-                    while (*p >= '0' && *p <= '9') { first = first * 10 + (uint8_t)(*p - '0'); p++; }
-                    uint32_t last = first;
-                    if (*p == '-') {
-                        p++;
-                        uint32_t v = 0; bool anyDigit = false;
-                        while (*p >= '0' && *p <= '9') { v = v * 10 + (uint8_t)(*p - '0'); p++; anyDigit = true; }
-                        if (anyDigit) last = v;
-                    }
-                    if (last < first) { uint32_t tmp = first; first = last; last = tmp; } /* defensive — malformed "b-a" */
-                    for (uint32_t s = first; s <= last && count < MODEM_MAX_ERASE_SECTORS; s++) {
-                        ota.eraseSectors[count++] = (uint8_t)s;
-                        any = true;
-                    }
-                    if (*p == ',') p++;
-                }
-                ota.eraseSectorCount = count;
-                if (!any) sectorsOk = false;
-            }
-            if (!gotBase || !sectorsOk) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
-            else { ota.deviceType = otaScratch.deviceType; logOtaInfoNum("profile flashBase", ota.flashBase); logOtaInfoNum("profile eraseSectorCount", ota.eraseSectorCount); }
+            if (!gotBase) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
+            else { ota.deviceType = otaScratch.deviceType; logOtaInfoNum("profile flashBase", ota.flashBase); }
             step = 6;
         } else if ((core.getTick() - t) >= 8000) {
             rawCapture.dst = 0;
             logOtaFail(5, "profile-httpread-timeout", rawCapture.got);
             otaScratch.failed = true;
             step = 6;
-        }
-        break;
-    }
-    /* Steps 6-10: fetch+parse "/bootloaders.txt" — the same HTTPINIT
-       session as the profile fetch above, just a second HTTPPARA/HTTPACTION
-       cycle (same pattern doOta() uses for crc16-then-bin, no HTTPTERM/
-       HTTPINIT needed in between). Unlike the profile, a failure here does
-       NOT fail otaScratch/the whole OTA — the firmware download itself
-       doesn't need this table, only the later CAN relay does (see
-       Modem::lookupBootloaderAlgorithm()), and an empty table just makes
-       that step safely refuse rather than guess. Skipped entirely if the
-       profile fetch itself already failed — no point spending a second
-       HTTP round-trip once otaScratch.failed is already true. */
-    case 6: {
-        if (otaScratch.failed) { step = 13; break; }
-        buildBootloaderTableUrl(url, mqtt.broker);
-        int n = 0;
-        const char* pre = "AT+HTTPPARA=\"URL\",\"";
-        while (*pre) cmd[n++] = *pre++;
-        for (const char* p = url; *p && n < 185; ) cmd[n++] = *p++;
-        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
-        if (atCmd(cmd, 500)) step = 9;
-        break;
-    }
-    case 9:
-        if (atCmd("AT+HTTPACTION=0\r\n", 3000)) {
-            if (answer & ANS_ERROR) { logOtaInfo("bootloaders-httpaction-cmd-error, skipping table"); step = 13; }
-            else { answer &= ~ANS_HTTPACTION; t = core.getTick(); step++; }
-        }
-        break;
-    case 10:
-        if (answer & ANS_HTTPACTION) {
-            if (http.status != 200 || http.dataLen == 0) { logOtaInfoNum("bootloaders-http-status, skipping table", http.status); step = 13; }
-            else step++;
-        } else if ((core.getTick() - t) >= 20000) { logOtaInfo("bootloaders-http-timeout, skipping table"); step = 13; }
-        break;
-    case 11: {
-        uint16_t len = http.dataLen;
-        if (len > sizeof(bootloaderBuf) - 1) len = sizeof(bootloaderBuf) - 1;
-        otaScratch.readLen = len;
-        rawCapture.dst = (uint8_t*)bootloaderBuf;
-        rawCapture.cap = sizeof(bootloaderBuf) - 1;
-        rawCapture.got = 0;
-        rawCapture.chunkRemaining = 0;
-        int n = 0;
-        const char* pre = "AT+HTTPREAD=0,";
-        while (*pre) cmd[n++] = *pre++;
-        n = appendUint(cmd, n, len);
-        cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
-        if (atCmd(cmd, 3000)) {
-            if (answer & ANS_ERROR) { rawCapture.dst = 0; logOtaInfo("bootloaders-httpread-cmd-error, skipping table"); step = 13; break; }
-            answer &= ~ANS_HTTPREAD_DONE;
-            t = core.getTick();
-            step++;
-        }
-        break;
-    }
-    case 12: {
-        if (answer & ANS_HTTPREAD_DONE) {
-            rawCapture.dst = 0;
-            if (rawCapture.got == otaScratch.readLen) {
-                bootloaderBuf[rawCapture.got] = 0;
-                parseBootloaderTable(bootloaderBuf);
-                logOtaInfoNum("bootloader table entries", bootloaderTableCount);
-            } else {
-                logOtaInfoNum("bootloaders-len-mismatch, skipping table", rawCapture.got);
-            }
-            step = 13;
-        } else if ((core.getTick() - t) >= 8000) {
-            rawCapture.dst = 0;
-            logOtaInfo("bootloaders-httpread-timeout, skipping table");
-            step = 13;
         }
         break;
     }
@@ -2577,7 +2541,7 @@ void Modem::doOta(void) {
                 uint32_t totalBytes = (uint32_t)ota.pageTotal * MODEM_OTA_PAGE_SIZE;
                 uint16_t totalCrc16 = flashCrc16((const uint8_t*)(self ? FLASH_SELF_OTA_BUF_ADDR : FLASH_OTA_BUF_ADDR), totalBytes);
                 if (self) flash.writeSelfOtaMeta(otaScratch.version, totalBytes, totalCrc16);
-                else      flash.writeOtaMeta(otaScratch.version, totalBytes, totalCrc16);
+                else      flash.writeOtaMeta(otaScratch.version, totalBytes, totalCrc16, ota.flashBase);
                 refreshStagedInfo();  /* re-read rather than trust the write blindly succeeded */
             }
             ota.status = otaScratch.failed ? OTA_ERROR : OTA_DONE;

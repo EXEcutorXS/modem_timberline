@@ -329,8 +329,59 @@ bool Flash_C::readMetaAt(uint32_t metaAddr, char* outVersion, uint32_t* outTotal
     return true;
 }
 
-bool Flash_C::writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16) { return writeMetaAt(FLASH_OTA_META_ADDR, version, totalBytes, totalCrc16); }
-bool Flash_C::readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16) { return readMetaAt(FLASH_OTA_META_ADDR, outVersion, outTotalBytes, outTotalCrc16); }
+/* Target-device OTA meta — same 36-byte record shape as writeMetaAt()/
+   readMetaAt() above, but NOT built on top of them: this one also carries
+   flashBase in 4 of the record's 5 previously-unused reserved bytes (see
+   writeMetaAt()'s own comment on the layout). Kept as its own standalone
+   read/write pair rather than adding an optional parameter to the shared
+   helper, since writeSelfOtaMeta()/readSelfOtaMeta() (self-OTA has no
+   flashBase concept) still need the plain 3-field version. */
+bool Flash_C::writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16, uint32_t flashBase)
+{
+    uint8_t array[36];
+    uint16_t a = 0, x;
+
+    for (x = 0; x < 24; x++) array[a++] = (uint8_t)version[x];
+    array[a++] = (uint8_t)(totalBytes);       array[a++] = (uint8_t)(totalBytes >> 8);
+    array[a++] = (uint8_t)(totalBytes >> 16); array[a++] = (uint8_t)(totalBytes >> 24);
+    array[a++] = (uint8_t)(totalCrc16);       array[a++] = (uint8_t)(totalCrc16 >> 8);
+    array[a++] = (uint8_t)(flashBase);        array[a++] = (uint8_t)(flashBase >> 8);
+    array[a++] = (uint8_t)(flashBase >> 16);  array[a++] = (uint8_t)(flashBase >> 24);
+    array[a++] = 0; /* still reserved */
+
+    uint8_t sum = 0;
+    for (a = 0; a < 35; a++) sum += array[a];
+    array[35] = sum;
+
+    FLASH_Unlock();
+    bool ok = (FLASH_EraseOnePage(FLASH_OTA_META_ADDR) == FLASH_COMPL);
+    if (ok) {
+        for (a = 0; a < 36; a += 4) {
+            uint32_t word = (uint32_t)array[a] | ((uint32_t)array[a+1] << 8)
+                           | ((uint32_t)array[a+2] << 16) | ((uint32_t)array[a+3] << 24);
+            if (FLASH_ProgramWord(FLASH_OTA_META_ADDR + a, word) != FLASH_COMPL) { ok = false; break; }
+        }
+    }
+    FLASH_Lock();
+    return ok;
+}
+
+bool Flash_C::readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16, uint32_t* outFlashBase)
+{
+    uint8_t array[36];
+    uint16_t a;
+    uint8_t sum = 0;
+
+    for (a = 0; a < 36; a++) array[a] = *(__IO uint8_t*)(FLASH_OTA_META_ADDR + a);
+    for (a = 0; a < 35; a++) sum += array[a];
+    if (sum != array[35]) return false;
+
+    for (a = 0; a < 24; a++) outVersion[a] = (char)array[a];
+    *outTotalBytes = (uint32_t)array[24] | ((uint32_t)array[25] << 8) | ((uint32_t)array[26] << 16) | ((uint32_t)array[27] << 24);
+    *outTotalCrc16 = (uint16_t)array[28] | ((uint16_t)array[29] << 8);
+    *outFlashBase  = (uint32_t)array[30] | ((uint32_t)array[31] << 8) | ((uint32_t)array[32] << 16) | ((uint32_t)array[33] << 24);
+    return true;
+}
 
 bool Flash_C::writeSelfOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16) { return writeMetaAt(FLASH_SELF_OTA_META_ADDR, version, totalBytes, totalCrc16); }
 bool Flash_C::readSelfOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16) { return readMetaAt(FLASH_SELF_OTA_META_ADDR, outVersion, outTotalBytes, outTotalCrc16); }

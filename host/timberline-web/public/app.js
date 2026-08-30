@@ -74,6 +74,10 @@ const I18N = {
     deviceAddressLabel: 'Address', deviceVersionLabel: 'version', modemVersionLabel: 'Modem version',
     canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
     canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
+    canRelayStepSwitching: 'Switching to bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedSuffix: 'found (gen2)',
+    canRelayStepErasing: 'Erasing memory…', canRelayStepErased: 'Erase successful',
+    canRelayStepTransferring: 'Transferring fragment', canRelayStepReturning: 'Transfer complete, returning to app…',
+    canRelayFailsSuffix: 'retries',
     tankTemp: 'Tank temp', heaterTemp: 'Heater temp', voltage: 'Voltage', outdoorTemp: 'Outdoor temp',
     heaterState: 'Heater state', domesticWater: 'Domestic water', liquidLevel: 'Liquid level',
     pumpsRunning: 'Pumps running', floorTemp: 'Floor temp', floorPump: 'Floor pump',
@@ -108,6 +112,10 @@ const I18N = {
     deviceAddressLabel: 'Адрес', deviceVersionLabel: 'версия', modemVersionLabel: 'Версия модема',
     canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
     canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
+    canRelayStepSwitching: 'Перевод в загрузчик…', canRelayStepDetectedPrefix: 'Загрузчик', canRelayStepDetectedSuffix: 'найден (gen2)',
+    canRelayStepErasing: 'Стирание памяти…', canRelayStepErased: 'Стирание успешно',
+    canRelayStepTransferring: 'Передача фрагмента', canRelayStepReturning: 'Передача завершена, возврат в программу…',
+    canRelayFailsSuffix: 'повторов',
     tankTemp: 'Температура бака', heaterTemp: 'Температура котла', voltage: 'Напряжение', outdoorTemp: 'Уличная температура',
     heaterState: 'Состояние котла', domesticWater: 'Горячая вода', liquidLevel: 'Уровень жидкости',
     pumpsRunning: 'Работают насосы', floorTemp: 'Температура пола', floorPump: 'Насос пола',
@@ -142,6 +150,10 @@ const I18N = {
     deviceAddressLabel: 'Adresse', deviceVersionLabel: 'Version', modemVersionLabel: 'Modem-Version',
     canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
     canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
+    canRelayStepSwitching: 'Wechsel in den Bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedSuffix: 'gefunden (gen2)',
+    canRelayStepErasing: 'Speicher wird gelöscht…', canRelayStepErased: 'Löschen erfolgreich',
+    canRelayStepTransferring: 'Übertrage Fragment', canRelayStepReturning: 'Übertragung abgeschlossen, zurück zur App…',
+    canRelayFailsSuffix: 'Wiederholungen',
     tankTemp: 'Tanktemperatur', heaterTemp: 'Kesseltemperatur', voltage: 'Spannung', outdoorTemp: 'Außentemperatur',
     heaterState: 'Kesselstatus', domesticWater: 'Warmwasser', liquidLevel: 'Flüssigkeitsstand',
     pumpsRunning: 'Laufende Pumpen', floorTemp: 'Fußbodentemperatur', floorPump: 'Fußbodenpumpe',
@@ -215,6 +227,7 @@ function applyStaticTranslations() {
   $('engineSettings').querySelector('summary').textContent = t('engineHeater');
   $('miscSettings').querySelector('summary').textContent = t('misc');
   $('otaSummary').textContent = t('otaDevices');
+  $('selfOtaSummary').textContent = t('ownFirmware');
   $('modemVersionLabel').textContent = t('modemVersionLabel');
   $('rawDetails').querySelector('summary').textContent = t('raw');
   $('logoutBtn').textContent = t('logOut');
@@ -1151,6 +1164,49 @@ async function fetchOtaVersionsForType(type) {
 
 let lastOtaStartType = null;
 
+/* Client-side "a Load click is outstanding" tracking — separate from
+   rawStatus.otaStatus, because the modem's AT-command dispatcher is a
+   single state machine: while it's off running the actual OTA download
+   (ST_OTA), it never returns to ST_IDLE, which is the only state that ever
+   transitions into ST_MQTT_PUB and actually flushes queued publishes (see
+   Modem::doIdle()). otaStatus/otaProgress get queued as "staging" the
+   moment the download starts, but that value just gets *overwritten* by
+   the final "done"/"error" before ever being sent — the browser never
+   sees "staging" at all, only silence followed by the final result. So
+   the "Loading…" indicator here is driven by the click itself, not by
+   waiting for a "staging" echo that may never arrive — otherwise the user
+   sees nothing for the whole download and (reasonably) assumes the click
+   didn't register, then clicks again. Cleared once the *specific*
+   requested version actually shows up staged, the shared op errors out,
+   or a generous timeout elapses (network hiccup, page never confirms —
+   don't leave the button stuck disabled forever). */
+let otaLoadPendingType = null;
+let otaLoadPendingVersion = null;
+let otaLoadPendingSince = 0;
+const OTA_LOAD_PENDING_TIMEOUT_MS = 5 * 60 * 1000; /* generous — a full ~208 KB image over cellular AT+HTTP, page by page */
+
+function startOtaLoadPending(type, version) {
+  otaLoadPendingType = type;
+  otaLoadPendingVersion = version;
+  otaLoadPendingSince = Date.now();
+}
+
+/* Called once per render for whichever type a card represents, with
+   whatever version (if any) is actually confirmed staged for it right
+   now. Clears the pending flag once that matches what was requested, the
+   shared op reports an error while this type is still the active one, or
+   the timeout above elapses. */
+function checkOtaLoadDone(type, confirmedStagedVersion) {
+  if (otaLoadPendingType !== type) return;
+  const matched = confirmedStagedVersion !== undefined && confirmedStagedVersion === otaLoadPendingVersion;
+  const erroredOut = rawStatus.otaStatus === 'error' && lastOtaStartType === type;
+  const timedOut = (Date.now() - otaLoadPendingSince) > OTA_LOAD_PENDING_TIMEOUT_MS;
+  if (matched || erroredOut || timedOut) {
+    otaLoadPendingType = null;
+    otaLoadPendingVersion = null;
+  }
+}
+
 /* The modem's own firmware — a fixed card, not one generated per seen CAN
    device (see the big comment on selfOtaCard in index.html): downloads go
    through the exact same otaStart/doOta() machinery as any device (see
@@ -1181,6 +1237,8 @@ function updateSelfOtaCard(status, staging) {
       const v = card.querySelector('#selfOtaVersion').value;
       if (!v || !mqttClient) return;
       lastOtaStartType = ownType;
+      startOtaLoadPending(ownType, v);
+      renderOtaPanel(); /* same immediate-paint reasoning as the per-device Load handler above */
       mqttClient.publish(`${mqttUsername}/cmd/desired/otaStart`, `${ownType}:${v}`);
     };
   }
@@ -1206,16 +1264,20 @@ function updateSelfOtaCard(status, staging) {
     if (versions && versions.includes(prevValue)) select.value = prevValue;
   }
 
+  const selfStagedValid = !!rawStatus.selfOtaStaged;
+  checkOtaLoadDone(ownType, selfStagedValid ? rawStatus.selfOtaStaged : undefined);
+  const clickPending = otaLoadPendingType === ownType;
+  const anyOtaPending = otaLoadPendingType !== null; /* same shared modem.ota state as the device cards — see their own comment */
+
   const noVersions = !versions || versions.length === 0;
-  select.disabled = staging || noVersions;
-  loadBtn.disabled = staging || noVersions;
+  select.disabled = staging || noVersions || anyOtaPending;
+  loadBtn.disabled = staging || noVersions || anyOtaPending;
 
   const isActiveTarget = lastOtaStartType === ownType;
-  const selfStagedValid = !!rawStatus.selfOtaStaged;
   const statusEl = card.querySelector('#selfOtaStatus');
   statusEl.className = (isActiveTarget && status === 'error') ? 'ota-error' : selfStagedValid ? 'ota-done' : '';
   let text = '';
-  if (isActiveTarget && status === 'staging') text = `${t('otaStatusStaging')} ${rawStatus.otaProgress || ''}`;
+  if (clickPending) text = `${t('otaStatusStaging')} ${(isActiveTarget && status === 'staging' && rawStatus.otaProgress) || ''}`;
   else if (isActiveTarget && status === 'error') text = t('otaStatusError');
   else text = selfStagedValid ? `${t('otaLoadedPrefix')} ${rawStatus.selfOtaStaged}` : t('otaEmpty');
   statusEl.textContent = text;
@@ -1269,12 +1331,24 @@ function renderOtaPanel() {
         '<div class="ota-status-row"><span data-role="status"></span>' +
         '<button data-role="load"></button></div>' +
         '<div class="ota-status-row"><span data-role="relayStatus"></span>' +
-        '<button data-role="flash"></button></div>';
+        '<button data-role="flash"></button></div>' +
+        '<div class="relay-progress-bar hidden" data-role="relayProgressBar">' +
+        '<div class="relay-progress-fill" data-role="relayProgressFill"></div></div>';
       listEl.appendChild(card);
       card.querySelector('[data-role="load"]').onclick = () => {
         const v = card.querySelector('[data-role="version"]').value;
         if (!v || !mqttClient) return;
         lastOtaStartType = dev.type;
+        startOtaLoadPending(dev.type, v);
+        /* Paint the disabled/"Loading…" state right now — see
+           startOtaLoadPending's own comment: the modem's AT dispatcher can
+           go completely silent for the whole download (single state
+           machine, stuck in ST_OTA until it finishes), so waiting for the
+           next MQTT message to trigger a re-render could mean the button
+           never visibly locks at all for the entire download. Confirmed on
+           real hardware 2026-08-29 — user saw no lock/"Loading" indication
+           after clicking Load. */
+        renderOtaPanel();
         mqttClient.publish(`${mqttUsername}/cmd/desired/otaStart`, `${dev.type}:${v}`);
       };
       card.querySelector('[data-role="flash"]').onclick = () => {
@@ -1311,10 +1385,6 @@ function renderOtaPanel() {
       if (versions && versions.includes(prevValue)) select.value = prevValue;
     }
 
-    const noVersions = !versions || versions.length === 0;
-    select.disabled = staging || noVersions;
-    card.querySelector('[data-role="load"]').disabled = staging || noVersions;
-
     /* Reflects what's actually loaded in the modem right now for THIS
        device (stagedValid && stagedType matches), rather than the
        ephemeral last-download outcome — "Loaded"/"Empty" wrongly implied
@@ -1323,28 +1393,93 @@ function renderOtaPanel() {
        the card this browser itself triggered the Load for. */
     const isActiveTarget = lastOtaStartType === dev.type;
     const thisStaged = stagedValid && stagedType === dev.type;
+    checkOtaLoadDone(dev.type, thisStaged ? rawStatus.otaStaged : undefined);
+    const clickPending = otaLoadPendingType === dev.type;
+    /* modem.ota is one shared buffer/state machine (see Modem.h) — only one
+       download can ever be in flight at a time, device-wide, regardless of
+       which card's button was actually clicked. anyOtaPending (any card,
+       not just this one) gates every card's Load/Flash so a click on
+       device B while device A's download is silently running (see
+       checkOtaLoadDone()'s big comment on why that's invisible for a
+       while) doesn't just get dropped on the floor by the firmware's own
+       "already staging" guard — clickPending alone only drives the
+       "Loading…" text on the one card that's actually the active target. */
+    const anyOtaPending = otaLoadPendingType !== null;
+
+    const noVersions = !versions || versions.length === 0;
+    select.disabled = staging || noVersions || anyOtaPending;
+    card.querySelector('[data-role="load"]').disabled = staging || noVersions || anyOtaPending;
+
     const statusEl = card.querySelector('[data-role="status"]');
     statusEl.className = (isActiveTarget && status === 'error') ? 'ota-error' : thisStaged ? 'ota-done' : '';
     let text = '';
-    if (isActiveTarget && status === 'staging') text = `${t('otaStatusStaging')} ${rawStatus.otaProgress || ''}`;
+    if (clickPending) text = `${t('otaStatusStaging')} ${(isActiveTarget && status === 'staging' && rawStatus.otaProgress) || ''}`;
     else if (isActiveTarget && status === 'error') text = t('otaStatusError');
     else text = thisStaged ? `${t('otaLoadedPrefix')} ${rawStatus.otaStaged}` : t('otaEmpty');
     statusEl.textContent = text;
 
-    /* rawStatus.canRelayStatus/canRelayProgress: published by
-       Timberline::mqttActualizerHandler whenever Timberline::canRelay
-       changes — see Timberline::doCanRelay() on the modem side. Flashing
-       is only offered once something verified is staged for THIS device
-       and nothing else is already running (a download or a relay). */
+    /* rawStatus.canRelayStatus/canRelayStep/canRelayProgress/canRelayBlVer:
+       published by Timberline::mqttActualizerHandler whenever
+       Timberline::canRelay changes — see Timberline::doCanRelay() on the
+       modem side (CanRelayPhase there). Unlike the OTA download above,
+       this doesn't share the modem's AT-command state machine — CAN and
+       AT+HTTP run on separate peripherals — so these updates actually
+       arrive live, step by step, not just at the very end. Flashing is
+       only offered once something verified is staged for THIS device and
+       nothing else is already running (a download or a relay). */
     const relayEl = card.querySelector('[data-role="relayStatus"]');
-    card.querySelector('[data-role="flash"]').disabled = relayStaging || staging || !thisStaged;
+    const relayBar = card.querySelector('[data-role="relayProgressBar"]');
+    const relayBarFill = card.querySelector('[data-role="relayProgressFill"]');
+    card.querySelector('[data-role="flash"]').disabled = relayStaging || staging || anyOtaPending || !thisStaged;
     relayEl.className = relayStatus === 'error' ? 'ota-error' : relayStatus === 'done' ? 'ota-done' : '';
+    /* Bar visibility is driven directly off the canRelayProgress numbers
+       (cur < tot) rather than off canRelayStep === 'transferring' — the step
+       field is its own separately-gated publish (see Timberline::doCanRelay's
+       CanRelayPhase) and isn't guaranteed to have visibly arrived/settled in
+       the UI at the same moment progress has, so gating the bar on it could
+       leave the bar hidden even while real progress numbers were already
+       ticking (confirmed on real hardware 2026-08-29: progress moved in the
+       raw AT log but the card's bar never showed). Parsing "cur/tot"
+       ourselves here is a strict superset of the old condition. */
+    let cur = 0, tot = 0;
+    if (rawStatus.canRelayProgress) {
+      const parts = rawStatus.canRelayProgress.split('/').map(Number);
+      cur = parts[0] || 0; tot = parts[1] || 0;
+    }
+    const showBar = relayStatus === 'staging' && tot > 0 && cur < tot;
+
+    const fails = Number(rawStatus.canRelayFails) || 0;
+    const failsSuffix = fails > 0 ? ` (${fails} ${t('canRelayFailsSuffix')})` : '';
+
     let relayText = '';
     if (relayStatus === 'idle' || !relayStatus) relayText = t('canRelayStatusIdle');
-    else if (relayStatus === 'staging') relayText = `${t('canRelayStatusStaging')} ${rawStatus.canRelayProgress || ''}`;
+    else if (relayStatus === 'staging') {
+      const relayStep = rawStatus.canRelayStep;
+      if (relayStep === 'switching') relayText = t('canRelayStepSwitching');
+      else if (relayStep === 'detected') {
+        relayText = `${t('canRelayStepDetectedPrefix')}${rawStatus.canRelayBlVer ? ' ' + rawStatus.canRelayBlVer : ''} ${t('canRelayStepDetectedSuffix')}`;
+      }
+      else if (relayStep === 'erasing') relayText = t('canRelayStepErasing');
+      else if (relayStep === 'erased') relayText = t('canRelayStepErased');
+      else if (relayStep === 'transferring') {
+        relayText = `${t('canRelayStepTransferring')} ${rawStatus.canRelayProgress || ''}${failsSuffix}`;
+      }
+      else if (relayStep === 'returning') relayText = t('canRelayStepReturning');
+      /* relayStep hasn't arrived yet (e.g. right after clicking Flash,
+         before the modem's first publish for this run) — same generic
+         fallback as before. */
+      else relayText = `${t('canRelayStatusStaging')} ${rawStatus.canRelayProgress || ''}${failsSuffix}`;
+    }
     else if (relayStatus === 'done') relayText = t('canRelayStatusDone');
     else if (relayStatus === 'error') relayText = t('canRelayStatusError');
     relayEl.textContent = relayText;
+
+    if (relayBar) {
+      relayBar.classList.toggle('hidden', !showBar);
+      if (showBar) {
+        relayBarFill.style.width = `${Math.min(100, Math.max(0, (cur / tot) * 100))}%`;
+      }
+    }
   });
 }
 

@@ -1,6 +1,7 @@
 #include "work.h"
 #include "Modem.h"
 #include "Timberline.h"
+#include "CanRelay.h"
 #include "FaultManager.h"
 #include "DataActualizator.h"
 #include "StringTransfer.h"
@@ -28,19 +29,19 @@ void Work_C::handler(void) {
     dataActualizator.handler();
     timberline.mqttActualizerHandler();
     timberline.mqttTelemetryHandler();
-    timberline.doCanRelay();
+    canRelay.handler();
 
     /* canBroadcast() (periodic PGN18/60 + the string round-robin it drives)
        and stringTransfer.handler() (paces any string transfer in progress,
        PGN61/62) both compete for the same 3 CAN TX mailboxes as
-       doCanRelay()'s PGN=106 fragment stream — confirmed on real hardware
-       that even with mailbox checks and inter-frame pacing, occasional
-       frames still got dropped, most likely lost arbitration/mailbox
-       contention against this other routine traffic. Neither is
+       canRelay.handler()'s PGN=106 fragment stream — confirmed on real
+       hardware that even with mailbox checks and inter-frame pacing,
+       occasional frames still got dropped, most likely lost arbitration/
+       mailbox contention against this other routine traffic. Neither is
        time-critical enough to matter losing a few seconds of updates
        during the one-off, already-slow (tens of seconds) firmware relay,
        so just don't compete with it. */
-    if (timberline.canRelay.status != Timberline::RELAY_STAGING) {
+    if (canRelay.status != CanRelay::RELAY_STAGING) {
         canBroadcast();
         stringTransfer.handler();
     }

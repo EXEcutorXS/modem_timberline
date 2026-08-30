@@ -1,5 +1,6 @@
 #include "Timberline.h"
 #include "Modem.h"
+#include "CanRelay.h"
 #include "StringTransfer.h"
 #include "timberline_sms.h"
 #include "button.h"
@@ -11,9 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Defined further down (near doCanRelay()) — forward-declared here so
-   ProcessCanMessage()/maybeQueryNewDevice() near the top of this file can
-   use it too. */
+/* Defined further down, right before recordSeenDevice() — forward-declared
+   here so ProcessCanMessage() near the top of this file can use it too.
+   CanRelay.cpp keeps its own private copy (the CAN relay's own
+   ProcessCanMessage() moved there entirely, 2026-08-29) rather than
+   sharing this one. */
 static uint32_t canId(uint16_t pgn, uint8_t toType, uint8_t toAddress);
 
 /* Convert °C to display unit — setpoints are stored internally in °C
@@ -266,10 +269,6 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             if (TransAddr==1)
                 memcpy(timberline.MbcVersion,D,4);
             break;
-        case 123: //  Bootloader — see doCanRelay()'s bootloader-detection poll
-            canRelay.bootloaderSeen = true;
-            memcpy(canRelay.bootloaderVersion, D, 4);
-            break;
         }
         break;
     case 19:
@@ -477,29 +476,6 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
     case 46:
         memcpy(errors,D,8);
         break;
-    case 105: //  Bootloader flash sub-protocol responses — see doCanRelay()
-        if (TransType==123) {
-            switch (D[0]) {
-            case 1: //  echo of the set-address request (sub0)
-                canRelay.setAddrEcho = ((uint32_t)D[1]<<24)|((uint32_t)D[2]<<16)|((uint32_t)D[3]<<8)|D[4];
-                canRelay.setAddrGotResp = true;
-                break;
-            case 3: //  length+CRC of what's currently in the bootloader's RAM buffer (sub2 query)
-                canRelay.checkLen = ((uint32_t)D[1]<<16)|((uint32_t)D[2]<<8)|D[3];
-                canRelay.checkCrc = ((uint32_t)D[4]<<24)|((uint32_t)D[5]<<16)|((uint32_t)D[6]<<8)|D[7];
-                canRelay.checkGotResp = true;
-                break;
-            case 5: //  result of the RAM->flash commit (sub4)
-                canRelay.flashResult = D[1];
-                canRelay.flashGotResp = true;
-                break;
-            case 7: //  result of the erase-memory request (sub6)
-                canRelay.eraseResult = D[1];
-                canRelay.eraseGotResp = true;
-                break;
-            }
-        }
-        break;
     }//switch(PGN)
 
 }
@@ -509,25 +485,6 @@ void sendToHcu(uint16_t pgn,uint8_t* D)
     can.SendMessage(pgn<<20 | timberline.hcuType<<13 | timberline.hcuAddress<<10 | can.idType | can.idAddress,D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
 }
 
-/* ── CAN firmware relay (OTA part 4) ─────────────────────────────────────
-   MBC-2's own flash image starts at 0x08020000 (confirmed against its
-   scatter file, HCU-Timberline2/Objects/hcu.sct: LR_IROM1 0x08020000
-   0x0001FFC0 + LR_IROM2 0x0803FFC0 0x40 — together exactly the 128 KB
-   region Modem::ota's staging buffer mirrors byte-for-byte from offset 0),
-   and the bootloader always identifies itself as device type 123
-   regardless of the app's own type (125 for MBC-2) — see OmniProtocol.pdf's
-   device-type table and PGN=1/6/105/106 sections. Flash base address and
-   erase-sector list are no longer hardcoded here — they come from
-   modem.ota.flashBase/eraseSectors[], fetched from the target firmware's
-   own profile on the server (see Modem::doFetchProfile()), so this same
-   relay logic works for any device type, not just MBC-2. */
-#define CAN_RELAY_FRAGMENT_SIZE 512
-
-/* Always-visible USB debug output for the relay, same idiom as Modem.cpp's
-   logOtaFail()/logOtaInfo() for the HTTP download side — log_error()/
-   log_info() are unconditional (unlike log_at(), not gated by the current
-   log-level debug command), and there's no printf here, so lines are
-   hand-built via appendUint()/appendHex(). */
 static int appendUint(char* buf, int n, uint32_t v) {
     char tmp[10]; int t = 0;
     if (v == 0) { buf[n++] = '0'; return n; }
@@ -535,57 +492,10 @@ static int appendUint(char* buf, int n, uint32_t v) {
     while (t > 0) buf[n++] = tmp[--t];
     return n;
 }
-static int appendHex(char* buf, int n, uint32_t v) {
-    buf[n++] = '0'; buf[n++] = 'x';
-    for (int8_t shift = 28; shift >= 0; shift -= 4) {
-        uint8_t nib = (uint8_t)((v >> shift) & 0xF);
-        buf[n++] = (char)(nib < 10 ? ('0' + nib) : ('A' + nib - 10));
-    }
-    return n;
-}
-static void logRelayInfo(const char* msg) {
-    log_info("[CANRELAY] ");
-    log_info(msg);
-    log_info("\r\n");
-}
-static void logRelayInfoNum(const char* label, uint32_t v) {
-    static char buf[64];
-    int n = 0;
-    const char* pre = "[CANRELAY] ";
-    while (*pre) buf[n++] = *pre++;
-    for (const char* p = label; *p; p++) buf[n++] = *p;
-    buf[n++] = '=';
-    n = appendUint(buf, n, v);
-    buf[n++] = '\r'; buf[n++] = '\n'; buf[n] = 0;
-    log_info(buf);
-}
-/* extraIsHex: addresses/CRCs read far better in hex than the decimal
-   appendUint() everywhere else in this codebase uses — worth the one-off
-   inconsistency here since address/CRC mismatches are exactly what this
-   is for diagnosing. */
-static void logRelayFail(uint8_t stepNum, const char* reason, uint32_t extra, bool extraIsHex) {
-    static char buf[112];
-    int n = 0;
-    const char* pre = "[CANRELAY] FAIL step ";
-    while (*pre) buf[n++] = *pre++;
-    n = appendUint(buf, n, stepNum);
-    buf[n++] = ' '; buf[n++] = '(';
-    for (const char* p = reason; *p && n < 90; p++) buf[n++] = *p;
-    buf[n++] = '=';
-    n = extraIsHex ? appendHex(buf, n, extra) : appendUint(buf, n, extra);
-    buf[n++] = ')'; buf[n++] = '\r'; buf[n++] = '\n'; buf[n] = 0;
-    log_error(buf);
-}
 
 static uint32_t canId(uint16_t pgn, uint8_t toType, uint8_t toAddress) {
     return ((uint32_t)pgn<<20) | ((uint32_t)toType<<13) | ((uint32_t)toAddress<<10)
          | ((uint32_t)can.idType<<3) | can.idAddress;
-}
-
-void Timberline::startCanRelay(uint8_t targetType, uint8_t targetAddress) {
-    canRelay.targetType = targetType;
-    canRelay.targetAddress = targetAddress;
-    canRelay.startRequested = true;
 }
 
 /* Finds (or claims) this type+address's slot in seenDevices[] and, only if
@@ -658,270 +568,6 @@ void Timberline::maybeQueryNewDevice(uint8_t type, uint8_t address) {
     can.SendMessage(canId(6, type, address), 0,18, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
 }
 
-/* Replays Modem::ota's staged flash image onto canRelay.targetType/
-   targetAddress over CAN. Steps:
-   0-1   switch the target device's app into the bootloader (PGN=1,
-         [0,22,0], addressed to canRelay.targetType/targetAddress) and poll
-         for it reappearing as device type 123 (PGN=6 [0,18] version
-         request, answered by any device — see ProcessCanMessage's PGN=18
-         case).
-   2-3   erase each sector listed in modem.ota.eraseSectors[] in turn
-         (PGN=105 sub6) — or, if the published firmware carried no sector
-         list at all, one D[1]=255 "erase all" instead — fetched from the
-         target firmware's own profile (see Modem::doFetchProfile()).
-   10-18 per-fragment loop, one CAN_RELAY_FRAGMENT_SIZE (512 byte) fragment
-         at a time: set the bootloader's write address (sub0/1), stream the
-         fragment as raw 8-byte PGN=106 frames (one per doCanRelay() tick —
-         never burst multiple sends in one call; see the SendMessage()
-         call sites elsewhere in this file and StringTransfer.cpp for why:
-         the CAN peripheral has a handful of TX mailboxes and SendMessage()
-         doesn't block or retry, so blasting frames in a tight loop would
-         silently drop the tail once mailboxes fill), verify what the
-         bootloader actually received via a length+CRC query (sub2/3 — the
-         CRC algorithm, crc += byte*170771; crc ^= (crc>>16)&0xFFFF, is
-         confirmed from the real PC tool's C# source, not reconstructed),
-         and only then commit it from the bootloader's RAM into its own
-         flash (sub4/5). A verify mismatch or missing response at any point
-         retries the whole fragment (re-send address included) rather than
-         just the failed piece, up to CAN_RELAY_MAX_RETRIES times.
-   20    switch MBC-2 back into its application (PGN=1, [0,22,1]). */
-#define CAN_RELAY_MAX_RETRIES 5
-void Timberline::doCanRelay(void) {
-    static int8_t   step = 0;
-    static uint32_t t = 0;
-    static uint32_t phaseStart = 0;
-    static uint16_t byteOffset = 0;     /* 0..CAN_RELAY_FRAGMENT_SIZE, within the current fragment */
-    static uint32_t fragCrc = 0;
-    static uint32_t lastFrameTick = 0;  /* paces the PGN=106 burst below — see its comment */
-    static uint8_t  eraseIndex = 0;     /* index into modem.ota.eraseSectors[0..eraseSectorCount-1], see case 2's comment */
-
-    if (canRelay.status != RELAY_STAGING) {
-        if (canRelay.startRequested) {
-            canRelay.startRequested = false;
-            if (!modem.ota.stagedValid || modem.ota.stagedBytes == 0
-                || (modem.ota.stagedBytes % CAN_RELAY_FRAGMENT_SIZE) != 0) {
-                canRelay.status = RELAY_ERROR;
-                return;
-            }
-            canRelay.status = RELAY_STAGING;
-            canRelay.failed = false;
-            canRelay.retries = 0;
-            canRelay.fragment = 0;
-            canRelay.fragmentTotal = (uint16_t)(modem.ota.stagedBytes / CAN_RELAY_FRAGMENT_SIZE);
-            eraseIndex = 0;
-            step = 0;
-            logRelayInfo("start");
-            logRelayInfoNum("fragmentTotal", canRelay.fragmentTotal);
-            logRelayInfoNum("targetType", canRelay.targetType);
-            logRelayInfoNum("targetAddress", canRelay.targetAddress);
-        }
-        return;
-    }
-
-    switch (step) {
-    case 0:
-        can.SendMessage(canId(1, canRelay.targetType, canRelay.targetAddress), 0,22,0, 0xFF,0xFF,0xFF,0xFF,0xFF);
-        canRelay.bootloaderSeen = false;
-        t = core.getTick();
-        phaseStart = t;
-        step = 1;
-        logRelayInfo("switch-to-bootloader sent, waiting for type 123...");
-        break;
-    case 1:
-        if (canRelay.bootloaderSeen) {
-            /* Which PGN105/106 sequence this specific bootloader actually
-               supports safely — not every one out there behaves the same,
-               some are known unstable and must never be used for OTA (see
-               Modem::lookupBootloaderAlgorithm()/bootloaderTable, fetched
-               from "/bootloaders.txt" alongside the profile). Algorithm 2
-               is the sequence implemented below (case 2 onward); anything
-               else (0 = version not in the table, 1 = known unstable) is
-               refused outright rather than attempting it and hoping. */
-            uint8_t algo = modem.lookupBootloaderAlgorithm(canRelay.bootloaderVersion);
-            if (algo != 2) {
-                logRelayFail(1, algo == 0 ? "bootloader-algorithm-unknown" : "bootloader-algorithm-unsafe", algo, false);
-                canRelay.failed = true; step = 30; break;
-            }
-            logRelayInfo("bootloader detected, algorithm 2");
-            step = 2; break;
-        }
-        if ((core.getTick() - phaseStart) >= 15000) { logRelayFail(1, "bootloader-timeout", 0, false); canRelay.failed = true; step = 30; break; }
-        if ((core.getTick() - t) >= 800) {
-            can.SendMessage(canId(6, 123, 0), 0,18, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
-            t = core.getTick();
-        }
-        break;
-    case 2: {
-        /* Erases every sector listed in modem.ota.eraseSectors[], one at a
-           time — *unless* the profile published no list at all
-           (eraseSectorCount==0, see Modem::doFetchProfile()), in which case
-           this deliberately sends D[1]=255 ("erase all") instead, as a
-           single command. 255 used to be avoided here entirely — confirmed
-           in the real bootloader source (messages.cpp) it wipes sectors
-           2-7, not just wherever the app happens to live — so it's only
-           safe when whoever published this specific firmware file actually
-           confirmed the broader erase is fine for that device/bootloader
-           (that's what an *absent* sector list in the filename now means,
-           see host/README.md). An explicit list stays the precise,
-           narrowly-scoped way to erase — device-type/bootloader-version
-           specific, not something this generic relay logic can assume on
-           its own. */
-        uint8_t sectorToErase = (modem.ota.eraseSectorCount == 0) ? 255 : modem.ota.eraseSectors[eraseIndex];
-        can.SendMessage(canId(105, 123, 0), 6, sectorToErase, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
-        canRelay.eraseGotResp = false;
-        t = core.getTick();
-        canRelay.retries = 0;
-        step = 3;
-        logRelayInfoNum("erase sector sent", sectorToErase);
-        break;
-    }
-    case 3:
-        if (canRelay.eraseGotResp) {
-            if (canRelay.eraseResult != 0) {
-                logRelayFail(3, "erase-result", canRelay.eraseResult, false);
-                if (++canRelay.retries >= 3) { canRelay.failed = true; step = 30; }
-                else step = 2;
-                break;
-            }
-            logRelayInfoNum("erase ok, sector", (modem.ota.eraseSectorCount == 0) ? 255 : modem.ota.eraseSectors[eraseIndex]);
-            eraseIndex++;
-            if (modem.ota.eraseSectorCount != 0 && eraseIndex < modem.ota.eraseSectorCount) { step = 2; }
-            else step = 10;
-        } else if ((core.getTick() - t) >= 8000) {
-            logRelayFail(3, "erase-timeout-retries", canRelay.retries, false);
-            if (++canRelay.retries >= 3) { canRelay.failed = true; step = 30; }
-            else step = 2;
-        }
-        break;
-
-    /* ── per-fragment loop ────────────────────────────────────────────── */
-    case 10:
-        if (canRelay.fragment >= canRelay.fragmentTotal) { logRelayInfo("all fragments done"); step = 20; break; }
-        canRelay.retries = 0;
-        step = 11;
-        break;
-    case 11: {
-        uint32_t addr = modem.ota.flashBase + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
-        can.SendMessage(canId(105, 123, 0), 0,
-            (uint8_t)(addr>>24), (uint8_t)(addr>>16), (uint8_t)(addr>>8), (uint8_t)addr,
-            0xFF,0xFF,0xFF);
-        canRelay.setAddrGotResp = false;
-        t = core.getTick();
-        step = 12;
-        break;
-    }
-    case 12: {
-        uint32_t addr = modem.ota.flashBase + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE;
-        if (canRelay.setAddrGotResp) {
-            if (canRelay.setAddrEcho != addr) {
-                logRelayFail(12, "setaddr-echo-mismatch(want)", addr, true);
-                logRelayFail(12, "setaddr-echo-mismatch(got)", canRelay.setAddrEcho, true);
-                if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
-                else step = 11;
-                break;
-            }
-            byteOffset = 0;
-            fragCrc = 0;
-            step = 13;
-        } else if ((core.getTick() - t) >= 500) {
-            logRelayFail(12, "setaddr-timeout-frag", canRelay.fragment, false);
-            if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
-            else step = 11;
-        }
-        break;
-    }
-    case 13: {
-        /* Paced ~3ms apart, not fired every tick — confirmed on real
-           hardware that back-to-back sends with no gap easily outrun what
-           a 250 kbit/s bus can actually drain, the hardware only has 3 TX
-           mailboxes, and SendMessage() silently drops a frame instead of
-           queuing/blocking once all 3 are still busy (see Can::txReady(),
-           kept as a belt-and-suspenders check alongside the delay, not
-           instead of it). 2ms plus the mailbox check alone still lost
-           roughly 1 frame per fragment fairly often — bumped to 3ms and,
-           more importantly, Work_C::handler() now holds off the modem's
-           own other periodic CAN traffic (canBroadcast()/stringTransfer)
-           for the whole relay so it isn't competing for the same 3
-           mailboxes. */
-        if ((core.getTick() - lastFrameTick) < 3) break;
-        if (!can.txReady()) break;
-        const uint8_t* src = (const uint8_t*)(FLASH_OTA_BUF_ADDR
-            + (uint32_t)canRelay.fragment * CAN_RELAY_FRAGMENT_SIZE + byteOffset);
-        for (uint8_t i = 0; i < 8; i++) {
-            fragCrc += (uint32_t)src[i] * 170771U;
-            fragCrc ^= (fragCrc >> 16) & 0xFFFFU;
-        }
-        can.SendMessage(canId(106, 123, 0), src[0],src[1],src[2],src[3],src[4],src[5],src[6],src[7]);
-        lastFrameTick = core.getTick();
-        byteOffset += 8;
-        if (byteOffset >= CAN_RELAY_FRAGMENT_SIZE) step = 14;
-        break;
-    }
-    case 14:
-        /* Same ~3ms gap after the last PGN=106 frame before sub2 — mailboxes
-           could still be draining right after the burst above. */
-        if ((core.getTick() - lastFrameTick) < 3) break;
-        if (!can.txReady()) break;
-        can.SendMessage(canId(105, 123, 0), 2, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
-        canRelay.checkGotResp = false;
-        t = core.getTick();
-        step = 15;
-        break;
-    case 15:
-        if (canRelay.checkGotResp) {
-            if (canRelay.checkLen != CAN_RELAY_FRAGMENT_SIZE || canRelay.checkCrc != fragCrc) {
-                logRelayFail(15, "verify-len(got)", canRelay.checkLen, false);
-                logRelayFail(15, "verify-crc(want)", fragCrc, true);
-                logRelayFail(15, "verify-crc(got)", canRelay.checkCrc, true);
-                if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
-                else step = 11;
-                break;
-            }
-            step = 16;
-        } else if ((core.getTick() - t) >= 800) {
-            logRelayFail(15, "verify-timeout-frag", canRelay.fragment, false);
-            if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
-            else step = 11;
-        }
-        break;
-    case 16:
-        can.SendMessage(canId(105, 123, 0), 4, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
-        canRelay.flashGotResp = false;
-        t = core.getTick();
-        step = 17;
-        break;
-    case 17:
-        if (canRelay.flashGotResp) {
-            if (canRelay.flashResult != 0) {
-                logRelayFail(17, "flash-result-frag", canRelay.fragment, false);
-                if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
-                else step = 11;
-                break;
-            }
-            canRelay.fragment++;
-            if ((canRelay.fragment % 16) == 0 || canRelay.fragment == canRelay.fragmentTotal)
-                logRelayInfoNum("fragment ok, done", canRelay.fragment);
-            step = 10;
-        } else if ((core.getTick() - t) >= 2000) {
-            logRelayFail(17, "flash-timeout-frag", canRelay.fragment, false);
-            if (++canRelay.retries >= CAN_RELAY_MAX_RETRIES) { canRelay.failed = true; step = 30; }
-            else step = 11;
-        }
-        break;
-
-    case 20:
-        can.SendMessage(canId(1, 123, 0), 0,22,1, 0xFF,0xFF,0xFF,0xFF,0xFF);
-        logRelayInfo("switch-to-app sent");
-        step = 30;
-        break;
-
-    case 30:
-        canRelay.status = canRelay.failed ? RELAY_ERROR : RELAY_DONE;
-        logRelayInfo(canRelay.failed ? "result=ERROR" : "result=DONE");
-        step = 0;
-        break;
-    }
-}
 
 /* Physical button: short press cycles burner -> element -> both -> burner...
    and turns all zones on to heat; long press turns everything off. */
@@ -1119,19 +765,19 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
     else if (!strcmp(name, "canRelayStart")) {
         /* payload = "<type>:<address>", e.g. "125:1" — the device to relay
            whatever's already staged+verified in the modem's own flash onto,
-           over CAN (see Timberline::doCanRelay()). A deliberately separate
+           over CAN (see CanRelay::handler()). A deliberately separate
            trigger from otaStart: the user reviews the staged version
            (otaStaged, see Modem::ota.stagedVersion) before committing to
            actually flashing the device. Refuses while a relay or a
            download is already running, or nothing valid is staged. */
-        if (timberline.canRelay.status == Timberline::RELAY_STAGING) return;
+        if (canRelay.status == CanRelay::RELAY_STAGING) return;
         if (modem.ota.status == Modem::OTA_STAGING) return;
         if (!modem.ota.stagedValid) return;
         const char* colon = strchr(payload, ':');
         if (!colon || colon == payload) return;
         uint8_t targetType = (uint8_t)atoi(payload);
         uint8_t targetAddress = (uint8_t)atoi(colon + 1);
-        timberline.startCanRelay(targetType, targetAddress);
+        canRelay.start(targetType, targetAddress);
     }
     else if (!strcmp(name, "selfOtaApply")) {
         /* No payload needed — always applies whatever's in modem.selfOta
@@ -1879,18 +1525,100 @@ void Timberline::mqttActualizerHandler(void) {
             modem.mqttPublish("mbcVersion", "");
         }
     }
-    static Timberline::CanRelayStatus prevCanRelayStatus;
+    static CanRelay::Status prevCanRelayStatus;
     static uint16_t prevCanRelayFragment;
+    /* A fresh relay's very first real value can coincidentally equal a
+       "prev" tracker's zero-initialized default (canRelay.fragment starts
+       at 0, same as prevCanRelayFragment's default; canRelay.phase starts
+       at RELAY_PHASE_SWITCHING, which is enum value 0, same as
+       prevCanRelayPhase's default) — the diff-gates below would then never
+       see a "change" and stay silent for that field's whole first value.
+       Confirmed on real hardware 2026-08-29: a relay stuck retrying
+       fragment 0 (never advancing) published canRelayFails just fine but
+       never published canRelayProgress at all, because 0 != 0 never
+       triggers. relayJustStarted forces one publish per field right as
+       STAGING begins, same idea as justConnected but for "new relay"
+       instead of "new MQTT session". Computed before prevCanRelayStatus is
+       overwritten below. */
+    bool relayJustStarted = (canRelay.status == CanRelay::RELAY_STAGING
+                              && prevCanRelayStatus != CanRelay::RELAY_STAGING);
     if (canRelay.status != prevCanRelayStatus || justConnected) {
         prevCanRelayStatus = canRelay.status;
         static const char* canRelayStatusStr[] = { "idle", "staging", "done", "error" };
         modem.mqttPublish("canRelayStatus", canRelayStatusStr[canRelay.status]);
     }
-    if (canRelay.status == Timberline::RELAY_STAGING
-        && (canRelay.fragment != prevCanRelayFragment || justConnected)) {
+    /* Throttled to every 16th fragment (plus the final one) rather than every
+       single fragment — publishing on every fragment change flooded
+       modem.mqttPub's shared queue (MQTT_PUB_MAX slots, serviced lowest-index-
+       first in doMqttPub()) badly enough during a relay's heavy PGN=18/dev*
+       churn that canRelayProgress's own slot got starved and visibly stuck
+       mid-transfer on real hardware (confirmed 2026-08-29 — relay itself ran
+       to completion per the modem's own log while the MQTT-visible progress
+       sat frozen). Coarser reporting is an acceptable tradeoff for actually
+       reaching the UI. */
+    if (canRelay.status == CanRelay::RELAY_STAGING
+        && (canRelay.fragment != prevCanRelayFragment || relayJustStarted)
+        && (canRelay.fragment % 16 == 0 || canRelay.fragment == canRelay.fragmentTotal || justConnected || relayJustStarted)) {
         prevCanRelayFragment = canRelay.fragment;
         sprintf(buf, "%u/%u", canRelay.fragment, canRelay.fragmentTotal);
         modem.mqttPublish("canRelayProgress", buf);
+    }
+    /* Retry/failure count across the whole relay (erase/setaddr/verify/flash
+       — see CanRelay::totalFails' comment in CanRelay.h) — unlike
+       canRelayProgress this only changes on an actual failure, so no
+       throttling needed; publishing every change is cheap. Lets the web UI
+       show that retries are happening even though they're invisible in the
+       fragment counter (a retried fragment still just shows as the same
+       "N/total" until it eventually succeeds). */
+    static uint16_t prevCanRelayFails;
+    if (canRelay.status == CanRelay::RELAY_STAGING
+        && (canRelay.totalFails != prevCanRelayFails || justConnected)) {
+        prevCanRelayFails = canRelay.totalFails;
+        sprintf(buf, "%u", canRelay.totalFails);
+        modem.mqttPublish("canRelayFails", buf);
+    }
+    /* Which named step of CanRelay::handler()'s sequence — see CanRelay::Phase
+       in CanRelay.h — only meaningful while actually staging, same as
+       canRelayProgress above. */
+    static CanRelay::Phase prevCanRelayPhase;
+    if (canRelay.status == CanRelay::RELAY_STAGING
+        && (canRelay.phase != prevCanRelayPhase || justConnected || relayJustStarted)) {
+        prevCanRelayPhase = canRelay.phase;
+        static const char* canRelayPhaseStr[] = { "switching", "detected", "erasing", "erased", "transferring", "returning" };
+        modem.mqttPublish("canRelayStep", canRelayPhaseStr[canRelay.phase]);
+    }
+    /* The target's own bootloader version (PGN=18 reply once it's switched
+       into bootloader mode, see CanRelay::ProcessCanMessage's pgn==18 case) —
+       lets the web UI show e.g. "Загрузчик 123.0.2.7 найден (gen2)"
+       instead of just "detected". Same "name, keep 16 bytes in mind" cap
+       as mbcVersion above — kept short (not "...BootloaderVersion") for
+       that reason.
+
+       Gated on RELAY_STAGING same as canRelayStep/canRelayProgress above —
+       canRelay.bootloaderVersion itself gets overwritten by *any* PGN=18
+       reply from a type-123 sender, not just ones our own relay's polling
+       provoked (confirmed on real hardware: an external CAN diagnostic
+       tool polling the bus independently kept re-triggering this, churning
+       MQTT traffic for a field that's meaningless outside an active
+       relay). Without this gate the field would update from that
+       unrelated traffic even while idle. */
+    static uint8_t prevRelayBootloaderVersion[4];
+    if (canRelay.status == CanRelay::RELAY_STAGING
+        && (memcmp(canRelay.bootloaderVersion, prevRelayBootloaderVersion, 4) != 0 || justConnected)) {
+        memcpy(prevRelayBootloaderVersion, canRelay.bootloaderVersion, 4);
+        bool seen = canRelay.bootloaderVersion[0] || canRelay.bootloaderVersion[1]
+                 || canRelay.bootloaderVersion[2] || canRelay.bootloaderVersion[3];
+        if (seen) {
+            char verBuf[20];
+            int vn = 0;
+            vn = appendUint(verBuf, vn, canRelay.bootloaderVersion[0]); verBuf[vn++] = '.';
+            vn = appendUint(verBuf, vn, canRelay.bootloaderVersion[1]); verBuf[vn++] = '.';
+            vn = appendUint(verBuf, vn, canRelay.bootloaderVersion[2]); verBuf[vn++] = '.';
+            vn = appendUint(verBuf, vn, canRelay.bootloaderVersion[3]); verBuf[vn] = 0;
+            modem.mqttPublish("canRelayBlVer", verBuf);
+        } else {
+            modem.mqttPublish("canRelayBlVer", "");
+        }
     }
 
     bool errorsChanged = justConnected;

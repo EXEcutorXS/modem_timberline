@@ -1,10 +1,14 @@
 ﻿*.o
 *.d
 *.axf
-*.hex
-*.bin
 *.map
 *.lst
+# Keil's own build output lands directly in modem/ (modemDragonfly.bin, and
+# sometimes a .hex) — scoped to just that folder, not repo-wide, since
+# host/timberline-web/public/firmware*/ intentionally tracks real .bin/.hex
+# firmware artifacts (see host/README.md's Firmware OTA section).
+/modem/*.bin
+/modem/*.hex
 *.uvguix.*
 *.bak
 Listings/

@@ -1,2 +1,0 @@
-flashBase=0x0802A800
-eraseSectors=255

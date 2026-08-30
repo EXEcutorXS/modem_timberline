@@ -1,6 +1,7 @@
 #include "can.h"
 #include "log.h"
 #include "Timberline.h"
+#include "CanRelay.h"
 #include "SlcanBridge.h"
 
 Can can;
@@ -129,11 +130,19 @@ void Can::processCanRxMessage(CanRxMessage *msg)
 {
     slcanBridge.onCanRx(msg);
 
-    /* In SLCAN bridge mode skip timberline processing — the modem acts as a
-       transparent adapter and must not respond to frames on behalf of the bus. */
+    /* In SLCAN bridge mode skip timberline/canRelay processing — the modem
+       acts as a transparent adapter and must not respond to frames on
+       behalf of the bus. */
     if (slcanBridge.active) return;
 
+    /* Two independent parsers looking at the same frame — Timberline owns
+       heater/zone/device state and generic discovery, CanRelay owns its
+       own bootloader-mode PGN=18/PGN=105 handling (see CanRelay.h's own
+       comment for why this moved out of Timberline, 2026-08-29). Neither
+       needs to know about the other; each just ignores whatever isn't
+       relevant to it. */
     timberline.ProcessCanMessage(msg);
+    canRelay.ProcessCanMessage(msg);
 }
 
 extern "C" void CAN2_RX0_IRQHandler(void)

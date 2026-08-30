@@ -134,8 +134,17 @@ class Flash_C
            "erased flash reads as invalid, not garbage" contract as
            readSetup(). version must point at a buffer of at least 24 bytes
            (matches Modem::OtaScratch::version's own size). */
-        bool     writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16);
-        bool     readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16);
+        /* flashBase is persisted alongside version/totalBytes/totalCrc16
+           (same 2 KB meta page, just using a few more of its otherwise-
+           unused bytes) so a relay attempt after a reboot doesn't need a
+           fresh otaStart just to know where to write on the target device
+           — see Timberline::doCanRelay()'s flashBase==0 safety check for
+           what happens if this were still RAM-only (a real bricking
+           incident, 2026-08-29). readOtaMeta() returns false (nothing
+           written to any out-param) if the page's checksum doesn't match
+           — same "erased flash reads as invalid" contract as before. */
+        bool     writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16, uint32_t flashBase);
+        bool     readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16, uint32_t* outFlashBase);
 
         /* Self-OTA staging area (see FLASH_SELF_OTA_BUF_ADDR above) — same
            contract as writeOtaPage()/readOtaPage()/crc16OtaPage()/

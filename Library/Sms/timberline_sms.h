@@ -54,6 +54,8 @@ enum TlCmdType {
     TL_CMD_APN,             /* strArg (0-31 chars)    — explicit PDP context APN; empty = auto (see doInitNet()) */
     TL_CMD_APN_USER,        /* strArg (0-31 chars)    — explicit PDP auth (AT+CGAUTH) username; empty = auto/none */
     TL_CMD_APN_PASS,        /* strArg (0-31 chars)    — explicit PDP auth (AT+CGAUTH) password; empty = auto/none */
+    TL_CMD_CHECKURL,        /* strArg (0-63 chars)    — HTTP GET target used to verify real internet connectivity;
+                                                          empty = skip the check, PDP-up alone counts (see doCheckInternet()) */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/
@@ -77,7 +79,7 @@ struct TlSmsCmd {
     char         pin[5];     /* SETPIN                                                   */
     TlZonePayload zone;    /* ZONE_* commands                                            */
     TlLang       langArg;    /* LANG — requested default reply language                  */
-    char         strArg[32]; /* SERVER, LOGIN, PASSWORD — case preserved (see origArg in .cpp) */
+    char         strArg[64]; /* SERVER, LOGIN, PASSWORD, APN*, CHECKURL — case preserved (see origArg in .cpp) */
 };
 
 /* ── Parse result ───────────────────────────────────────────────────────────*/
@@ -121,5 +123,19 @@ void tl_sms_parse(const char*       senderPhone,
                   const char        trustedPhones[][16],
                   TlTempUnit        tempUnit,
                   TlSmsParseResult& result);
+
+/**
+ * Parse command text with the same syntax/validation as tl_sms_parse() above
+ * but NO authentication — result.authenticated/isAdmin are always set true.
+ * For channels that are already trusted some other way (see USB console
+ * "set" commands, modem_process_usb_set() in modem_handler.cpp).
+ *
+ * @param message   Raw command text, comma-separated commands same as SMS
+ * @param tempUnit  Device's current temperature unit — see tl_sms_parse()
+ * @param result    Output filled by this function
+ */
+void tl_parse_commands(const char*       message,
+                        TlTempUnit        tempUnit,
+                        TlSmsParseResult& result);
 
 #endif /* TIMBERLINE_SMS_H */

@@ -24,7 +24,7 @@ void Work_C::initialize(void) {
 void Work_C::handler(void) {
     resetHandler();
     modem_process_emulated_sms();
-    modem_process_usb_config();
+    modem_process_usb_set();
     faultManager.handler();
     dataActualizator.handler();
     timberline.mqttActualizerHandler();

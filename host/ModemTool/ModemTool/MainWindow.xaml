@@ -1,0 +1,123 @@
+<Window x:Class="ModemTool.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ModemTool"
+        mc:Ignorable="d"
+        Title="Modem Tool" Height="620" Width="900" MinHeight="420" MinWidth="640">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Connection bar -->
+        <Border Grid.Row="0" BorderBrush="Gray" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Port:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="PortCombo" Width="120" VerticalAlignment="Center"/>
+                <Button x:Name="RefreshPortsButton" Content="Refresh ports" Margin="8,0,0,0" Click="RefreshPorts_Click"/>
+                <Button x:Name="ConnectButton" Content="Connect" Margin="8,0,0,0" Click="Connect_Click"/>
+                <Button x:Name="ResetButton" Content="Reset modem" Margin="16,0,0,0" Click="Reset_Click"/>
+                <TextBlock x:Name="ConnectionState" Text="Disconnected" VerticalAlignment="Center" Margin="16,0,0,0" FontWeight="Bold"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Main content -->
+        <TabControl Grid.Row="1">
+
+            <TabItem Header="Status">
+                <DockPanel Margin="4">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button x:Name="StatusRefreshButton" Content="Refresh" Click="RefreshStatus_Click"/>
+                        <CheckBox x:Name="AutoRefreshCheck" Content="Auto-refresh (2s)" VerticalAlignment="Center"
+                                  Margin="12,0,0,0" Checked="AutoRefresh_Checked" Unchecked="AutoRefresh_Unchecked"/>
+                    </StackPanel>
+                    <DataGrid ItemsSource="{Binding StatusRows}" AutoGenerateColumns="False"
+                              IsReadOnly="True" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Parameter" Binding="{Binding Key}" Width="260"/>
+                            <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="Settings">
+                <DockPanel Margin="4">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button x:Name="ConfigRefreshButton" Content="Read settings" Click="RefreshConfig_Click"/>
+                        <TextBlock Text="Hover a parameter name for its expected format. Rows with no Apply button are read-only (no console setter exists for them)."
+                                   TextWrapping="Wrap" Foreground="Gray" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </StackPanel>
+                    <DataGrid x:Name="SettingsGrid" ItemsSource="{Binding ConfigRows}" AutoGenerateColumns="False"
+                              CanUserAddRows="False" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Parameter" Binding="{Binding Key}" IsReadOnly="True" Width="220">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="ToolTip" Value="{Binding Hint}"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Current value" Binding="{Binding CurrentValue}" IsReadOnly="True" Width="220"/>
+                            <DataGridTextColumn Header="New value" Binding="{Binding NewValue, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="False" Width="*"/>
+                            <DataGridTemplateColumn Header="" Width="70">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="Apply" IsEnabled="{Binding Editable}" Click="ApplySetting_Click"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="Log / Console">
+                <DockPanel Margin="4">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Log mode:" VerticalAlignment="Center"/>
+                        <Button x:Name="LogAtButton" Content="AT" Margin="8,0,0,0" Click="LogAt_Click"/>
+                        <Button x:Name="LogGsmButton" Content="GSM" Margin="4,0,0,0" Click="LogGsm_Click"/>
+                        <Button x:Name="LogAllButton" Content="All" Margin="4,0,0,0" Click="LogAll_Click"/>
+                        <CheckBox x:Name="AutoScrollCheck" Content="Auto-scroll" IsChecked="True" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                        <Button Content="Clear" Margin="16,0,0,0" Click="ClearLog_Click"/>
+                        <Button Content="Save log as..." Margin="4,0,0,0" Click="SaveLog_Click"/>
+                        <TextBlock x:Name="LogFilePath" Text="" Foreground="Gray" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                    </StackPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBox x:Name="ConsoleInput" Width="500" VerticalAlignment="Center" KeyDown="ConsoleInput_KeyDown"/>
+                        <Button x:Name="SendConsoleButton" Content="Send" Margin="8,0,0,0" Click="SendConsole_Click"/>
+                    </StackPanel>
+                    <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             TextWrapping="NoWrap"/>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="AT Bridge">
+                <StackPanel Margin="8">
+                    <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10"
+                               Text="Relays the modem's raw USB console to https://multihot.duckdns.org/at-console.html over this computer's own internet connection (not the modem's cellular link), so someone elsewhere can send it AT commands as if plugged in locally — they still need to type &quot;b&quot; there themselves to enter bridge mode. Uses the same username/password as the control panel website. While the relay is running, the Status/Settings/Console controls that write to the port are disabled."/>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <TextBlock Text="Username:" Width="80" VerticalAlignment="Center"/>
+                        <TextBox x:Name="BridgeUsernameBox" Width="220"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <TextBlock Text="Password:" Width="80" VerticalAlignment="Center"/>
+                        <TextBox x:Name="BridgePasswordBox" Width="220"/>
+                    </StackPanel>
+                    <Button x:Name="BridgeToggleButton" Content="Start relay" Click="BridgeToggle_Click"
+                            Margin="80,10,0,0" HorizontalAlignment="Left" Width="120"/>
+                    <TextBlock x:Name="BridgeStatus" Text="Stopped" Margin="80,10,0,0" FontWeight="Bold"/>
+                </StackPanel>
+            </TabItem>
+
+        </TabControl>
+
+        <TextBlock Grid.Row="2" x:Name="StatusBar" Text="" Foreground="Gray" Margin="0,6,0,0"/>
+    </Grid>
+</Window>

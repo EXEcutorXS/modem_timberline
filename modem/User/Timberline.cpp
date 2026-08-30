@@ -1217,6 +1217,15 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
         }
 
+        case TL_CMD_CHECKURL: {
+            strncpy(modem.internet.internetCheckUrl, cmd.strArg, sizeof(modem.internet.internetCheckUrl) - 1);
+            modem.internet.internetCheckUrl[sizeof(modem.internet.internetCheckUrl) - 1] = '\0';
+            /* flash write handled centrally by dataActualizator.handler(). */
+            modem.sendSms(phone, de ? (modem.internet.internetCheckUrl[0] ? "Check-URL aktualisiert" : "Check-URL zurückgesetzt")
+                                   : (modem.internet.internetCheckUrl[0] ? "Check URL updated" : "Check URL reset"));
+            break;
+        }
+
         case TL_CMD_GETLINK: {
             if (!modem.config.useInternet) {
                 modem.sendSms(phone, de ? "Erst Internet aktivieren: internet 1"

@@ -143,6 +143,42 @@ static int toCelsius(int val, TlTempUnit unit)
    defaults to English unless a distinctly German word was seen. */
 static void mark_german(TlSmsParseResult& res) { res.lang = TL_LANG_DE; }
 
+/* Forward declaration — defined below; parse_segments() needs it and is
+   used earlier in the file (by tl_sms_parse()) than its own definition. */
+static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit tempUnit, TlSmsParseResult& res);
+
+/**
+ * Split buf (mutated in place) by comma and run parse_one() on each segment,
+ * appending to result.cmds/errors. Caller has already memset(result) and set
+ * authenticated/isAdmin/lang as appropriate — shared tail of tl_sms_parse()
+ * (PIN/admin-phone gated) and tl_parse_commands() (no auth) below.
+ */
+static void parse_segments(char* buf, TlTempUnit tempUnit, TlSmsParseResult& result)
+{
+    char* segs[TL_SMS_MAX_COMMANDS];
+    int   segCount = split_comma(buf, segs, TL_SMS_MAX_COMMANDS);
+
+    for (int i = 0; i < segCount; i++) {
+        str_trim(segs[i]);
+        if (!segs[i][0]) continue;
+
+        /* Case-preserved copy, taken before lowering — SERVER/PASSWORD need
+           their argument's original case (hostnames/passwords), everything
+           else matches lowercase keywords as before. */
+        char orig[160];
+        strncpy(orig, segs[i], sizeof(orig) - 1); orig[sizeof(orig) - 1] = '\0';
+
+        str_lower(segs[i]);
+
+        char* cmd;
+        char* arg;
+        split_cmd_arg(segs[i], &cmd, &arg);
+        const char* origArg = orig + (arg - segs[i]);
+
+        parse_one(cmd, arg, origArg, tempUnit, result);
+    }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Single command parser
    Receives lowercase, trimmed cmd token and arg string. origArg is the same
@@ -361,6 +397,19 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         return;
     }
 
+    /* ── checkurl <url> — HTTP GET target used to verify real internet
+       connectivity (beyond just the PDP context coming up). Empty clears it
+       back to "no check, PDP-up alone counts" — same empty-clears-to-auto
+       convention as "apn". */
+    if (!strcmp(cmd, "checkurl")) {
+        int len = (int)strlen(origArg);
+        if (len > 63) { add_error(res, "checkurl: 0-63 chars"); return; }
+        c.type = TL_CMD_CHECKURL;
+        strncpy(c.strArg, origArg, 63); c.strArg[63] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
     /* ── ack / bestaetigung on/off ────────────────────────────────────────────── */
     if (!strcmp(cmd, "ack") || !strcmp(cmd, "bestaetigung")) {
         if (!strcmp(cmd, "bestaetigung")) mark_german(res);
@@ -556,33 +605,32 @@ void tl_sms_parse(const char*       senderPhone,
     result.authenticated = true;
     result.isAdmin       = isAdmin;
 
-    /* ── Copy command text into a mutable local buffer ──────────────────── */
     char buf[512];
     strncpy(buf, cmdStart, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
-    /* ── Split by comma ─────────────────────────────────────────────────── */
-    char* segs[TL_SMS_MAX_COMMANDS];
-    int   segCount = split_comma(buf, segs, TL_SMS_MAX_COMMANDS);
+    parse_segments(buf, tempUnit, result);
+}
 
-    /* ── Parse each segment ─────────────────────────────────────────────── */
-    for (int i = 0; i < segCount; i++) {
-        str_trim(segs[i]);
-        if (!segs[i][0]) continue;
+/* ═══════════════════════════════════════════════════════════════════════════
+   No-auth entry point — same command syntax/validation as tl_sms_parse()
+   above, minus the PIN/admin-phone gate, for channels that are already
+   trusted some other way (USB console "set" commands, see usb_process_line()
+   in hw_config.c and modem_process_usb_set() in modem_handler.cpp — physical
+   USB access to the device is its own authorization, same rationale as the
+   pre-existing "server"/"login"/"password" console commands).
+   ═══════════════════════════════════════════════════════════════════════════*/
+void tl_parse_commands(const char* message, TlTempUnit tempUnit, TlSmsParseResult& result)
+{
+    memset(&result, 0, sizeof(result));
+    result.authenticated = true;
+    result.isAdmin       = true;
 
-        /* Case-preserved copy, taken before lowering — SERVER/PASSWORD need
-           their argument's original case (hostnames/passwords), everything
-           else matches lowercase keywords as before. */
-        char orig[160];
-        strncpy(orig, segs[i], sizeof(orig) - 1); orig[sizeof(orig) - 1] = '\0';
+    if (!message || !message[0]) return;
 
-        str_lower(segs[i]);
+    char buf[512];
+    strncpy(buf, message, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
 
-        char* cmd;
-        char* arg;
-        split_cmd_arg(segs[i], &cmd, &arg);
-        const char* origArg = orig + (arg - segs[i]);
-
-        parse_one(cmd, arg, origArg, tempUnit, result);
-    }
+    parse_segments(buf, tempUnit, result);
 }

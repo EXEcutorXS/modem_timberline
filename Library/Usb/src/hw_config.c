@@ -344,26 +344,22 @@ static void usb_process_line(char* line)
         return;
     }
 
-    /* server <host> / login <user> / password <pass>  — set MQTT connection
+    /* set <name> <value>[,<name2> <value2>...]  — change any modem setting
        directly over USB, no SMS/PIN/admin-phone auth needed (physical USB
-       access to the device already is the authorization). Same values as
-       the "server"/"login"/"password" SMS commands; takes effect immediately
-       (modem_process_usb_config() reconnects MQTT) and persists to flash. */
-    if (!strncmp(line, "server ", 7)) {
-        usb_set_mqtt_server(line + 7);
-        log_info("[USB CFG] server queued: "); log_info(line + 7); log_info("\r\n");
+       access to the device already is the authorization). Same command
+       syntax as an SMS control command (see timberline_sms.h); takes effect
+       immediately (modem_process_usb_set() applies it, reconnects MQTT if
+       needed) and persists to flash. */
+    if (!strncmp(line, "set ", 4)) {
+        usb_set_config_line(line + 4);
+        log_info("[USB SET] queued: "); log_info(line + 4); log_info("\r\n");
         return;
     }
-    if (!strncmp(line, "login ", 6)) {
-        usb_set_mqtt_login(line + 6);
-        log_info("[USB CFG] login queued: "); log_info(line + 6); log_info("\r\n");
-        return;
-    }
-    if (!strncmp(line, "password ", 9)) {
-        usb_set_mqtt_password(line + 9);
-        log_info("[USB CFG] password queued\r\n");
-        return;
-    }
+
+    /* status / config  — dump live state / persisted settings as
+       "key=value\r\n" lines for a PC tool (see modem_handler.h). */
+    if (!strcmp(line, "status")) { usb_print_status(); return; }
+    if (!strcmp(line, "config")) { usb_print_config(); return; }
 
     /* U <ussd>  — send USSD request, see reply in log */
     if ((line[0] == 'u' || line[0] == 'U') && line[1] == ' ') {

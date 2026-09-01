@@ -487,7 +487,16 @@ void CanRelay::handleGen2(void) {
        bootloader, 2=by sector, 3=by address, 4=settings, 5/6=black-box
        general/errors — none of which this relay ever uses).
    10-17 per-fragment loop, identical shape to gen2's — see its own
-       comment for the pacing/mailbox rationale, unchanged here. */
+       comment for the pacing/mailbox rationale, unchanged here.
+
+   Magic word (protocol doc, added after this relay was first written):
+   D[6..7] of both the erase (sub6, case 0) and write/flash-commit (sub4,
+   case 16) command frames must carry 0xAA55 — big-endian, D[6]=0xAA,
+   D[7]=0x55, matching this whole protocol's byte order (see
+   ProcessCanMessage's setAddrEcho/checkCrc parsing above) — or the
+   bootloader won't act on either command. Extra guard against an
+   accidental erase/flash from a malformed or unrelated frame; the other
+   sub-commands (0=set address, 2=check) don't require it. */
 void CanRelay::handleGen3(void) {
     static int8_t   step = 0;
     static uint32_t t = 0;
@@ -499,7 +508,7 @@ void CanRelay::handleGen3(void) {
 
     switch (step) {
     case 0:
-        can.SendMessage(canId(110, 123, 0), 6, 1, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+        can.SendMessage(canId(110, 123, 0), 6, 1, 0xFF,0xFF,0xFF,0xFF,0xAA,0x55);
         eraseGotResp = false;
         t = core.getTick();
         retries = 0;
@@ -623,7 +632,7 @@ void CanRelay::handleGen3(void) {
         }
         break;
     case 16:
-        can.SendMessage(canId(110, 123, 0), 4, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+        can.SendMessage(canId(110, 123, 0), 4, 0xFF,0xFF,0xFF,0xFF,0xFF,0xAA,0x55);
         flashGotResp = false;
         t = core.getTick();
         step = 17;

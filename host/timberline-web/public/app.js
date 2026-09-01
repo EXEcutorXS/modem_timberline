@@ -76,7 +76,7 @@ const I18N = {
     deviceAddressLabel: 'Address', deviceVersionLabel: 'version', modemVersionLabel: 'Modem version',
     canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
     canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
-    canRelayStepSwitching: 'Switching to bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedSuffix: 'found (gen2)',
+    canRelayStepSwitching: 'Switching to bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedFound: 'found',
     canRelayStepErasing: 'Erasing memory…', canRelayStepErased: 'Erase successful',
     canRelayStepTransferring: 'Transferring fragment', canRelayStepReturning: 'Transfer complete, returning to app…',
     canRelayFailsSuffix: 'retries',
@@ -116,7 +116,7 @@ const I18N = {
     deviceAddressLabel: 'Адрес', deviceVersionLabel: 'версия', modemVersionLabel: 'Версия модема',
     canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
     canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
-    canRelayStepSwitching: 'Перевод в загрузчик…', canRelayStepDetectedPrefix: 'Загрузчик', canRelayStepDetectedSuffix: 'найден (gen2)',
+    canRelayStepSwitching: 'Перевод в загрузчик…', canRelayStepDetectedPrefix: 'Загрузчик', canRelayStepDetectedFound: 'найден',
     canRelayStepErasing: 'Стирание памяти…', canRelayStepErased: 'Стирание успешно',
     canRelayStepTransferring: 'Передача фрагмента', canRelayStepReturning: 'Передача завершена, возврат в программу…',
     canRelayFailsSuffix: 'повторов',
@@ -156,7 +156,7 @@ const I18N = {
     deviceAddressLabel: 'Adresse', deviceVersionLabel: 'Version', modemVersionLabel: 'Modem-Version',
     canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
     canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
-    canRelayStepSwitching: 'Wechsel in den Bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedSuffix: 'gefunden (gen2)',
+    canRelayStepSwitching: 'Wechsel in den Bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedFound: 'gefunden',
     canRelayStepErasing: 'Speicher wird gelöscht…', canRelayStepErased: 'Löschen erfolgreich',
     canRelayStepTransferring: 'Übertrage Fragment', canRelayStepReturning: 'Übertragung abgeschlossen, zurück zur App…',
     canRelayFailsSuffix: 'Wiederholungen',
@@ -1510,7 +1510,12 @@ function renderOtaPanel() {
       const relayStep = rawStatus.canRelayStep;
       if (relayStep === 'switching') relayText = t('canRelayStepSwitching');
       else if (relayStep === 'detected') {
-        relayText = `${t('canRelayStepDetectedPrefix')}${rawStatus.canRelayBlVer ? ' ' + rawStatus.canRelayBlVer : ''} ${t('canRelayStepDetectedSuffix')}`;
+        /* canRelayGen ("2"/"3") is published alongside canRelayBlVer by
+           Timberline::mqttActualizerHandler — see CanRelay.h's own comment
+           on the `algorithm` field. Falls back to just "found" (no
+           generation) if it hasn't arrived yet, rather than guessing. */
+        const genSuffix = rawStatus.canRelayGen ? ` (gen${rawStatus.canRelayGen})` : '';
+        relayText = `${t('canRelayStepDetectedPrefix')}${rawStatus.canRelayBlVer ? ' ' + rawStatus.canRelayBlVer : ''} ${t('canRelayStepDetectedFound')}${genSuffix}`;
       }
       else if (relayStep === 'erasing') relayText = t('canRelayStepErasing');
       else if (relayStep === 'erased') relayText = t('canRelayStepErased');

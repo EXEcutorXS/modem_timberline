@@ -1598,8 +1598,9 @@ void Timberline::mqttActualizerHandler(void) {
     }
     /* The target's own bootloader version (PGN=18 reply once it's switched
        into bootloader mode, see CanRelay::ProcessCanMessage's pgn==18 case) —
-       lets the web UI show e.g. "Загрузчик 123.0.2.7 найден (gen2)"
-       instead of just "detected". Same "name, keep 16 bytes in mind" cap
+       lets the web UI show e.g. "Загрузчик 123.0.2.7 найден (gen2)" (or
+       "(gen3)" — see canRelayGen just below) instead of just "detected".
+       Same "name, keep 16 bytes in mind" cap
        as mbcVersion above — kept short (not "...BootloaderVersion") for
        that reason.
 
@@ -1628,6 +1629,24 @@ void Timberline::mqttActualizerHandler(void) {
         } else {
             modem.mqttPublish("canRelayBlVer", "");
         }
+    }
+    /* Which relay protocol generation canRelay.algorithm picked for the
+       bootloader version above (2 or 3, see CanRelay.h's own comment on
+       that field) — published alongside canRelayBlVer so the web UI can
+       show "Bootloader 123.0.3.13 found (gen3)" with the *real* generation
+       instead of a hardcoded "(gen2)" label (that was wrong as soon as
+       gen3 shipped and got used, e.g. relaying onto a 126). Same
+       RELAY_STAGING gate and bootloaderVersion-change trigger as
+       canRelayBlVer immediately above — algorithm is set at the same
+       handleDetect() moment, from the same lookup. */
+    static uint8_t prevRelayAlgorithm;
+    if (canRelay.status == CanRelay::RELAY_STAGING
+        && (canRelay.algorithm != prevRelayAlgorithm || justConnected)) {
+        prevRelayAlgorithm = canRelay.algorithm;
+        char genBuf[4];
+        int gn = appendUint(genBuf, 0, canRelay.algorithm);
+        genBuf[gn] = 0;
+        modem.mqttPublish("canRelayGen", genBuf);
     }
 
     bool errorsChanged = justConnected;

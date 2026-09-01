@@ -398,12 +398,18 @@
       <summary id="selfOtaSummary">Modem firmware</summary>
       <!-- The modem's own firmware — separate section from "Devices" below
            (own shared modem.ota state, but a fixed single card, not one
-           generated per seen CAN device, and no CAN relay/"Flash" step —
-           applying a staged self-image isn't wired up yet). Built once
-           renderOtaPanel() knows the modem's own type (parsed from
-           modemVersion). Load downloads+stages it into the modem's separate
-           self-OTA buffer (Modem::startOta with the modem's own type — see
-           doOta()'s "self" branch). -->
+           generated per seen CAN device). Built once renderOtaPanel() knows
+           the modem's own type (parsed from modemVersion). Load
+           downloads+stages it into the modem's separate self-OTA buffer
+           (Modem::startOta with the modem's own type — see doOta()'s "self"
+           branch). Apply sends the "selfOtaApply" MQTT command
+           (Timberline::onMqttCommandReceived) — the modem sets
+           BOOT_MAGIC_UPDATE and resets; nations-bootloader's
+           ApplySelfOtaImage() then verifies the staged image's CRC16,
+           erases and reflashes just the app region (settings/black-box
+           untouched) and boots straight into it. No live progress during
+           this step (the modem is offline for the few seconds it takes) —
+           modemVersion changing once it reconnects is the confirmation. -->
       <div class="ota-staged-row">
         <span id="modemVersionLabel">Modem version</span>
         <span id="modemVersionText"></span>
@@ -414,6 +420,8 @@
         <select id="selfOtaVersion"></select></div>
         <div class="ota-status-row"><span id="selfOtaStatus"></span>
         <button id="selfOtaLoad"></button></div>
+        <div class="ota-status-row"><span id="selfOtaApplyStatus"></span>
+        <button id="selfOtaApply"></button></div>
       </div>
     </details>
     <details id="otaSettings" class="settings-group">

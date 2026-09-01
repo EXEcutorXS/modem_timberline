@@ -71,6 +71,8 @@ const I18N = {
     otaStatusError: 'Load failed', otaEmpty: 'Empty', otaLoadedPrefix: 'Loaded',
     otaNoDevicesFound: 'No devices seen on the bus yet', deviceTypePrefix: 'Type',
     ownFirmware: 'Modem firmware',
+    selfOtaApply: 'Apply', selfOtaApplyStatusIdle: 'Not applied', selfOtaApplyStatusPending: 'Applying…',
+    selfOtaApplyStatusDone: 'Applied', selfOtaApplyNothingStaged: 'Nothing loaded yet',
     deviceAddressLabel: 'Address', deviceVersionLabel: 'version', modemVersionLabel: 'Modem version',
     canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
     canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
@@ -109,6 +111,8 @@ const I18N = {
     otaStatusError: 'Ошибка загрузки', otaEmpty: 'Пусто', otaLoadedPrefix: 'Загружено',
     otaNoDevicesFound: 'На шине пока не видно устройств', deviceTypePrefix: 'Тип',
     ownFirmware: 'Прошивка модема',
+    selfOtaApply: 'Применить', selfOtaApplyStatusIdle: 'Не применено', selfOtaApplyStatusPending: 'Применяется…',
+    selfOtaApplyStatusDone: 'Применено', selfOtaApplyNothingStaged: 'Ничего не загружено',
     deviceAddressLabel: 'Адрес', deviceVersionLabel: 'версия', modemVersionLabel: 'Версия модема',
     canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
     canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
@@ -147,6 +151,8 @@ const I18N = {
     otaStatusError: 'Laden fehlgeschlagen', otaEmpty: 'Leer', otaLoadedPrefix: 'Geladen',
     otaNoDevicesFound: 'Noch keine Geräte auf dem Bus gesehen', deviceTypePrefix: 'Typ',
     ownFirmware: 'Modem-Firmware',
+    selfOtaApply: 'Anwenden', selfOtaApplyStatusIdle: 'Nicht angewendet', selfOtaApplyStatusPending: 'Wird angewendet…',
+    selfOtaApplyStatusDone: 'Angewendet', selfOtaApplyNothingStaged: 'Noch nichts geladen',
     deviceAddressLabel: 'Adresse', deviceVersionLabel: 'Version', modemVersionLabel: 'Modem-Version',
     canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
     canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
@@ -1191,6 +1197,20 @@ function startOtaLoadPending(type, version) {
   otaLoadPendingSince = Date.now();
 }
 
+/* "Apply" (selfOtaApply MQTT command) tracking — same rationale as
+   otaLoadPending above, but the modem goes offline for the duration
+   instead of just staying silent: it resets into nations-bootloader,
+   which reflashes the app region and boots straight back into it (see
+   ApplySelfOtaImage(), User/Main/main.cpp in nations-bootloader). Cleared
+   once rawStatus.modemVersion actually shows the applied version again
+   (proof it rebooted into the new app, not just that MQTT reconnected),
+   or after a timeout — reconnect over cellular can take a while, but not
+   as long as a fresh OTA download, so this timeout is shorter than
+   OTA_LOAD_PENDING_TIMEOUT_MS above. */
+let selfOtaApplyPendingVersion = null;
+let selfOtaApplyPendingSince = 0;
+const SELF_OTA_APPLY_PENDING_TIMEOUT_MS = 90 * 1000;
+
 /* Called once per render for whichever type a card represents, with
    whatever version (if any) is actually confirmed staged for it right
    now. Clears the pending flag once that matches what was requested, the
@@ -1281,6 +1301,39 @@ function updateSelfOtaCard(status, staging) {
   else if (isActiveTarget && status === 'error') text = t('otaStatusError');
   else text = selfStagedValid ? `${t('otaLoadedPrefix')} ${rawStatus.selfOtaStaged}` : t('otaEmpty');
   statusEl.textContent = text;
+
+  /* Apply — sends "selfOtaApply", the modem sets BOOT_MAGIC_UPDATE and
+     resets into nations-bootloader (see the big comment on selfOtaCard in
+     index.html). Only offered once something's actually staged and
+     nothing else is mid-flight (a download here, or an apply already in
+     progress). */
+  const applyBtn = card.querySelector('#selfOtaApply');
+  const applyStatusEl = card.querySelector('#selfOtaApplyStatus');
+  if (!applyBtn.dataset.wired) {
+    applyBtn.dataset.wired = '1';
+    applyBtn.onclick = () => {
+      if (!mqttClient || !rawStatus.selfOtaStaged) return;
+      selfOtaApplyPendingVersion = rawStatus.selfOtaStaged;
+      selfOtaApplyPendingSince = Date.now();
+      renderOtaPanel(); /* paint "Applying…" immediately, same reasoning as Load above */
+      mqttClient.publish(`${mqttUsername}/cmd/desired/selfOtaApply`, '');
+    };
+  }
+  applyBtn.textContent = t('selfOtaApply');
+
+  if (selfOtaApplyPendingVersion !== null) {
+    const applied = rawStatus.modemVersion === selfOtaApplyPendingVersion;
+    const timedOut = (Date.now() - selfOtaApplyPendingSince) > SELF_OTA_APPLY_PENDING_TIMEOUT_MS;
+    if (applied || timedOut) selfOtaApplyPendingVersion = null;
+  }
+  const applyPending = selfOtaApplyPendingVersion !== null;
+  const justApplied = rawStatus.modemVersion === rawStatus.selfOtaStaged && !applyPending;
+  applyBtn.disabled = staging || anyOtaPending || applyPending || !selfStagedValid;
+  applyStatusEl.className = justApplied ? 'ota-done' : '';
+  applyStatusEl.textContent = applyPending ? t('selfOtaApplyStatusPending')
+    : !selfStagedValid ? t('selfOtaApplyNothingStaged')
+    : justApplied ? t('selfOtaApplyStatusDone')
+    : t('selfOtaApplyStatusIdle');
 }
 
 function renderOtaPanel() {

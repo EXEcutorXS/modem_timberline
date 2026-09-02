@@ -112,7 +112,7 @@ bool Can::txReady(void) const
     return (CAN2->TSTS & (CAN_TSTS_TMEM0 | CAN_TSTS_TMEM1 | CAN_TSTS_TMEM2)) != 0;
 }
 
-void Can::sendRaw(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data)
+bool Can::sendRaw(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data)
 {
     TxMessage.StdId = ext ? 0 : (uint16_t)id;
     TxMessage.ExtId = ext ? id : 0;
@@ -121,9 +121,23 @@ void Can::sendRaw(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data)
     TxMessage.DLC   = dlc;
     for (uint8_t i = 0; i < 8; i++)
         TxMessage.Data[i] = i < dlc ? data[i] : 0;
-    CAN_TransmitMessage(CAN2, &TxMessage);
+    uint8_t mailbox = CAN_TransmitMessage(CAN2, &TxMessage);
+    /* No onCanTx()/frame-echo here — SlcanBridge::processLine() already
+       replies with the SLCAN-standard 'Z'/'z' ack right after this call.
+       An earlier version also echoed the just-sent frame back as a second
+       'T'/'t' line (removed 2026-09-02) — that doubled every TX's USB
+       output for no protocol reason (nothing in the SLCAN spec echoes a
+       locally-transmitted frame back to the same session) and was a
+       prime suspect for the "куча ошибок" CAN Tool reported specifically
+       while flashing (heaviest back-to-back TX volume, and the extra line
+       could land between another response and its own ack). */
+    return mailbox != CAN_TxSTS_NoMailBox;
+}
 
-    slcanBridge.onCanTx(ext, id, dlc, data);
+void Can::setAutoRetransmit(bool enable)
+{
+    if (enable) CAN2->MCTRL &= ~(uint32_t)CAN_MCTRL_NART;
+    else        CAN2->MCTRL |=  (uint32_t)CAN_MCTRL_NART;
 }
 
 void Can::processCanRxMessage(CanRxMessage *msg)

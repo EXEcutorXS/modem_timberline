@@ -62,6 +62,7 @@ void USART_Config_Default(void);
 bool USART_Config(void);
 void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes);
 void USART_To_USB_Send_Data(char byte);
+uint32_t USB_Tx_Buffer_FreeSpace(void);
 void Handle_USBAsynchXfer (void);
 void Get_SerialNum(void);
 

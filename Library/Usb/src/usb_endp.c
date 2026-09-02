@@ -44,8 +44,20 @@
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
 
-/* Interval between sending IN packets in frame number (1 frame = 1ms) */
-#define VCOMPORT_IN_FRAME_INTERVAL             5
+/* Interval between sending IN packets in frame number (1 frame = 1ms).
+   SOF_Callback below compares FrameCount *before* incrementing, so the
+   actual period is (this value + 1) SOF frames — was 5, i.e. an IN flush
+   only every ~6ms, one 64-byte chunk at a time. That throttled the SLCAN
+   bridge (SlcanBridge.cpp) badly enough to cause timeouts/errors in CAN
+   Tool during flashing: every relayed CAN frame and its 'Z'/'z' ack sits
+   in USART_Rx_Buffer for up to ~6ms before going out, and a burst bigger
+   than one 64-byte chunk needs multiple such cycles to drain. Dropped to 0
+   (flush every single SOF, ~1ms) — same cadence the org's own dedicated
+   CAN-adapter (AT32F415, C:\source\CAN-adapter) already uses for its own
+   USB IN flush. Plain AT-command traffic is far below this rate either
+   way, so this doesn't cost anything there — Handle_USBAsynchXfer() just
+   returns immediately when there's nothing queued. */
+#define VCOMPORT_IN_FRAME_INTERVAL             0
 
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/

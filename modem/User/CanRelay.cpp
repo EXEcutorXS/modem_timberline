@@ -491,12 +491,15 @@ void CanRelay::handleGen2(void) {
 
    Magic word (protocol doc, added after this relay was first written):
    D[6..7] of both the erase (sub6, case 0) and write/flash-commit (sub4,
-   case 16) command frames must carry 0xAA55 — big-endian, D[6]=0xAA,
-   D[7]=0x55, matching this whole protocol's byte order (see
-   ProcessCanMessage's setAddrEcho/checkCrc parsing above) — or the
-   bootloader won't act on either command. Extra guard against an
-   accidental erase/flash from a malformed or unrelated frame; the other
-   sub-commands (0=set address, 2=check) don't require it. */
+   case 16) command frames must carry a magic word or the bootloader won't
+   act on the command — but it's a DIFFERENT value per command, not the
+   same one reused: erase = 0xAA55 (D[6]=0xAA, D[7]=0x55), write/commit =
+   0x55AA (D[6]=0x55, D[7]=0xAA) — confirmed against CAN Tool's own
+   reference implementation (BootloaderDeviceViewModel.Gen3.cs's
+   EraseFlash110()/StartFlashing110()) 2026-09-02, after this shipped with
+   0xAA55 in both places initially. Extra guard against an accidental
+   erase/flash from a malformed or unrelated frame; the other sub-commands
+   (0=set address, 2=check) don't require it. */
 void CanRelay::handleGen3(void) {
     static int8_t   step = 0;
     static uint32_t t = 0;
@@ -632,7 +635,15 @@ void CanRelay::handleGen3(void) {
         }
         break;
     case 16:
-        can.SendMessage(canId(110, 123, 0), 4, 0xFF,0xFF,0xFF,0xFF,0xFF,0xAA,0x55);
+        /* D[6..7] = 0x55,0xAA — a DIFFERENT magic word than erase's
+           0xAA,0x55 above, not just the same one reused; confirmed against
+           CAN Tool's own reference implementation (StartFlashing110() in
+           BootloaderDeviceViewModel.Gen3.cs, "magic-слово, защита от
+           случайной записи") 2026-09-02, after this originally shipped
+           with 0xAA,0x55 here too — a real mismatch nobody had caught yet
+           since CAN Tool talks to a gen3 bootloader directly for its own
+           flashing, never through this relay code. */
+        can.SendMessage(canId(110, 123, 0), 4, 0xFF,0xFF,0xFF,0xFF,0xFF,0x55,0xAA);
         flashGotResp = false;
         t = core.getTick();
         step = 17;

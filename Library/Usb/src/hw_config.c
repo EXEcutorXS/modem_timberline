@@ -489,10 +489,41 @@ void Handle_USBAsynchXfer (void)
 * Input          : None.
 * Return         : none.
 *******************************************************************************/
+/* Bytes free in USART_Rx_Buffer right now — i.e. how much more can be
+   queued before the writer (this function, called from contexts as varied
+   as the CAN RX interrupt via SlcanBridge, and the plain AT/log output
+   path) would start catching up to and overwriting bytes Handle_USBAsynchXfer()
+   hasn't sent yet. One slot is always kept empty so ptr_in reaching
+   ptr_out unambiguously means "empty", not "full" (classic ring-buffer
+   trick) — see USB_Tx_Buffer_FreeSpace()'s only caller, SlcanBridge::
+   usbSend(), for why this matters: the old USART_To_USB_Send_Data() below
+   only guarded against running past the *array's own* bounds, never
+   against lapping the reader, so a CAN RX burst faster than the ~1ms USB
+   flush could drain (see Handle_USBAsynchXfer(), VCOMPORT_IN_FRAME_INTERVAL
+   in usb_endp.c) silently overwrote not-yet-sent frames mid-buffer —
+   exactly the "same fragment retried, different garbage CRC every time"
+   symptom CAN Tool reported flashing through the SLCAN bridge 2026-09-02,
+   not a real bus/protocol error at all. */
+uint32_t USB_Tx_Buffer_FreeSpace(void)
+{
+    uint32_t used = (USART_Rx_ptr_in >= USART_Rx_ptr_out)
+        ? (USART_Rx_ptr_in - USART_Rx_ptr_out)
+        : (USART_RX_DATA_SIZE - USART_Rx_ptr_out + USART_Rx_ptr_in);
+    return (USART_RX_DATA_SIZE - 1) - used;
+}
+
 void USART_To_USB_Send_Data(char byte)
 {
     /* USB output is always enabled */
-    
+
+    /* Full (one slot short, see USB_Tx_Buffer_FreeSpace() above) — drop
+       this byte rather than overwrite a not-yet-sent one. A dropped byte
+       still garbles whatever line it belonged to, but it can no longer
+       corrupt a *different*, already-complete line sitting further along
+       in the buffer; callers that need whole-line atomicity (SlcanBridge::
+       usbSend()) check free space themselves before writing anything. */
+    if (USB_Tx_Buffer_FreeSpace() == 0) return;
+
     if (linecoding.datatype == 7)
     {
         USART_Rx_Buffer[USART_Rx_ptr_in] = byte & 0x7F;

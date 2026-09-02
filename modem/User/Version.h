@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 10
+#define VERSION_4 11
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,8 @@
 0x20023FFC     4 B      BOOT_MAGIC_ADDR — флаг "войти в загрузчик / в приложение"
 
 
+121.0.0.11
+SLCAN Bridge mode fixed
 121.0.0.10
 Modem Tool USB control support added
 121.0.0.9

@@ -21,6 +21,17 @@ int SlcanBridge::parseHexNibble(char c)
 
 void SlcanBridge::usbSend(const char* s)
 {
+    /* Whole-line atomicity: either the full response fits in the USB TX
+       ring buffer right now, or none of it goes out. Without this check, a
+       CAN RX burst outrunning the ~1ms USB flush (see Handle_USBAsynchXfer()
+       in hw_config.c) could still only get partway through a line before
+       USB_Tx_Buffer_FreeSpace() hit 0 and USART_To_USB_Send_Data() started
+       silently dropping the rest — leaving a truncated, malformed line in
+       the buffer that would desync whatever comes after it just as badly
+       as the overwrite bug this was written alongside. Dropping the whole
+       frame here instead just means CAN Tool times out waiting for it and
+       retries, which it already does. */
+    if (USB_Tx_Buffer_FreeSpace() < strlen(s)) return;
     while (*s) USART_To_USB_Send_Data(*s++);
 }
 
@@ -40,11 +51,20 @@ int SlcanBridge::processLine(const char* line)
 
     if (cmd == 'O') {
         active = true;
+        /* A real CAN adapter just lets the hardware auto-retry a frame
+           that lost arbitration or hit a bit error — the modem's own
+           normal operation deliberately disables that (NART, see
+           Can::initialize()'s comment), which is fine for its own sparse
+           traffic but means a single collision permanently drops a frame
+           during a fast back-to-back burst like flashing. Only flip this
+           while acting as a transparent adapter. */
+        can.setAutoRetransmit(true);
         usbSend("\r");
         return 1;
     }
     if (cmd == 'C') {
         active = false;
+        can.setAutoRetransmit(false); /* restore the modem's own default */
         usbSend("\r");
         return 1;
     }
@@ -80,7 +100,13 @@ int SlcanBridge::processLine(const char* line)
             data[i] = (uint8_t)((hi << 4) | lo);
         }
 
-        can.sendRaw(ext, id, dlc, data);
+        /* Ack only once the frame is actually queued into a hardware TX
+           mailbox — CAN_TransmitMessage() silently drops it instead of
+           blocking/queuing if all 3 are still busy (see Can::sendRaw()'s
+           own comment), which a back-to-back burst like flashing hits far
+           more often than occasional single sends. Acking unconditionally
+           here told CAN Tool a frame went out when it sometimes hadn't. */
+        if (!can.sendRaw(ext, id, dlc, data)) { usbSend("\a"); return 1; }
         usbSend(ext ? "Z\r" : "z\r");
         return 1;
     }
@@ -128,43 +154,6 @@ void SlcanBridge::onCanRx(CanRxMessage* msg)
     for (uint8_t i = 0; i < dlc; i++) {
         buf[pos++] = hexNibble(msg->Data[i] >> 4);
         buf[pos++] = hexNibble(msg->Data[i] & 0xFu);
-    }
-    buf[pos++] = '\r';
-    buf[pos]   = '\0';
-
-    usbSend(buf);
-}
-
-void SlcanBridge::onCanTx(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data)
-{
-    if (!active) return;
-
-    char    buf[32];
-    uint8_t pos = 0;
-    if (dlc > 8) dlc = 8;
-
-    if (ext) {
-        buf[pos++] = 'T';
-        uint32_t tmp = id;
-        for (int i = 7; i >= 0; i--) {
-            buf[pos + (uint8_t)i] = hexNibble(tmp & 0xFu);
-            tmp >>= 4;
-        }
-        pos += 8;
-    } else {
-        buf[pos++] = 't';
-        uint32_t tmp = id & 0x7FFu;
-        for (int i = 2; i >= 0; i--) {
-            buf[pos + (uint8_t)i] = hexNibble((uint8_t)(tmp & 0xFu));
-            tmp >>= 4;
-        }
-        pos += 3;
-    }
-
-    buf[pos++] = (char)('0' + dlc);
-    for (uint8_t i = 0; i < dlc; i++) {
-        buf[pos++] = hexNibble(data[i] >> 4);
-        buf[pos++] = hexNibble(data[i] & 0xFu);
     }
     buf[pos++] = '\r';
     buf[pos]   = '\0';

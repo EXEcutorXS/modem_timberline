@@ -31,7 +31,6 @@ public:
     SlcanBridge() : active(false) {}
     int  processLine(const char* line);   /* returns 1 if handled, 0 if not SLCAN */
     void onCanRx(CanRxMessage* msg);
-    void onCanTx(bool ext, uint32_t id, uint8_t dlc, const uint8_t* data);
 
 private:
     void        usbSend(const char* s);

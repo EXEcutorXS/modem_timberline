@@ -279,6 +279,99 @@ bool     Flash_C::writeSelfOtaPage(uint16_t pageIndex, const uint8_t* data) { re
 void     Flash_C::readSelfOtaPage(uint16_t pageIndex, uint8_t* outBuf)     { readPageAt(FLASH_SELF_OTA_BUF_ADDR, FLASH_SELF_OTA_PAGE_COUNT, pageIndex, outBuf); }
 uint16_t Flash_C::crc16SelfOtaPage(uint16_t pageIndex)                     { return crc16PageAt(FLASH_SELF_OTA_BUF_ADDR, FLASH_SELF_OTA_PAGE_COUNT, pageIndex); }
 
+bool Flash_C::eraseSelfOtaPage(uint16_t pageIndex)
+{
+    if (pageIndex >= FLASH_SELF_OTA_PAGE_COUNT) return false;
+    FLASH_Unlock();
+    bool ok = (FLASH_EraseOnePage(FLASH_SELF_OTA_BUF_ADDR + (uint32_t)pageIndex * FLASH_PAGE_SIZE) == FLASH_COMPL);
+    FLASH_Lock();
+    return ok;
+}
+
+/* See the declaration in flash.h for the full rationale — mirrors the exact
+   dual acceptance rule nations-bootloader's own main() uses for the real
+   app footer (calcCrc()-verified length, or the 0x55555555 debug-mode
+   placeholder _CRCR always carries straight out of a Keil build). */
+bool Flash_C::readSelfOtaFooter(char* outVersion, uint32_t* outCodeBytes)
+{
+    uint32_t footerAddr = FLASH_SELF_OTA_BUF_ADDR + FLASH_SELF_OTA_BUF_SIZE - FLASH_PAGE_SIZE;
+    uint32_t len = (uint32_t)(*(__IO uint8_t*)(footerAddr))
+                 | ((uint32_t)(*(__IO uint8_t*)(footerAddr+1)) << 8)
+                 | ((uint32_t)(*(__IO uint8_t*)(footerAddr+2)) << 16)
+                 | ((uint32_t)(*(__IO uint8_t*)(footerAddr+3)) << 24);
+    uint16_t crc = (uint16_t)(*(__IO uint8_t*)(footerAddr+4)) | ((uint16_t)(*(__IO uint8_t*)(footerAddr+5)) << 8);
+    uint8_t verBytes[4];
+    for (uint8_t i = 0; i < 4; i++) verBytes[i] = *(__IO uint8_t*)(footerAddr + 6 + i);
+
+    uint32_t codeMax = FLASH_SELF_OTA_BUF_SIZE - FLASH_PAGE_SIZE; /* MAIN_PROGRAM_MAX_SIZE, mirrored */
+    uint32_t codeBytes;
+    if (len != 0 && len <= codeMax && flashCrc16((const uint8_t*)FLASH_SELF_OTA_BUF_ADDR, len) == crc) {
+        codeBytes = len;
+    } else {
+        return false; /* still erased (0xFF), still the build-time debug placeholder
+                          (finalizeSelfOtaFooter() never ran, or a download never
+                          actually finished), or a corrupted/interrupted download */
+    }
+
+    /* "V1.V2.V3.V4" — same point-decimal convention as everywhere else in
+       OmniProtocol (PGN=18 etc.), built by hand since there's no sprintf
+       available in this codebase. */
+    uint16_t n = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+        if (i) outVersion[n++] = '.';
+        uint8_t v = verBytes[i];
+        char digits[3]; uint8_t nd = 0;
+        do { digits[nd++] = (char)('0' + (v % 10)); v /= 10; } while (v);
+        while (nd) outVersion[n++] = digits[--nd];
+    }
+    outVersion[n] = 0;
+
+    *outCodeBytes = codeBytes;
+    return true;
+}
+
+/* See the declaration in flash.h for the full rationale. */
+bool Flash_C::finalizeSelfOtaFooter(const char* version)
+{
+    uint32_t codeBytes = FLASH_SELF_OTA_BUF_SIZE - FLASH_PAGE_SIZE; /* MAIN_PROGRAM_MAX_SIZE, mirrored — always the
+                                                                        whole code budget, gap-padding included */
+    uint16_t crc = flashCrc16((const uint8_t*)FLASH_SELF_OTA_BUF_ADDR, codeBytes);
+
+    /* "V1.V2.V3.V4" -> 4 raw bytes — same point-decimal parsing nations-
+       bootloader's own ApplySelfOtaImage() does for the real app footer,
+       mirrored here since this writes the exact same 12-byte layout. */
+    uint8_t verBytes[4] = {0,0,0,0};
+    {
+        const char* p = version;
+        for (uint8_t seg = 0; seg < 4 && *p; seg++) {
+            uint32_t v = 0;
+            while (*p >= '0' && *p <= '9') { v = v*10 + (uint8_t)(*p - '0'); p++; }
+            verBytes[seg] = (uint8_t)v;
+            if (*p == '.') p++;
+        }
+    }
+
+    uint8_t footer[12] = {
+        (uint8_t)(codeBytes), (uint8_t)(codeBytes>>8), (uint8_t)(codeBytes>>16), (uint8_t)(codeBytes>>24),
+        (uint8_t)(crc), (uint8_t)(crc>>8),
+        verBytes[0], verBytes[1], verBytes[2], verBytes[3],
+        0x00, 0xFF
+    };
+
+    uint32_t footerAddr = FLASH_SELF_OTA_BUF_ADDR + FLASH_SELF_OTA_BUF_SIZE - FLASH_PAGE_SIZE;
+    FLASH_Unlock();
+    bool ok = (FLASH_EraseOnePage(footerAddr) == FLASH_COMPL);
+    if (ok) {
+        for (uint32_t off = 0; off < sizeof(footer); off += 4) {
+            uint32_t word = (uint32_t)footer[off] | ((uint32_t)footer[off+1]<<8)
+                           | ((uint32_t)footer[off+2]<<16) | ((uint32_t)footer[off+3]<<24);
+            if (FLASH_ProgramWord(footerAddr + off, word) != FLASH_COMPL) { ok = false; break; }
+        }
+    }
+    FLASH_Lock();
+    return ok;
+}
+
 /* Record layout (36 bytes, same "explicit fields + trailing sum byte"
    convention as writeSetup()/readSetup() above — not a struct memcpy, so
    the on-flash format never silently shifts if the struct's own padding
@@ -332,10 +425,11 @@ bool Flash_C::readMetaAt(uint32_t metaAddr, char* outVersion, uint32_t* outTotal
 /* Target-device OTA meta — same 36-byte record shape as writeMetaAt()/
    readMetaAt() above, but NOT built on top of them: this one also carries
    flashBase in 4 of the record's 5 previously-unused reserved bytes (see
-   writeMetaAt()'s own comment on the layout). Kept as its own standalone
-   read/write pair rather than adding an optional parameter to the shared
-   helper, since writeSelfOtaMeta()/readSelfOtaMeta() (self-OTA has no
-   flashBase concept) still need the plain 3-field version. */
+   writeMetaAt()'s own comment on the layout). writeMetaAt()/readMetaAt()
+   themselves are still used as-is by exactly this pair now — self-OTA
+   dropped its own equivalent meta record entirely (see
+   readSelfOtaFooter()'s own comment in flash.h for why an explicit record
+   isn't needed there any more). */
 bool Flash_C::writeOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16, uint32_t flashBase)
 {
     uint8_t array[36];
@@ -383,5 +477,3 @@ bool Flash_C::readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* o
     return true;
 }
 
-bool Flash_C::writeSelfOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16) { return writeMetaAt(FLASH_SELF_OTA_META_ADDR, version, totalBytes, totalCrc16); }
-bool Flash_C::readSelfOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16) { return readMetaAt(FLASH_SELF_OTA_META_ADDR, outVersion, outTotalBytes, outTotalCrc16); }

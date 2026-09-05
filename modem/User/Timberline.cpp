@@ -34,20 +34,7 @@ static const char* UNIT_STR(void) { return modem.config.tempUnit == 1 ? "\xb0""F
 
 Timberline timberline;
 
-/* Совместимость с nations-bootloader: он читает метаданные из ADDRESS_CRC.
-   Вся страница 0x0802A000..0x0802A800 зарезервирована под футер — код и
-   таблица векторов начинаются со следующей страницы
-   (MAIN_PROGRAM_START_ADDRESS=0x0802A800), линкеру не нужно ничего
-   "обтекать" внутри кода (см. modemDragonfly.uvprojx IROM1 и main.h).
-   lenMain=0x55555555 → "debug mode" → загрузчик запускает приложение без
-   проверки CRC (тот же приём, что и в PU28-Timberline/User/Main/main.cpp). */
-const uint8_t _CRCR[FLASH_PAGE_SIZE] __attribute__((at(ADDRESS_CRC))) =
-{
-    0x55, 0x55, 0x55, 0x55,
-    0x55, 0x55,
-    VERSION_1, VERSION_2, VERSION_3, VERSION_4,
-    0x00
-};
+
 
 /* Minimal base64 encoder — no library in this codebase already provides
    one. Only used for the packed telemetry blob (see mqttTelemetryHandler);
@@ -756,9 +743,9 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
            already in progress — re-publish the same otaStart value again
            once the current run finishes (idle/done/error) to actually
            start a new one. */
-        if (modem.ota.status == Modem::OTA_STAGING) return;
+        if (modem.ota.status == Modem::OTA_STAGING) { modem.setOtaError("busy-downloading"); return; }
         const char* colon = strchr(payload, ':');
-        if (!colon || colon == payload) return;
+        if (!colon || colon == payload) { modem.setOtaError("bad-payload"); return; }
         uint8_t deviceType = (uint8_t)atoi(payload);
         modem.startOta(deviceType, colon + 1);
     }
@@ -770,13 +757,14 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
            (otaStaged, see Modem::ota.stagedVersion) before committing to
            actually flashing the device. Refuses while a relay or a
            download is already running, or nothing valid is staged. */
-        if (canRelay.status == CanRelay::RELAY_STAGING) return;
-        if (modem.ota.status == Modem::OTA_STAGING) return;
-        if (!modem.ota.stagedValid) return;
+        if (canRelay.status == CanRelay::RELAY_STAGING) { modem.setOtaError("busy-relaying"); return; }
+        if (modem.ota.status == Modem::OTA_STAGING) { modem.setOtaError("busy-downloading"); return; }
+        if (!modem.ota.stagedValid) { modem.setOtaError("nothing-staged"); return; }
         const char* colon = strchr(payload, ':');
-        if (!colon || colon == payload) return;
+        if (!colon || colon == payload) { modem.setOtaError("bad-payload"); return; }
         uint8_t targetType = (uint8_t)atoi(payload);
         uint8_t targetAddress = (uint8_t)atoi(colon + 1);
+        modem.otaErrorReason[0] = 0; /* accepted — clear whatever was reported before */
         canRelay.start(targetType, targetAddress);
     }
     else if (!strcmp(name, "selfOtaApply")) {
@@ -794,8 +782,8 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
            bootloader's usual grace period) or leaves the device parked in
            the bootloader's CAN-recovery loop if a flash write partway
            through actually failed — never a silent brick either way. */
-        if (modem.ota.status == Modem::OTA_STAGING) return;
-        if (!modem.selfOta.stagedValid) return;
+        if (modem.ota.status == Modem::OTA_STAGING) { modem.setOtaError("busy-downloading"); return; }
+        if (!modem.selfOta.stagedValid) { modem.setOtaError("nothing-staged"); return; }
         *(__IO uint32_t*)BOOT_MAGIC_ADDR = BOOT_MAGIC_UPDATE;
         NVIC_SystemReset();
     }
@@ -1314,6 +1302,7 @@ void Timberline::mqttActualizerHandler(void) {
        everything else here. */
     static Modem::OtaStatus prevOtaStatus;
     static uint16_t    prevOtaPage;
+    static char        prevOtaError[24]; /* zero-initialized (static storage), same as prevStagedVersion etc. below */
     /* What's actually sitting in the modem's flash OTA buffer right now —
        see Modem::ota.stagedValid/stagedVersion. Separate from otaStatus/
        otaProgress above (those describe a download in progress); this is
@@ -1458,6 +1447,16 @@ void Timberline::mqttActualizerHandler(void) {
         prevOtaStatus = modem.ota.status;
         static const char* otaStatusStr[] = { "idle", "staging", "done", "error" };
         modem.mqttPublish("otaStatus", otaStatusStr[modem.ota.status]);
+    }
+    /* See Modem::otaErrorReason's own comment — the "otaStart"/"canRelayStart"/
+       "selfOtaApply" rejection reasons that otaStatus/canRelayStatus alone
+       can't show, since a rejected click never even changes them. Empty
+       string = nothing to report, same "0 means none" convention as the
+       "errors" CSV topic. */
+    if (strcmp(modem.otaErrorReason, prevOtaError) != 0 || justConnected) {
+        strncpy(prevOtaError, modem.otaErrorReason, sizeof(prevOtaError) - 1);
+        prevOtaError[sizeof(prevOtaError) - 1] = 0;
+        modem.mqttPublish("otaError", modem.otaErrorReason);
     }
     /* Only worth publishing progress while actually staging — otaPage is
        meaningless (and noisy to diff-publish) once idle/done/error. */

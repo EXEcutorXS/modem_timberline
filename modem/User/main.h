@@ -25,15 +25,28 @@
 #endif
 
 /* nations-bootloader contract — see that project's plan doc for the full
-   memory map. This app's own IROM1 (Options for Target -> Target, mirrored
-   into modemDragonfly.sct's LR_IROM1) starts at MAIN_PROGRAM_START_ADDRESS-
-   0x400... no: IROM1 actually starts at ADDRESS_CRC itself (0x0802A000) and
-   covers the footer page too — see the IROM1 size note next to ADDRESS_CRC
-   below. MAIN_PROGRAM_START_ADDRESS is where the app's own vector table
-   lives (one page after ADDRESS_CRC), which is what the bootloader's
-   JumpToApp() actually jumps to. */
-#define ADDRESS_CRC                 0x0802A000u   //страница футера (_CRCR) — читается загрузчиком
-#define MAIN_PROGRAM_START_ADDRESS  0x0802A800u   //таблица векторов приложения — на страницу дальше футера
+   memory map. This app's own code+footer span [0x0802A000, 0x0804A800) is
+   now declared as TWO separate regions in Options for Target -> Target
+   (mirrored automatically into modemDragonfly.sct's LR_IROM1/LR_IROM2, no
+   hand-written scatter file needed): IROM1 = 0x0802A000, size 0x20000
+   (128 KB code budget) and IROM2 = 0x0804A000, size 0x800 (one footer
+   page). Changed 2026-09-04 from a single 0x20800 region spanning both —
+   with one region, the linker must materialize every byte between the end
+   of real code and _CRCR's fixed address as literal padding (a real
+   L6220E "exceeds limit" build failure once that padding left no room for
+   RW_IRAM1's own compressed init-data load image, which the linker always
+   places immediately after wherever the code region's *declared* size
+   ends, not after wherever the code actually stops). Two separate regions
+   avoid that entirely: each is sized to only what it actually needs, so
+   there's no gap for the linker to fill and no shared region for
+   RW_IRAM1's load image to be squeezed out of. MAIN_PROGRAM_START_ADDRESS
+   is IROM1's own start address — the app's vector table is the very first
+   thing there, matching the convention every other device type in this
+   org's lineup already uses (no reserved page ahead of it) — and
+   ADDRESS_CRC (_CRCR's footer page, read by nations-bootloader as
+   APP_FOOTER_ADDR) is IROM2's entire span instead. */
+#define MAIN_PROGRAM_START_ADDRESS  0x0802A000u   //таблица векторов приложения — самое начало региона
+#define ADDRESS_CRC                 0x0804A000u   //страница футера (_CRCR) — теперь последняя страница региона, читается загрузчиком
 #define BOOT_MAGIC_ADDR              0x20023FFCu   //последнее слово физического ОЗУ — см. nations-bootloader
 
 /* BOOT_MAGIC_ADDR values — must match nations-bootloader's own main.h

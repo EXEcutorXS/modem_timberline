@@ -11,6 +11,16 @@ const { WebSocketServer } = require('ws');
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+/* Loopback-only by default (2026-09-05) — nginx (ports 80/443) is the only
+   intended way in from outside now, including for the modem's own plain-
+   HTTP /firmware/* fetches (see host/nginx/timberline-web.conf's own
+   comment and Modem.cpp's buildOtaUrl()). This app has no TLS of its own
+   and serves real auth endpoints (/api/login, /api/register) alongside the
+   public firmware files, so leaving it on 0.0.0.0:PORT meant anyone could
+   hit those in plain text directly, bypassing nginx's TLS entirely, for no
+   remaining reason once /firmware/ had its own nginx route. Override via
+   HOST if a deployment genuinely needs it reachable some other way. */
+const HOST = process.env.HOST || '127.0.0.1';
 
 /* MQTT_HOST is deliberately NOT hardcoded: the broker and this app are
    co-located today, but nothing here should assume that stays true forever,
@@ -61,24 +71,24 @@ app.use(express.json());
 /* ── Firmware storage ────────────────────────────────────────────────────
    One file per published version, flat under public/firmware/<type>/ — no
    per-version subfolder, no profile.txt, no crc sidecar. Everything else
-   (flash base address, which sectors to erase, per-page CRC16) is derived
-   from this single file: its name and its bytes. See host/README.md for
-   the full naming convention and rationale; in short:
+   (flash base address, per-page CRC16) is derived from this single file:
+   its name and its bytes. See host/README.md for the full naming
+   convention and rationale; in short:
 
-     125.0.0.15_0x08020000_5-6.bin     erase sectors 5 and 6 before flashing
      121.0.0.8_0x0802A800.bin          erase the whole program region
 
-   Filename: "<version>_0x<flashBase>[_<sectors>].bin" — version is this
-   org's usual 1-4 dot-separated decimal bytes (matches what the CAN
-   bootloader itself reports, OmniProtocol PGN=6 param 18); flashBase is
-   hex (any digit count, whatever the file was named with); sectors, if
-   present, is comma-separated single sector numbers and/or inclusive
-   "first-last" ranges (e.g. "2,5-15") — omitted entirely means "erase the
-   whole program region" (see Timberline::doCanRelay() on the modem side
-   for what that becomes on the wire). */
+   Filename: "<version>_0x<flashBase>.bin" — version is this org's usual
+   1-4 dot-separated decimal bytes (matches what the CAN bootloader itself
+   reports, OmniProtocol PGN=6 param 18); flashBase is hex (any digit
+   count, whatever the file was named with). Erase is always the target
+   bootloader's own broad "erase whole program region" command — there is
+   no per-sector erase list any more, on either the modem or here (removed
+   2026-09-04; the modem side dropped it earlier, 2026-08-29, after a
+   RAM-only-persistence bricking incident — see Modem.h's `ota` struct
+   comment). */
 const FIRMWARE_TYPE_RE = /^[a-z0-9_-]+$/i;
 const FIRMWARE_VERSION_RE = /^[0-9.]+$/;
-const FIRMWARE_FILENAME_RE = /^([0-9]+(?:\.[0-9]+){0,3})_0x([0-9A-Fa-f]+)(?:_([0-9,-]+))?\.bin$/;
+const FIRMWARE_FILENAME_RE = /^([0-9]+(?:\.[0-9]+){0,3})_0x([0-9A-Fa-f]+)\.bin$/;
 const FIRMWARE_PAGE_SIZE = 2048;
 
 /* Lists every published version for a type, parsed straight from the
@@ -98,7 +108,7 @@ function listFirmwareFiles(type) {
         if (!e.isFile()) continue;
         const m = FIRMWARE_FILENAME_RE.exec(e.name);
         if (!m) continue;
-        out.push({ fileName: e.name, version: m[1], flashBaseHex: m[2], sectorSpec: m[3] || null });
+        out.push({ fileName: e.name, version: m[1], flashBaseHex: m[2] });
     }
     return out;
 }
@@ -205,21 +215,19 @@ app.get('/firmware/:type/:version/firmware.crc16', (req, res) => {
 
 /* ── Firmware profile endpoint ───────────────────────────────────────────
    Replaces the old per-type profile.txt — synthesized on the fly from the
-   matched file's own name (see the naming convention above), per
-   *version* now rather than per type, so different versions of the same
-   device type can carry different flash layouts (e.g. a gen2-bootloader
-   build needing an explicit sector list vs. a gen3 one that doesn't)
-   without a shared file going stale. Same KEY=VALUE text format
-   Modem::doFetchProfile() already parses; eraseSectors is simply omitted
-   when the filename carried no sector spec. */
+   matched file's own name (see the naming convention above), per *version*
+   now rather than per type, so different versions of the same device type
+   can carry different flash bases without a shared file going stale. Same
+   KEY=VALUE text format Modem::doFetchProfile() already parses — flashBase
+   is the only key there is now (no eraseSectors any more, see the naming
+   convention comment above). */
 app.get('/firmware/:type/:version/profile', (req, res) => {
     if (!FIRMWARE_TYPE_RE.test(req.params.type) || !FIRMWARE_VERSION_RE.test(req.params.version)) {
         return res.status(400).end();
     }
     const match = resolveFirmwareFile(req.params.type, req.params.version);
     if (!match) return res.status(404).end();
-    let body = `flashBase=0x${match.flashBaseHex}\n`;
-    if (match.sectorSpec) body += `eraseSectors=${match.sectorSpec}\n`;
+    const body = `flashBase=0x${match.flashBaseHex}\n`;
     res.set('Content-Type', 'text/plain');
     res.status(200).send(body);
 });
@@ -455,4 +463,4 @@ wss.on('connection', async (ws, req) => {
     }
 });
 
-server.listen(PORT, () => console.log(`timberline-web listening on :${PORT}`));
+server.listen(PORT, HOST, () => console.log(`timberline-web listening on ${HOST}:${PORT}`));

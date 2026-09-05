@@ -63,7 +63,8 @@ Modem::Modem()
     rawCapture.dst = 0; rawCapture.cap = 0; rawCapture.got = 0; rawCapture.chunkRemaining = 0;
     mqttScratch.urcResult = 0; mqttScratch.teardownThenNet = false;
     mqttScratch.netTeardownThenReinit = false; mqttScratch.reconnectRequested = false;
-    otaScratch.startRequested = false; otaScratch.retries = 0; otaScratch.failed = false; otaScratch.readLen = 0;
+    otaScratch.startRequested = false; otaScratch.startRequestedTick = 0; otaScratch.retries = 0; otaScratch.failed = false; otaScratch.readLen = 0;
+    otaErrorReason[0] = 0;
     regScratch.startRequested = false; regScratch.retries = 0;
     regScratch.login[0] = 0; regScratch.password[0] = 0;
     autoRegisterStatus = AUTOREG_IDLE;
@@ -174,8 +175,7 @@ void Modem::refreshStagedInfo(void) {
         ota.deviceType = (t <= 255) ? (uint8_t)t : 0;
     }
 
-    uint16_t selfCrcUnused;
-    selfOta.stagedValid = flash.readSelfOtaMeta(selfOta.stagedVersion, &selfOta.stagedBytes, &selfCrcUnused);
+    selfOta.stagedValid = flash.readSelfOtaFooter(selfOta.stagedVersion, &selfOta.stagedBytes);
     if (!selfOta.stagedValid) { selfOta.stagedVersion[0] = 0; selfOta.stagedBytes = 0; }
 }
 
@@ -823,19 +823,28 @@ void Modem::doIdle(void) {
        entered from doIdle()'s own clean top-level dispatch. Left pending
        (not cleared) if internet isn't up yet — doIdle() just re-checks this
        every pass until it is, same as the MQTT retry path below implicitly
-       waiting on internet.isInternetConnected too. */
-    if (otaScratch.startRequested && internet.isInternetConnected) {
-        otaScratch.startRequested = false;
-        ota.status = OTA_STAGING;
-        ota.page = 0;
-        otaScratch.failed = false;
-        /* deviceType == VERSION_1: this modem's own firmware, not a
-           CAN-relay target — skip ST_FETCH_PROFILE entirely (the profile/
-           bootloaders.txt only exist to tell doCanRelay() a target's flash
-           layout and safe bootloader algorithm; the self-OTA buffer has no
-           CAN relay step) and go straight to the download. */
-        setState(otaScratch.deviceType == VERSION_1 ? ST_OTA : ST_FETCH_PROFILE);
-        return;
+       waiting on internet.isInternetConnected too. Past
+       OTA_START_NO_INTERNET_TIMEOUT_MS still waiting, give up and report it
+       instead of leaving the request pending forever with otaStatus stuck
+       at "idle" and no feedback anywhere — see otaErrorReason's own comment
+       in Modem.h; this used to be exactly that kind of silent hang. */
+    if (otaScratch.startRequested) {
+        if (internet.isInternetConnected) {
+            otaScratch.startRequested = false;
+            ota.status = OTA_STAGING;
+            ota.page = 0;
+            otaScratch.failed = false;
+            /* deviceType == VERSION_1: this modem's own firmware, not a
+               CAN-relay target — skip ST_FETCH_PROFILE entirely (the profile/
+               bootloaders.txt only exist to tell doCanRelay() a target's flash
+               layout and safe bootloader algorithm; the self-OTA buffer has no
+               CAN relay step) and go straight to the download. */
+            setState(otaScratch.deviceType == VERSION_1 ? ST_OTA : ST_FETCH_PROFILE);
+            return;
+        } else if ((now - otaScratch.startRequestedTick) >= 30000) { /* 30s — generous vs. a normal reconnect, short vs. "forever" */
+            otaScratch.startRequested = false;
+            setOtaError("no-internet");
+        }
     }
 
     /* startAutoRegister() was called from Timberline's CAN dispatch — same
@@ -1872,26 +1881,46 @@ void Modem::doMqttTeardown(void) {
 
 /* ── OTA (MBC-2 firmware staging) ────────────────────────────────────────
    Downloads firmware/mbc2/<version>/{firmware.crc16,firmware.bin} from the
-   same host as mqtt.broker, plain HTTP on port 3000 (bypassing nginx/TLS —
-   this AT+HTTP stack is only proven against plain http:// so far, see
+   same host as mqtt.broker, plain HTTP on the default port 80 — this
+   AT+HTTP stack is only proven against plain http:// so far, see
    internet.internetCheckUrl's own default; unlike the getlink URL, this is fetched
    by the modem itself, not opened in a browser, so there's no cert-name
-   requirement pulling it toward https://). See host/README.md's "Firmware
-   OTA" section for how a version gets published there, and flash.h for the
-   128 KB / 64-page staging area this fills. Triggered by startOta(), called
-   from onMqttCommandReceived() (Timberline.cpp) on cmd/desired/otaStart. */
+   requirement pulling it toward https://. Reaches the app through nginx's
+   own /firmware/ plain-HTTP exception (host/nginx/timberline-web.conf,
+   added 2026-09-05) rather than hitting the app's own :3000 directly —
+   that port isn't reachable from outside any more at all (see
+   buildOtaUrl()'s own comment for the full story). See host/README.md's
+   "Firmware OTA" section for how a version gets published there, and
+   flash.h for the 128 KB / 64-page staging area this fills. Triggered by
+   startOta(), called from onMqttCommandReceived() (Timberline.cpp) on
+   cmd/desired/otaStart. */
 
 void Modem::startOta(uint8_t deviceType, const char* version) {
     otaScratch.deviceType = deviceType;
     strncpy(otaScratch.version, version, sizeof(otaScratch.version) - 1);
     otaScratch.version[sizeof(otaScratch.version) - 1] = 0;
     otaScratch.startRequested = true;
+    otaScratch.startRequestedTick = core.getTick();
+    otaErrorReason[0] = 0; /* a freshly-accepted request supersedes whatever was reported before */
     log_info("[OTA] start type=");
     char buf[4]; int n = appendUint(buf, 0, deviceType); buf[n] = 0;
     log_info(buf);
     log_info(" version=");
     log_info(otaScratch.version);
     log_info("\r\n");
+}
+
+/* See otaErrorReason's own comment in Modem.h. `reason` must be a short
+   fixed string literal from one of the call sites (Timberline.cpp's
+   onMqttCommandReceived, or doIdle()'s no-internet timeout below) — no
+   sprintf-style building here, same "fixed ASCII code, not a message"
+   design as the rest of this codebase's status strings. */
+void Modem::setOtaError(const char* reason) {
+    strncpy(otaErrorReason, reason, sizeof(otaErrorReason) - 1);
+    otaErrorReason[sizeof(otaErrorReason) - 1] = 0;
+    log_error("[OTA] rejected: ");
+    log_error(otaErrorReason);
+    log_error("\r\n");
 }
 
 /* Called from Timberline's CAN dispatch (ProcessCanMessage(), PGN 1) when
@@ -2041,17 +2070,27 @@ static void logOtaInfoNum(const char* label, uint32_t v) {
     log_info(buf);
 }
 
-/* Builds "http://<mqttBroker>:3000/firmware/<deviceType>/<version>/<filename>"
+/* Builds "http://<mqttBroker>/firmware/<deviceType>/<version>/<filename>"
    into out (must be >= 160 bytes) — deviceType picks the folder (see
    ProcessMessage()/OmniProtocol device-type table) instead of the old
    hardcoded "mbc2" segment, so any device type works as long as the
-   matching folder exists on the server. */
+   matching folder exists on the server.
+
+   Plain HTTP on the default port 80, not ":3000" any more (2026-09-05) —
+   nginx now carves out a plain-HTTP exception for exactly this /firmware/
+   path (see host/nginx/timberline-web.conf's own comment) so this AT+HTTP
+   stack, only ever proven against plain http:// (see doOta()'s own
+   comment), can still reach it without needing HTTPS or a direct route to
+   the app's own :3000, which is no longer reachable from outside at all
+   (server.js now binds 127.0.0.1 only). Every other path on :80 still
+   redirects to HTTPS as before — this exception is scoped to /firmware/
+   alone. */
 static void buildOtaUrl(char* out, const char* mqttBroker, uint8_t deviceType, const char* version, const char* filename) {
     int n = 0;
     const char* pre = "http://";
     while (*pre) out[n++] = *pre++;
     for (const char* p = mqttBroker; *p && n < 150; ) out[n++] = *p++;
-    const char* mid = ":3000/firmware/";
+    const char* mid = "/firmware/";
     while (*mid && n < 150) out[n++] = *mid++;
     n = appendUint(out, n, deviceType);
     if (n < 150) out[n++] = '/';
@@ -2357,11 +2396,39 @@ void Modem::doOta(void) {
             if (ota.pageTotal > maxPages) ota.pageTotal = maxPages;
             ota.page = 0;
             logOtaInfoNum("crc-ok-pages", ota.pageTotal);
-            step++;
+            /* self: always a full, unbroken re-download from here (case 7
+               below erases the whole buffer first — see its own comment) —
+               never the resume-if-already-matching shortcut case 6 offers
+               target-device OTA, since after an erase there's nothing left
+               to match against anyway. */
+            step = self ? 7 : 6;
         } else if ((core.getTick() - t) >= 8000) {
             rawCapture.dst = 0;
             logOtaFail(5, "crc-httpread-timeout", rawCapture.got);
             otaScratch.failed = true; step = 20;
+        }
+        break;
+    }
+    /* self only — erases the whole self-OTA buffer before downloading a
+       single byte, one page per handler() tick rather than one blocking
+       65-page sweep (~1.3s straight through with interrupts disabled would
+       stall CAN/MQTT servicing for the rest of this shared main loop — see
+       the no-burst-sends rationale elsewhere in this codebase, e.g.
+       work.cpp's canBroadcast()). Needed so that if THIS download is ever
+       interrupted partway, the buffer's trailing page reliably reads back
+       as still-erased (see flash.h's readSelfOtaFooter()) instead of a
+       stale "looks complete" leftover from a previous successful run —
+       there is no separate meta/checksum record any more to catch that
+       case a different way. Never entered for target-device OTA (case 6's
+       own resume-from-flash shortcut still applies there, unaffected). */
+    case 7: {
+        static uint16_t erasePage = 0;
+        if (erasePage == 0) logOtaInfo("self-ota: erasing staging buffer");
+        if (!flash.eraseSelfOtaPage(erasePage)) { logOtaFail(7, "self-erase-failed", erasePage); otaScratch.failed = true; erasePage = 0; step = 20; break; }
+        if (++erasePage >= MODEM_SELF_OTA_PAGE_COUNT) {
+            erasePage = 0;
+            buildOtaUrl(url, mqtt.broker, otaScratch.deviceType, otaScratch.version, "firmware.bin");
+            step = 10;
         }
         break;
     }
@@ -2528,21 +2595,35 @@ void Modem::doOta(void) {
     case 20:
         if (atCmd("AT+HTTPTERM\r\n", 2000)) {
             if (!otaScratch.failed) {
-                /* Every page was individually CRC16-verified against the
-                   server's firmware.crc16 on its way into flash, but that
-                   verification only ever lived in RAM (otaScratch.pageCrc)
-                   — a reset right after "DONE" would leave the staged image
-                   otherwise-unremarkable flash bytes with nothing recording
-                   which version they are or whether they're still intact.
-                   Persist it now, once, while everything's confirmed good:
-                   see FLASH_OTA_META_ADDR in flash.h for why this is its
-                   own sector instead of living in the regular settings
-                   blob. */
-                uint32_t totalBytes = (uint32_t)ota.pageTotal * MODEM_OTA_PAGE_SIZE;
-                uint16_t totalCrc16 = flashCrc16((const uint8_t*)(self ? FLASH_SELF_OTA_BUF_ADDR : FLASH_OTA_BUF_ADDR), totalBytes);
-                if (self) flash.writeSelfOtaMeta(otaScratch.version, totalBytes, totalCrc16);
-                else      flash.writeOtaMeta(otaScratch.version, totalBytes, totalCrc16, ota.flashBase);
-                refreshStagedInfo();  /* re-read rather than trust the write blindly succeeded */
+                if (self) {
+                    /* No separate meta record for self any more, but the
+                       downloaded image's own trailing page only ever holds
+                       the build-time debug placeholder — proof a download
+                       *reached* the end, not that its content is still
+                       intact by the time Apply (a separate, possibly much
+                       later user action) actually runs. Replace it now,
+                       right after every page (this one included) already
+                       passed its own page-level CRC16 check, with a real,
+                       freshly-computed footer over the actual code — see
+                       finalizeSelfOtaFooter()'s own comment in flash.h. */
+                    flash.finalizeSelfOtaFooter(otaScratch.version);
+                    refreshStagedInfo();
+                } else {
+                    /* Every page was individually CRC16-verified against the
+                       server's firmware.crc16 on its way into flash, but that
+                       verification only ever lived in RAM (otaScratch.pageCrc)
+                       — a reset right after "DONE" would leave the staged image
+                       otherwise-unremarkable flash bytes with nothing recording
+                       which version they are or whether they're still intact.
+                       Persist it now, once, while everything's confirmed good:
+                       see FLASH_OTA_META_ADDR in flash.h for why this is its
+                       own sector instead of living in the regular settings
+                       blob. */
+                    uint32_t totalBytes = (uint32_t)ota.pageTotal * MODEM_OTA_PAGE_SIZE;
+                    uint16_t totalCrc16 = flashCrc16((const uint8_t*)FLASH_OTA_BUF_ADDR, totalBytes);
+                    flash.writeOtaMeta(otaScratch.version, totalBytes, totalCrc16, ota.flashBase);
+                    refreshStagedInfo();  /* re-read rather than trust the write blindly succeeded */
+                }
             }
             ota.status = otaScratch.failed ? OTA_ERROR : OTA_DONE;
             logOtaInfo(otaScratch.failed ? "result=ERROR" : "result=DONE");

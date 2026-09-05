@@ -5,11 +5,10 @@ under host/timberline-web/public/firmware/<type>/ — see server.js's
 /firmware/:type/:version/{firmware.bin,firmware.crc16,profile} routes and
 Modem::doOta() on the modem side which downloads+verifies page by page.
 
-Filename: "<version>_0x<flashBase>[_<sectors>].bin" — no per-version
-subfolder, no profile.txt, no crc sidecar; everything else the modem needs
-(flash base address, which sectors to erase, per-page CRC16) is derived by
-the server from this one file's name and bytes. See host/README.md for the
-full convention.
+Filename: "<version>_0x<flashBase>.bin" — no per-version subfolder, no
+profile.txt, no crc sidecar; everything else the modem needs (flash base
+address, per-page CRC16) is derived by the server from this one file's name
+and bytes. See host/README.md for the full convention.
 
 Version (and therefore the device-type folder) is read from the hex
 filename itself: "<type>.<v2>.<v3>.<v4>_..." — matching how firmware is
@@ -25,47 +24,33 @@ need a separate --base). Gaps between records are filled with 0xFF
 the server pads the tail with 0xFF on the fly when a page is requested, so
 what lands on disk here is exactly the hex file's own content.
 
---sectors is optional and is *not* something this script can infer — which
-sectors are safe to erase without touching settings/black-box data is a
-per-device/per-bootloader safety decision, not something derivable from the
-hex file. Pass it explicitly (e.g. --sectors 5-6 or --sectors 2,5-15,
-comma-separated single numbers and/or inclusive ranges); omitting it
-publishes a file with no sector list at all, which the modem's CAN relay
-then erases via the *whole program region* command instead of an explicit
-list (see Timberline::doCanRelay()) — only appropriate once you've actually
-confirmed that broad erase is safe for this specific device/bootloader.
+Erase is always the target bootloader's own broad "erase whole program
+region" command — gen2's D[1]=255 (see CanRelay::handleGen2()) or gen3's
+native "erase program only" mode. There is no per-sector erase list on
+either the modem or the server any more (removed 2026-09-04, after an
+earlier RAM-only-persistence bricking incident already forced the same
+call on the modem side on 2026-08-29 — see Modem.h's `ota` struct comment):
+a narrower list was never worth the complexity it added.
 
 Usage:
-    python hex_to_ota.py --sectors 5-6 <firmware.hex> [<firmware2.hex> ...]
-    python hex_to_ota.py --type 43 --version 43.2.6.13 --sectors 5,6 43.2.6.13_STM_Main.hex
+    python hex_to_ota.py <firmware.hex> [<firmware2.hex> ...]
+    python hex_to_ota.py --type 43 --version 43.2.6.13 43.2.6.13_STM_Main.hex
 
 Batch mode — converts a whole tree of hex files in one pass, e.g. a working
 folder laid out as <root>/<type>/<version>[_suffix].hex (matching how
 public/firmware_hex/ is already organized):
     python hex_to_ota.py --batch host/timberline-web/public/firmware_hex
-Per-type --sectors comes from a small JSON file (default
-host/tools/firmware_sectors.json, next to this script — see its own
-"_readme" key) instead of one CLI flag, since a batch run covers many
-device types at once, each with its own answer. A type with no entry (or
-an explicit `null`) defaults to full erase (empty sectors, same as an
-explicit "") — a deliberate call: the single-file CLI still requires
---sectors to be passed explicitly if you want anything *other* than full
-erase, this file is just how --batch expresses the same per-type default
-without having to list every type that hasn't earned a narrower one yet.
 Already-published versions (any existing "<version>_0x*.bin" under that
 type's output folder) are skipped unless --force.
 """
 import argparse
 import glob
-import json
 import os
 import re
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # host/
 FIRMWARE_ROOT = os.path.join(REPO_ROOT, 'timberline-web', 'public', 'firmware')
-
-SECTOR_SPEC_RE = re.compile(r'^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$')
 
 
 def parse_intel_hex(path: str) -> bytes:
@@ -115,13 +100,10 @@ def parse_intel_hex(path: str) -> bytes:
     return base, bytes(image)
 
 
-def build_one(hex_path: str, dev_type: str, version: str, sectors: str):
+def build_one(hex_path: str, dev_type: str, version: str):
     base, image = parse_intel_hex(hex_path)
 
-    name = f'{version}_0x{base:08X}'
-    if sectors:
-        name += f'_{sectors}'
-    name += '.bin'
+    name = f'{version}_0x{base:08X}.bin'
 
     out_dir = os.path.join(FIRMWARE_ROOT, dev_type)
     os.makedirs(out_dir, exist_ok=True)
@@ -132,59 +114,28 @@ def build_one(hex_path: str, dev_type: str, version: str, sectors: str):
     print(f'{hex_path}')
     print(f'  image starts at 0x{base:08X}, {len(image)} bytes')
     print(f'  -> {bin_path}')
-    if not sectors:
-        print(f'  NOTE: no --sectors given — this publishes with no erase-sector list at '
-              f'all, meaning the modem will erase the *whole program region* in one shot '
-              f'when relaying it (see Timberline::doCanRelay()). Only fine if you\'ve '
-              f'actually confirmed that\'s safe for this device/bootloader; otherwise '
-              f're-run with --sectors.')
 
 
 FILENAME_VERSION_RE = re.compile(r'^(\d+)\.(\d+)\.(\d+)\.(\d+)')
 
-DEFAULT_SECTORS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'firmware_sectors.json')
-
 
 def already_published(dev_type: str, version: str) -> bool:
     """True if some "<version>_0x*.bin" already exists under this type's
-    output folder — flashBase/sectors can vary between runs (a different
-    hex build, a config change), but the *version* being present at all is
+    output folder — flashBase can vary between runs (a different hex
+    build), but the *version* being present at all is
     what "already published" actually means. """
     pattern = os.path.join(FIRMWARE_ROOT, dev_type, f'{version}_0x*.bin')
     return len(glob.glob(pattern)) > 0
 
 
-def run_batch(src_root: str, sectors_file: str, force: bool):
-    try:
-        with open(sectors_file) as f:
-            sectors_map = json.load(f)
-    except FileNotFoundError:
-        print(f'--sectors-file {sectors_file!r} not found', file=sys.stderr)
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        print(f'--sectors-file {sectors_file!r} is not valid JSON: {e}', file=sys.stderr)
-        sys.exit(1)
-
-    converted = skipped_existing = defaulted_types = failed = 0
-    noted_types = set()
+def run_batch(src_root: str, force: bool):
+    converted = skipped_existing = failed = 0
 
     for dev_type in sorted(d for d in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, d))):
         type_dir = os.path.join(src_root, dev_type)
         hex_files = sorted(f for f in os.listdir(type_dir) if f.lower().endswith('.hex'))
         if not hex_files:
             continue
-
-        # No entry (or explicit null) = full erase, same as an explicit "" —
-        # user's call: unlike the single-file CLI (where omitting --sectors
-        # is a one-off you'd notice), a --batch run covers many types at
-        # once, and requiring every one to be listed here just to get the
-        # already-intended default was pure friction.
-        sectors = sectors_map.get(dev_type) or ''
-        if dev_type not in sectors_map or sectors_map[dev_type] is None:
-            if dev_type not in noted_types:
-                noted_types.add(dev_type)
-                print(f'type {dev_type}: no --sectors entry in {sectors_file} — defaulting to full erase.')
-            defaulted_types += 1
 
         for fname in hex_files:
             hex_path = os.path.join(type_dir, fname)
@@ -200,14 +151,13 @@ def run_batch(src_root: str, sectors_file: str, force: bool):
                 continue
 
             try:
-                build_one(hex_path, dev_type, version, sectors)
+                build_one(hex_path, dev_type, version)
                 converted += 1
             except (ValueError, OSError) as e:
                 print(f'{hex_path}: {e}', file=sys.stderr)
                 failed += 1
 
-    print(f'\nDone: {converted} converted, {skipped_existing} already published, '
-          f'{defaulted_types} type(s) defaulted to full erase (no sectors entry), {failed} failed.')
+    print(f'\nDone: {converted} converted, {skipped_existing} already published, {failed} failed.')
     if failed:
         sys.exit(1)
 
@@ -217,24 +167,20 @@ def main():
     ap.add_argument('hex_files', nargs='*')
     ap.add_argument('--type', help='device type (overrides parsing it from the filename)')
     ap.add_argument('--version', help='full version, e.g. 43.2.6.13 (overrides parsing it from the filename; only valid with a single hex file)')
-    ap.add_argument('--sectors', help='erase-sector spec, e.g. "5-6" or "2,5-15" — see the module docstring; omit to publish with no explicit list')
     ap.add_argument('--batch', metavar='DIR', help='batch-convert every <type>/<version>*.hex under DIR instead of listing files individually — see the module docstring')
-    ap.add_argument('--sectors-file', default=DEFAULT_SECTORS_FILE, help=f'per-type sectors JSON for --batch (default: {DEFAULT_SECTORS_FILE})')
     ap.add_argument('--force', action='store_true', help='--batch only: re-convert versions that already have a published .bin')
     args = ap.parse_args()
 
     if args.batch:
-        if args.hex_files or args.type or args.version or args.sectors:
-            ap.error('--batch does not take individual hex files or --type/--version/--sectors — use --sectors-file instead')
-        run_batch(args.batch, args.sectors_file, args.force)
+        if args.hex_files or args.type or args.version:
+            ap.error('--batch does not take individual hex files or --type/--version')
+        run_batch(args.batch, args.force)
         return
 
     if not args.hex_files:
         ap.error('pass one or more hex files, or use --batch DIR')
     if args.version and len(args.hex_files) != 1:
         ap.error('--version only makes sense with a single input file')
-    if args.sectors and not SECTOR_SPEC_RE.match(args.sectors):
-        ap.error(f'--sectors {args.sectors!r} does not look like "5-6" or "2,5-15"')
 
     for hex_path in args.hex_files:
         if args.version:
@@ -248,7 +194,7 @@ def main():
                 sys.exit(1)
             version = '.'.join(m.groups())
             dev_type = args.type or m.group(1)
-        build_one(hex_path, dev_type, version, args.sectors)
+        build_one(hex_path, dev_type, version)
 
 
 if __name__ == '__main__':

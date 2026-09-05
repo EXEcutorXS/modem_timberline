@@ -16,9 +16,12 @@
    static_assert in Modem.cpp. Separate (smaller) page count from
    MODEM_OTA_PAGE_COUNT above: the self-OTA buffer downloads this modem's
    own firmware (see Modem::ota's deviceType == VERSION_1 branch in
-   doOta()) into nations-bootloader's own reserved 128 KB region instead of
-   the 208 KB target-device staging buffer. */
-#define MODEM_SELF_OTA_PAGE_COUNT  64
+   doOta()) into nations-bootloader's own reserved 130 KB region instead of
+   the 208 KB target-device staging buffer. 130 KB, not 128 KB — this is an
+   exact mirror of the published self-OTA .bin's own total size (128 KB
+   code budget + its own trailing footer page, see flash.h's own comment),
+   downloaded and staged whole, unbroken, no page excluded. */
+#define MODEM_SELF_OTA_PAGE_COUNT  65
 
 /* Baked-in fallback broker — applied by flash.cpp's sanitizeString() when
    flash has never held a real value (genuinely erased, factory-fresh
@@ -156,6 +159,25 @@ public:
     } ota;
     void startOta(uint8_t deviceType, const char* version);  /* called from onMqttCommandReceived() */
 
+    /* Last reason an OTA/relay action was rejected or gave up before ever
+       reaching a state the existing otaStatus/canRelayStatus enums could
+       show — e.g. "otaStart"/"canRelayStart"/"selfOtaApply" arriving while
+       busy or with nothing staged, or a request left waiting for internet
+       so long it timed out (see doIdle()'s otaScratch.startRequested
+       branch). Those all used to just silently no-op, so from the web UI
+       (or a human staring at otaStage) a rejected click and an accepted-
+       but-not-yet-visibly-progressing one looked identical: "idle", no
+       feedback at all. Empty string = no error to report, same convention
+       as the "errors" CSV topic. Published as "otaError", change-triggered,
+       by Timberline::mqttActualizerHandler; cleared (set back to "") the
+       moment a new otaStart/canRelayStart/selfOtaApply is actually accepted,
+       so a stale reason from a previous attempt doesn't linger. Short,
+       fixed ASCII reason codes on purpose (see setOtaError() call sites) —
+       not meant to be a human-facing sentence, just enough for the web UI
+       to look up a translated string or show the raw code as a fallback. */
+    char otaErrorReason[24];
+    void setOtaError(const char* reason);
+
     /* This modem's own firmware — same download/verify machinery as ota
        above (startOta() called with deviceType == VERSION_1, this modem's
        own OmniProtocol product type — see doIdle()/doOta() branching on
@@ -169,12 +191,13 @@ public:
        tracked (and shown in the web UI) independently. ota.status/page/
        pageTotal above stay shared/global either way — only one HTTP
        download can be in flight at once regardless of which buffer it's
-       headed for. Refreshed the same way as ota.stagedValid/... (see
-       refreshStagedInfo()). Actually *applying* a staged self-image
-       (rebooting into nations-bootloader and having it flash
-       MAIN_PROGRAM_START_ADDRESS from here) isn't implemented yet on the
-       bootloader side — out of scope here, a later task, same as the
-       target-device buffer originally was (see flash.h). */
+       headed for. Refreshed via refreshStagedInfo(), which for this one
+       reads flash.readSelfOtaFooter() (see its own comment) rather than a
+       dedicated meta record — stagedBytes is therefore always either 0
+       (nothing valid staged) or a value derived from the buffer's own
+       trailing page, not a separately persisted field. Actually *applying*
+       a staged self-image is "selfOtaApply" (Timberline.cpp) triggering
+       nations-bootloader's ApplySelfOtaImage() (that project's main.cpp). */
     struct SelfOtaState {
         bool      stagedValid;
         char      stagedVersion[24];
@@ -546,6 +569,15 @@ private:
                                        mid-parseLine(), so it must not setState()
                                        directly out from under whatever state
                                        handler is currently running. */
+        uint32_t startRequestedTick; /* core.getTick() at the moment startRequested was
+                                         set — doIdle() leaves the request pending until
+                                         internet.isInternetConnected, which used to mean
+                                         a request made with no internet at all just sat
+                                         there forever with otaStatus stuck at "idle" and
+                                         no feedback anywhere. After 30s still waiting,
+                                         doIdle() now cancels it and reports
+                                         otaErrorReason="no-internet" instead of waiting
+                                         indefinitely. */
         uint8_t  deviceType;        /* requested target type — copied into ota.deviceType
                                         once doFetchProfile() actually confirms a profile
                                         exists for it, see ST_FETCH_PROFILE */

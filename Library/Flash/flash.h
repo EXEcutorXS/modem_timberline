@@ -63,24 +63,22 @@
    (see Modem::doOta(), branching on otaScratch.deviceType == VERSION_1),
    but kept in a completely separate region: the one nations-bootloader
    itself reserves below its own APP_REGION_START for exactly this purpose
-   (see that project's User/Main/version.h memory map — 0x0800A000, right
-   after the bootloader's own ~38 KB code and its footer page). Sized
-   128 KB to match MAIN_PROGRAM_MAX_SIZE there (this app's own code budget).
-
-   Only covers downloading+staging here — nations-bootloader doesn't yet
-   read this buffer/footer to actually (re)flash MAIN_PROGRAM_START_ADDRESS
-   from it (still "currently unused, reserved" on that side); applying a
-   staged self-image is a later task, same as the CAN-relay buffer above
-   originally was. */
-#define FLASH_SELF_OTA_BUF_ADDR         0x0800A000
-#define FLASH_SELF_OTA_BUF_SIZE         (128*1024)
+   (see that project's User/Main/main.h memory map — right after the
+   bootloader's own ~38 KB code). Sized 130 KB — same total size as
+   APP_REGION_START's own region (main app's MAIN_PROGRAM_MAX_SIZE code
+   budget + one footer page) — because as of 2026-09-04 this buffer holds
+   an exact, unmodified mirror of the published self-OTA .bin: code first,
+   then one trailing page in the exact same footer format the app's own
+   region ends with (see main.cpp's _CRCR and nations-bootloader's
+   ApplySelfOtaImage()). No separate meta/checksum record any more (that
+   used to live in its own page below this buffer, written once a verified
+   download finished) — see doOta()'s new "erase this whole buffer, one
+   page per tick" step and readSelfOtaFooter() below for why a plain "is
+   the trailing page still erased or not" check is now sufficient proof a
+   download actually completed, without a dedicated record. */
+#define FLASH_SELF_OTA_BUF_ADDR         0x08009800
+#define FLASH_SELF_OTA_BUF_SIZE         (130*1024)
 #define FLASH_SELF_OTA_PAGE_COUNT       (FLASH_SELF_OTA_BUF_SIZE / FLASH_PAGE_SIZE)
-
-/* One page, immediately below the self-image buffer — same footer-below-
-   buffer layout as FLASH_OTA_META_ADDR above, and matches
-   nations-bootloader's own memory map (0x08009800, right below its
-   0x0800A000 image buffer). */
-#define FLASH_SELF_OTA_META_ADDR        (FLASH_SELF_OTA_BUF_ADDR - FLASH_PAGE_SIZE)
 
 /* Software CRC16 (Modbus/CRC-16-ANSI: poly 0xA001, init 0xFFFF, no final
    XOR) — the SAME algorithm this org uses everywhere else a firmware image
@@ -147,15 +145,70 @@ class Flash_C
         bool     readOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16, uint32_t* outFlashBase);
 
         /* Self-OTA staging area (see FLASH_SELF_OTA_BUF_ADDR above) — same
-           contract as writeOtaPage()/readOtaPage()/crc16OtaPage()/
-           writeOtaMeta()/readOtaMeta() above, just against the modem's own
-           separate image buffer/footer instead of the target-device one.
-           pageIndex is 0..FLASH_SELF_OTA_PAGE_COUNT-1. */
+           writePageAt()/readPageAt()/crc16PageAt() contract as
+           writeOtaPage()/readOtaPage()/crc16OtaPage() above, just against
+           the modem's own separate image buffer instead of the
+           target-device one. pageIndex is 0..FLASH_SELF_OTA_PAGE_COUNT-1. */
         bool     writeSelfOtaPage(uint16_t pageIndex, const uint8_t* data);
         void     readSelfOtaPage(uint16_t pageIndex, uint8_t* outBuf);
         uint16_t crc16SelfOtaPage(uint16_t pageIndex);
-        bool     writeSelfOtaMeta(const char* version, uint32_t totalBytes, uint16_t totalCrc16);
-        bool     readSelfOtaMeta(char* outVersion, uint32_t* outTotalBytes, uint16_t* outTotalCrc16);
+
+        /* Erases one page of the self-OTA buffer — called by Modem::doOta(),
+           once per page, one per handler() tick (see its own comment) right
+           before it starts downloading a fresh self-OTA image (never
+           resumed/partial for self any more), so that if THIS attempt is
+           ever interrupted partway, readSelfOtaFooter() below reliably
+           reads the trailing page as still-erased rather than a stale
+           leftover from a previous successful download. pageIndex is
+           0..FLASH_SELF_OTA_PAGE_COUNT-1, same indexing as
+           writeSelfOtaPage()/readSelfOtaPage() above. */
+        bool     eraseSelfOtaPage(uint16_t pageIndex);
+
+        /* Reads the buffer's own last page (FLASH_SELF_OTA_BUF_SIZE -
+           FLASH_PAGE_SIZE bytes in) as a footer, same 12-byte length+CRC16+
+           version+reserved layout nations-bootloader's ApplySelfOtaImage()
+           writes to APP_FOOTER_ADDR. Only accepts a stored length/CRC16
+           that's internally consistent (calcCrc over that many bytes from
+           the buffer's start matches what's stored) — deliberately NOT the
+           build-time "debug mode" placeholder (length == 0x55555555) _CRCR
+           always carries straight out of a Keil build: that only proves a
+           download *reached* this page, not that its *content* (the whole
+           preceding 128 KB) is actually intact right now, which could be
+           checked much later than the download itself (Apply is a separate
+           user action). finalizeSelfOtaFooter() below is what turns that
+           placeholder into a real, freshly-computed one once a download
+           actually finishes — see its own comment. A still-erased (0xFF),
+           still-placeholder, or corrupted page all return false here —
+           same "erased flash reads as invalid, not garbage" contract every
+           other read*Meta()-style function in this file already follows.
+           outVersion must point at a buffer of at least 24 bytes (matches
+           Modem::SelfOtaState::stagedVersion), formatted as "V1.V2.V3.V4"
+           from the footer's raw version bytes — NOT a copy of an on-flash
+           string, since this footer's version field is 4 raw bytes (same
+           as _CRCR's own layout), not ASCII. */
+        bool     readSelfOtaFooter(char* outVersion, uint32_t* outCodeBytes);
+
+        /* Called once by Modem::doOta(), only after every page of a self-OTA
+           download (all FLASH_SELF_OTA_PAGE_COUNT of them, including the
+           trailing build-time debug-placeholder page as downloaded from the
+           server) has individually passed its own page-level CRC16 check.
+           That per-page check only proves what arrived matched the server
+           *at download time* — Apply can happen much later, so this
+           replaces the placeholder with a real footer computed fresh, right
+           now, over the actual 128 KB code region: erases just this one
+           page (the debug placeholder was already written there straight
+           from the download, so overwriting it with different bytes
+           in-place without an erase first isn't safe on NOR flash) and
+           writes length=MAIN_PROGRAM_MAX_SIZE (fixed — the code region is
+           always this whole budget, gap-padding included, see
+           readSelfOtaFooter()'s own comment on why nothing is trimmed),
+           freshly-computed CRC16, and version (parsed from the given
+           "V1.V2.V3.V4" string, same as Modem::OtaScratch::version).
+           ApplySelfOtaImage() then re-verifies this same CRC16 immediately
+           before flashing it onto the app region — closing the gap a
+           corrupted/worn page between download-completion and Apply would
+           otherwise slip through unnoticed. */
+        bool     finalizeSelfOtaFooter(const char* version);
 
     private:
         /* Shared implementation behind writeOtaPage()/writeSelfOtaPage() etc.

@@ -37,7 +37,7 @@ host/
     public/index.html
     public/app.js
     public/at-console.html
-    public/firmware/<deviceType>/<version>_0x<flashBase>[_<sectors>].bin
+    public/firmware/<deviceType>/<version>_0x<flashBase>.bin
 ```
 
 ## Architecture, in one paragraph
@@ -146,11 +146,11 @@ firmware) waits for a separate `selfOtaApply` command. See
 
 **One file per published version** — no per-version subfolder, no
 `profile.txt`, no CRC sidecar file. Everything the modem needs (flash base
-address, which sectors to erase, per-page CRC16) is derived by the server
-from a single file's name and bytes:
+address, per-page CRC16) is derived by the server from a single file's
+name and bytes:
 
 ```
-public/firmware/<type>/<version>_0x<flashBase>[_<sectors>].bin
+public/firmware/<type>/<version>_0x<flashBase>.bin
 ```
 
 - `<version>` — this org's device version scheme, 1-4 dot-separated
@@ -163,32 +163,28 @@ public/firmware/<type>/<version>_0x<flashBase>[_<sectors>].bin
   are always directly comparable strings, no separate mapping.
 - `<flashBase>` — hex, where the image's first byte lands on the *target*
   device's own flash (its vector table address, e.g. `08020000`).
-- `<sectors>` — optional, comma-separated single sector numbers and/or
-  inclusive `first-last` ranges (e.g. `5-6` or `2,5-15`), the exact
-  sectors `Timberline::doCanRelay()` erases before flashing. **Omit it
-  entirely to mean "erase the whole program region" instead** — safe only
-  once you've actually confirmed the broad erase (CAN `D[1]=255`, or the
-  target bootloader's own native "erase program" command on a newer
-  generation) doesn't touch anything outside the app on that specific
-  device/bootloader. An explicit list stays the precise, narrowly-scoped
-  default; don't drop it just to shorten the filename.
 
-Example: `125.0.0.15_0x08020000_5-6.bin`, or `121.0.0.8_0x0802A800.bin`
-(the modem's own firmware, self-OTA — see below — never needs a sector
-list since there's no CAN relay for it at all).
+Erase before flashing always uses the target bootloader's own broad
+"erase whole program region" command (gen2's CAN `D[1]=255`, or gen3's
+native "erase program" mode) — there is no per-sector erase list any
+more, on either the modem or the server (removed 2026-09-04, on top of
+the modem side already dropping it 2026-08-29 after a RAM-only-
+persistence bricking incident — see `Modem.h`'s `ota` struct comment and
+`CanRelay::handleGen2()`). This is a deliberate, permanent call for gen2
+devices: always full erase, not a per-device narrower list.
+
+Example: `121.0.0.8_0x0802A800.bin`.
 
 **Publishing a new version** — from a Keil-produced `.hex`:
 ```bash
-python host/tools/hex_to_ota.py --sectors 5-6 host/build/125.0.0.15_STM_Main.hex
-scp host/timberline-web/public/firmware/125/125.0.0.15_0x08020000_5-6.bin \
+python host/tools/hex_to_ota.py host/build/125.0.0.15_STM_Main.hex
+scp host/timberline-web/public/firmware/125/125.0.0.15_0x08020000.bin \
     user@vps:/opt/timberline-web/public/firmware/125/
 ```
 `hex_to_ota.py` reads the flash base straight from the hex file's own
 lowest address (the linker already placed the app there) and parses
 `<type>.<v2>.<v3>.<v4>` off the front of the filename for `<version>` —
-pass `--type`/`--version` to override either. It does **not** infer
-`--sectors`; that's a per-device safety call only a human can make (the
-script prints a clear warning if you omit it). If you already have a raw
+pass `--type`/`--version` to override either. If you already have a raw
 `.bin` (not `.hex`), just `cp`/rename it to match the naming convention
 directly — no tool needed, the server derives everything else on the fly.
 
@@ -203,8 +199,8 @@ modem's own AT+HTTP stack can't do real HTTP Range — see the comment in
 `0xFF`, same filler byte erased flash reads as, so the last (short) page
 still comes back as a clean 2048 bytes. `firmware.crc16` and `profile` are
 both computed on request, not precomputed — `profile` just echoes
-`flashBase`/`eraseSectors` parsed back out of the matched filename, in the
-same `KEY=VALUE` text `Modem::doFetchProfile()` already parses.
+`flashBase` parsed back out of the matched filename, in the same
+`KEY=VALUE` text `Modem::doFetchProfile()` already parses.
 
 **Listing available versions**: `GET /firmware/<type>/versions` returns
 `{"versions": ["125.0.0.15", ...]}` — every matching filename under

@@ -140,6 +140,17 @@
     background: var(--card); color: var(--text); font-size: 14px; font-family: inherit;
   }
 
+  /* Version picker + "Load" on one line, per device-card redesign — the
+     select grows to fill the row, the button stays a fixed, readable width
+     next to it instead of stacking underneath on its own row. */
+  .ota-load-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .ota-load-row select {
+    flex: 1 1 auto; min-width: 0; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--card); color: var(--text); font-size: 14px;
+    font-family: inherit;
+  }
+  .ota-load-row button { flex: 0 0 auto; white-space: nowrap; }
+
   .ota-staged-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     font-size: 13px; color: var(--muted);
@@ -155,6 +166,12 @@
   .ota-status-row span.ota-error { color: var(--danger); font-weight: 600; }
   .ota-status-row span.ota-done { color: var(--accent); font-weight: 600; }
   .ota-status-row button:disabled { opacity: 0.5; cursor: default; }
+
+  .ota-error-banner {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    border: 1px solid var(--danger); color: var(--danger); font-weight: 600;
+    font-size: 13px; border-radius: 8px; padding: 8px 12px; margin: 10px 0;
+  }
 
   .device-card {
     border: 1px solid var(--border); border-radius: 8px; padding: 10px;
@@ -394,6 +411,16 @@
     <details id="miscSettings" class="settings-group">
       <summary>Misc</summary>
     </details>
+    <!-- Shared across both the self-firmware and per-device OTA sections
+         below (single modem.otaErrorReason field on the modem side, not
+         per-card) — shows the reason an otaStart/canRelayStart/selfOtaApply
+         click was rejected outright, or a download-start request that sat
+         waiting for internet for 30s and gave up. Placed above both
+         <details> so it's visible whichever one is currently collapsed;
+         those two-state cards alone (idle/staging/done/error) previously
+         gave zero feedback for this class of failure — see the "otaError"
+         topic, Modem::setOtaError() call sites. -->
+    <div id="otaErrorBanner" class="ota-error-banner hidden"></div>
     <details id="selfOtaSettings" class="settings-group">
       <summary id="selfOtaSummary">Modem firmware</summary>
       <!-- The modem's own firmware — separate section from "Devices" below
@@ -429,14 +456,21 @@
       <!-- Any device on the CAN bus can show up here (see
            Timberline::recordSeenDevice() on the modem side, which
            publishes "dev<type>_<addr>" for every device it's seen a
-           PGN=18 announcement from). One card per device: pick a
-           version (GET /firmware/<type>/versions), "Load" downloads it
-           into the modem (Modem::startOta), "Flash" relays whatever's
-           currently loaded onto that specific device over CAN
-           (Timberline::startCanRelay) — only enabled once the staged
-           image actually matches this device's type (otaStagedType). -->
+           PGN=18 announcement from). One card per device: name/address/
+           its own current version, then one row combining the version
+           picker and "Load" (downloads it into the modem, Modem::startOta).
+           "Update" (CAN relay of whatever's currently loaded,
+           Timberline::startCanRelay) and its progress only ever render on
+           the ONE card whose type actually matches what's staged
+           (otaStagedType) — modem.ota is one shared buffer/state machine,
+           so at most one card can ever be a relay target at a time, unlike
+           the old layout which showed identical relay status/progress on
+           every card regardless of relevance. What's currently loaded is
+           itself shared modem state too, so it's shown once, below every
+           card, rather than repeated per-card as "Loaded"/"Empty". -->
       <div id="deviceList"></div>
       <div id="otaNoDevicesText"></div>
+      <div id="otaLoadedSummary" class="ota-status-row"></div>
     </details>
     <div id="buttons"></div>
     <table id="statusTable"></table>

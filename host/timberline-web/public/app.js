@@ -70,6 +70,9 @@ const I18N = {
     otaNoVersions: 'No versions published', otaStatusStaging: 'Loading…',
     otaStatusError: 'Load failed', otaEmpty: 'Empty', otaLoadedPrefix: 'Loaded',
     otaNoDevicesFound: 'No devices seen on the bus yet', deviceTypePrefix: 'Type',
+    otaErrorBusyDownloading: 'A download is already in progress', otaErrorBusyRelaying: 'A flash is already in progress',
+    otaErrorNothingStaged: 'Nothing loaded yet — load a version first', otaErrorBadPayload: 'Internal error (bad command)',
+    otaErrorNoInternet: 'Modem has no internet connection', otaErrorUnknownPrefix: 'Error:',
     ownFirmware: 'Modem firmware',
     selfOtaApply: 'Apply', selfOtaApplyStatusIdle: 'Not applied', selfOtaApplyStatusPending: 'Applying…',
     selfOtaApplyStatusDone: 'Applied', selfOtaApplyNothingStaged: 'Nothing loaded yet',
@@ -110,6 +113,9 @@ const I18N = {
     otaNoVersions: 'Нет опубликованных версий', otaStatusStaging: 'Загрузка…',
     otaStatusError: 'Ошибка загрузки', otaEmpty: 'Пусто', otaLoadedPrefix: 'Загружено',
     otaNoDevicesFound: 'На шине пока не видно устройств', deviceTypePrefix: 'Тип',
+    otaErrorBusyDownloading: 'Загрузка уже выполняется', otaErrorBusyRelaying: 'Прошивка уже выполняется',
+    otaErrorNothingStaged: 'Ничего не загружено — сначала загрузите версию', otaErrorBadPayload: 'Внутренняя ошибка (некорректная команда)',
+    otaErrorNoInternet: 'У модема нет подключения к интернету', otaErrorUnknownPrefix: 'Ошибка:',
     ownFirmware: 'Прошивка модема',
     selfOtaApply: 'Применить', selfOtaApplyStatusIdle: 'Не применено', selfOtaApplyStatusPending: 'Применяется…',
     selfOtaApplyStatusDone: 'Применено', selfOtaApplyNothingStaged: 'Ничего не загружено',
@@ -150,6 +156,9 @@ const I18N = {
     otaNoVersions: 'Keine Version veröffentlicht', otaStatusStaging: 'Wird geladen…',
     otaStatusError: 'Laden fehlgeschlagen', otaEmpty: 'Leer', otaLoadedPrefix: 'Geladen',
     otaNoDevicesFound: 'Noch keine Geräte auf dem Bus gesehen', deviceTypePrefix: 'Typ',
+    otaErrorBusyDownloading: 'Ein Download läuft bereits', otaErrorBusyRelaying: 'Ein Flash-Vorgang läuft bereits',
+    otaErrorNothingStaged: 'Noch nichts geladen — zuerst eine Version laden', otaErrorBadPayload: 'Interner Fehler (ungültiger Befehl)',
+    otaErrorNoInternet: 'Modem hat keine Internetverbindung', otaErrorUnknownPrefix: 'Fehler:',
     ownFirmware: 'Modem-Firmware',
     selfOtaApply: 'Anwenden', selfOtaApplyStatusIdle: 'Nicht angewendet', selfOtaApplyStatusPending: 'Wird angewendet…',
     selfOtaApplyStatusDone: 'Angewendet', selfOtaApplyNothingStaged: 'Noch nichts geladen',
@@ -1316,7 +1325,14 @@ function updateSelfOtaCard(status, staging) {
       selfOtaApplyPendingVersion = rawStatus.selfOtaStaged;
       selfOtaApplyPendingSince = Date.now();
       renderOtaPanel(); /* paint "Applying…" immediately, same reasoning as Load above */
-      mqttClient.publish(`${mqttUsername}/cmd/desired/selfOtaApply`, '');
+      /* Payload content is ignored by the modem (see the handler's own
+         comment) — but NOT left empty: a zero-length MQTT payload is a
+         pitfall for the modem's SIMCOM AT-command MQTT stack (its own
+         doMqttPub() always sends at least 1 byte for exactly this reason,
+         e.g. the "online" topic's "0"/"1" rather than ""), and this was the
+         one publish in the whole app that didn't follow that rule — a
+         likely cause of Apply silently doing nothing on real hardware. */
+      mqttClient.publish(`${mqttUsername}/cmd/desired/selfOtaApply`, '1');
     };
   }
   applyBtn.textContent = t('selfOtaApply');
@@ -1336,11 +1352,37 @@ function updateSelfOtaCard(status, staging) {
     : t('selfOtaApplyStatusIdle');
 }
 
+/* rawStatus.otaError — see Modem::otaErrorReason's own comment: the reject
+   reasons for otaStart/canRelayStart/selfOtaApply that the two-state
+   idle/staging/done/error cards alone never surfaced. Fixed ASCII codes
+   from the modem side (see the setOtaError() call sites in Timberline.cpp)
+   mapped to a translated string here; an unrecognized code (a future modem
+   firmware adding a new reason this web app doesn't know about yet) still
+   shows something instead of silently rendering nothing. */
+const OTA_ERROR_KEYS = {
+  'busy-downloading': 'otaErrorBusyDownloading',
+  'busy-relaying': 'otaErrorBusyRelaying',
+  'nothing-staged': 'otaErrorNothingStaged',
+  'bad-payload': 'otaErrorBadPayload',
+  'no-internet': 'otaErrorNoInternet',
+};
+function renderOtaErrorBanner() {
+  const banner = $('otaErrorBanner');
+  if (!banner) return;
+  const code = rawStatus.otaError;
+  if (!code) { banner.classList.add('hidden'); banner.textContent = ''; return; }
+  const key = OTA_ERROR_KEYS[code];
+  banner.textContent = key ? t(key) : `${t('otaErrorUnknownPrefix')} ${code}`;
+  banner.classList.remove('hidden');
+}
+
 function renderOtaPanel() {
   const modemVersionEl = $('modemVersionText');
   const listEl = $('deviceList');
   const noneEl = $('otaNoDevicesText');
   if (!modemVersionEl || !listEl || !noneEl) return; /* not logged in yet — controlBox not shown */
+
+  renderOtaErrorBanner();
 
   /* rawStatus.modemVersion: the modem's own firmware version — a
      compile-time constant, published once per connection (see
@@ -1354,6 +1396,23 @@ function renderOtaPanel() {
      update it unconditionally, before the early-return below. */
   updateSelfOtaCard(status, staging);
 
+  const relayStatus = rawStatus.canRelayStatus;
+  const relayStaging = relayStatus === 'staging';
+  const stagedType = rawStatus.otaStagedType ? parseInt(rawStatus.otaStagedType, 10) : null;
+  const stagedValid = !!rawStatus.otaStaged;
+  /* What's currently loaded in the modem's (single, shared) target-device
+     OTA buffer — shown once here instead of as "Loaded"/"Empty" repeated on
+     every card below, since it's one piece of modem state, not a per-device
+     one. Updated unconditionally (even with no devices currently seen on
+     the bus) since the buffer's content doesn't depend on that. */
+  const loadedEl = $('otaLoadedSummary');
+  if (loadedEl) {
+    fetchDeviceTypeNames(); /* no-op once fetched/in flight */
+    loadedEl.textContent = stagedValid
+      ? `${t('otaLoadedPrefix')} ${deviceTypeName(stagedType, null)} ${rawStatus.otaStaged}`
+      : t('otaEmpty');
+  }
+
   const devices = getSeenDevices();
   if (devices.length === 0) {
     listEl.innerHTML = '';
@@ -1361,11 +1420,6 @@ function renderOtaPanel() {
     return;
   }
   noneEl.textContent = '';
-
-  const relayStatus = rawStatus.canRelayStatus;
-  const relayStaging = relayStatus === 'staging';
-  const stagedType = rawStatus.otaStagedType ? parseInt(rawStatus.otaStagedType, 10) : null;
-  const stagedValid = !!rawStatus.otaStaged;
 
   devices.forEach((dev) => {
     fetchOtaVersionsForType(dev.type); /* no-op once fetched/in flight for this type */
@@ -1379,14 +1433,15 @@ function renderOtaPanel() {
       card.innerHTML =
         '<div class="device-card-title" data-role="title"></div>' +
         '<div class="device-card-sub" data-role="sub"></div>' +
-        '<div class="setting-row"><label><span data-role="versionLabel"></span></label>' +
-        '<select data-role="version"></select></div>' +
-        '<div class="ota-status-row"><span data-role="status"></span>' +
+        '<div class="ota-load-row">' +
+        '<select data-role="version"></select>' +
         '<button data-role="load"></button></div>' +
+        '<div class="hidden" data-role="flashSection">' +
         '<div class="ota-status-row"><span data-role="relayStatus"></span>' +
         '<button data-role="flash"></button></div>' +
         '<div class="relay-progress-bar hidden" data-role="relayProgressBar">' +
-        '<div class="relay-progress-fill" data-role="relayProgressFill"></div></div>';
+        '<div class="relay-progress-fill" data-role="relayProgressFill"></div></div>' +
+        '</div>';
       listEl.appendChild(card);
       card.querySelector('[data-role="load"]').onclick = () => {
         const v = card.querySelector('[data-role="version"]').value;
@@ -1413,8 +1468,6 @@ function renderOtaPanel() {
     card.querySelector('[data-role="title"]').textContent = deviceTypeName(dev.type, dev.subtype);
     card.querySelector('[data-role="sub"]').textContent =
       `${t('deviceAddressLabel')} ${dev.address} · ${dev.version} ${t('deviceVersionLabel')}`;
-    card.querySelector('[data-role="versionLabel"]').textContent = t('otaVersion');
-    card.querySelector('[data-role="load"]').textContent = t('otaUpdate');
     card.querySelector('[data-role="flash"]').textContent = t('canRelayFlash');
 
     const versions = otaVersionsByType[dev.type];
@@ -1438,12 +1491,13 @@ function renderOtaPanel() {
       if (versions && versions.includes(prevValue)) select.value = prevValue;
     }
 
-    /* Reflects what's actually loaded in the modem right now for THIS
-       device (stagedValid && stagedType matches), rather than the
-       ephemeral last-download outcome — "Loaded"/"Empty" wrongly implied
-       the *device* was current, when this only ever describes the modem's
-       own local copy waiting to be relayed. In-progress/error only show on
-       the card this browser itself triggered the Load for. */
+    /* thisStaged reflects what's actually loaded in the modem right now for
+       THIS device (stagedValid && stagedType matches) — used both to gate
+       the Update/Flash section's visibility below and, together with
+       isActiveTarget, to drive the Load button's own label/state. What's
+       staged is itself shared modem state (one buffer), so it's ALSO
+       surfaced once, after the whole device list — see the
+       otaLoadedSummary update below. */
     const isActiveTarget = lastOtaStartType === dev.type;
     const thisStaged = stagedValid && stagedType === dev.type;
     checkOtaLoadDone(dev.type, thisStaged ? rawStatus.otaStaged : undefined);
@@ -1456,20 +1510,21 @@ function renderOtaPanel() {
        checkOtaLoadDone()'s big comment on why that's invisible for a
        while) doesn't just get dropped on the floor by the firmware's own
        "already staging" guard — clickPending alone only drives the
-       "Loading…" text on the one card that's actually the active target. */
+       "Loading…" label on the one card that's actually the active target. */
     const anyOtaPending = otaLoadPendingType !== null;
 
     const noVersions = !versions || versions.length === 0;
     select.disabled = staging || noVersions || anyOtaPending;
-    card.querySelector('[data-role="load"]').disabled = staging || noVersions || anyOtaPending;
-
-    const statusEl = card.querySelector('[data-role="status"]');
-    statusEl.className = (isActiveTarget && status === 'error') ? 'ota-error' : thisStaged ? 'ota-done' : '';
-    let text = '';
-    if (clickPending) text = `${t('otaStatusStaging')} ${(isActiveTarget && status === 'staging' && rawStatus.otaProgress) || ''}`;
-    else if (isActiveTarget && status === 'error') text = t('otaStatusError');
-    else text = thisStaged ? `${t('otaLoadedPrefix')} ${rawStatus.otaStaged}` : t('otaEmpty');
-    statusEl.textContent = text;
+    const loadBtn = card.querySelector('[data-role="load"]');
+    loadBtn.disabled = staging || noVersions || anyOtaPending;
+    /* The button's own label carries the per-card feedback now (no separate
+       status line) — "Loading… N/M" while this card's own click is still
+       outstanding, a brief error label if it just failed, otherwise the
+       plain call-to-action regardless of whether something else is already
+       staged (that's the shared summary's job to say, not this button's). */
+    if (clickPending) loadBtn.textContent = `${t('otaStatusStaging')} ${(isActiveTarget && status === 'staging' && rawStatus.otaProgress) || ''}`.trim();
+    else if (isActiveTarget && status === 'error') loadBtn.textContent = t('otaStatusError');
+    else loadBtn.textContent = t('otaUpdate');
 
     /* rawStatus.canRelayStatus/canRelayStep/canRelayProgress/canRelayBlVer:
        published by Timberline::mqttActualizerHandler whenever
@@ -1477,13 +1532,17 @@ function renderOtaPanel() {
        modem side (CanRelayPhase there). Unlike the OTA download above,
        this doesn't share the modem's AT-command state machine — CAN and
        AT+HTTP run on separate peripherals — so these updates actually
-       arrive live, step by step, not just at the very end. Flashing is
-       only offered once something verified is staged for THIS device and
-       nothing else is already running (a download or a relay). */
+       arrive live, step by step, not just at the very end. The whole
+       Update/Flash section (button + status + progress bar) only renders
+       at all on the ONE card whose type actually matches what's staged —
+       modem.ota is shared state, so it's meaningless (and was confusingly
+       shown identically) on every other card. */
+    card.querySelector('[data-role="flashSection"]').classList.toggle('hidden', !thisStaged);
+    if (!thisStaged) return; /* nothing below this point applies to a card that isn't the relay target */
     const relayEl = card.querySelector('[data-role="relayStatus"]');
     const relayBar = card.querySelector('[data-role="relayProgressBar"]');
     const relayBarFill = card.querySelector('[data-role="relayProgressFill"]');
-    card.querySelector('[data-role="flash"]').disabled = relayStaging || staging || anyOtaPending || !thisStaged;
+    card.querySelector('[data-role="flash"]').disabled = relayStaging || staging || anyOtaPending;
     relayEl.className = relayStatus === 'error' ? 'ota-error' : relayStatus === 'done' ? 'ota-done' : '';
     /* Bar visibility is driven directly off the canRelayProgress numbers
        (cur < tot) rather than off canRelayStep === 'transferring' — the step

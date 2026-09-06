@@ -145,14 +145,14 @@ void DataActualizator::handler(void) {
     for (uint8_t i = 0; i < 5; i++) {
         if (strcmp(oldState.phones[i], newState.phones[i]) != 0) {
             anyChanged = true;
-            if (stringTransfer.sendString(newState.phones[i], phoneStrId[i], can.idType, can.idAddress))
+            if (stringTransfer.sendString(newState.phones[i], phoneStrId[i], Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
                 strcpy(oldState.phones[i], newState.phones[i]);
         }
     }
 
     if (strcmp(oldState.pin, newState.pin) != 0) {
         anyChanged = true;
-        if (stringTransfer.sendString(newState.pin, STRID_PIN, can.idType, can.idAddress))
+        if (stringTransfer.sendString(newState.pin, STRID_PIN, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
             strcpy(oldState.pin, newState.pin);
     }
 
@@ -166,27 +166,27 @@ void DataActualizator::handler(void) {
 
     if (strcmp(oldState.mqttBroker, newState.mqttBroker) != 0) {
         anyChanged = true;
-        if (stringTransfer.sendString(newState.mqttBroker, STRID_MQTT_BROKER, can.idType, can.idAddress))
+        if (stringTransfer.sendString(newState.mqttBroker, STRID_MQTT_BROKER, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
             strcpy(oldState.mqttBroker, newState.mqttBroker);
     }
     if (strcmp(oldState.mqttUsername, newState.mqttUsername) != 0) {
         anyChanged = true;
-        if (stringTransfer.sendString(newState.mqttUsername, STRID_MODEM_LOGIN, can.idType, can.idAddress))
+        if (stringTransfer.sendString(newState.mqttUsername, STRID_MODEM_LOGIN, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
             strcpy(oldState.mqttUsername, newState.mqttUsername);
     }
     if (strcmp(oldState.mqttPassword, newState.mqttPassword) != 0) {
         anyChanged = true;
-        if (stringTransfer.sendString(newState.mqttPassword, STRID_MODEM_PASSWORD, can.idType, can.idAddress))
+        if (stringTransfer.sendString(newState.mqttPassword, STRID_MODEM_PASSWORD, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
             strcpy(oldState.mqttPassword, newState.mqttPassword);
     }
     if (strcmp(oldState.internetCheckUrl, newState.internetCheckUrl) != 0) {
         anyChanged = true;
-        if (stringTransfer.sendString(newState.internetCheckUrl, STRID_INTERNET_CHECK_URL, can.idType, can.idAddress))
+        if (stringTransfer.sendString(newState.internetCheckUrl, STRID_INTERNET_CHECK_URL, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
             strcpy(oldState.internetCheckUrl, newState.internetCheckUrl);
     }
     if (strcmp(oldState.connectionLink, newState.connectionLink) != 0) {
         anyChanged = true;
-        if (stringTransfer.sendString(newState.connectionLink, STRID_CONNECTION_LINK, can.idType, can.idAddress))
+        if (stringTransfer.sendString(newState.connectionLink, STRID_CONNECTION_LINK, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS)) /* broadcast, not to self - see work.cpp::canBroadcast() comment */
             strcpy(oldState.connectionLink, newState.connectionLink);
     }
 

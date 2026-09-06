@@ -24,6 +24,7 @@ OTA firmware fetch no longer hits the app's own :3000 directly — nginx now
 carves out a plain-HTTP exception for /firmware/ requests on port 80
 instead, and :3000 is closed to the outside entirely (see
 host/nginx/timberline-web.conf, server.js, and buildOtaUrl()'s own comments)
+Broadcasting address fixed to wildcard
 121.0.0.13
 Debug build for self-OTA testing — identical to .12, version bump only,
 to verify an over-the-air update actually applies under the new memory map

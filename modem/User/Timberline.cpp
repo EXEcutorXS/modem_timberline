@@ -875,8 +875,9 @@ static const char HELP_SMS_DE[] =
 static void onSmsReceived(const char* phone, const char* text) {
     /* Push the last-received SMS to the bus as soon as it arrives, regardless
        of auth outcome — useful for diagnosing rejected/garbled commands too. */
-    stringTransfer.sendString(text,  STRID_LAST_REC_SMS_TEXT, can.idType, can.idAddress);
-    stringTransfer.sendString(phone, STRID_LAST_REC_SMS_NUM,  can.idType, can.idAddress);
+    /* broadcast, not to self - see work.cpp::canBroadcast() comment */
+    stringTransfer.sendString(text,  STRID_LAST_REC_SMS_TEXT, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS);
+    stringTransfer.sendString(phone, STRID_LAST_REC_SMS_NUM,  Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS);
 
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     TlSmsParseResult result;

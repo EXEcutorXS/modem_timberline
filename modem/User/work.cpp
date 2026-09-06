@@ -67,7 +67,12 @@ void Work_C::canBroadcast(void) {
     static uint32_t timer     = 0;
     static uint32_t timerSlow = 0;
     static uint8_t  prevD1    = 0xFFu; /* forces an immediate first send once real state exists */
-    uint32_t id60 = (60u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
+    /* Can::BROADCAST_TYPE/BROADCAST_ADDRESS, same convention as id1 below - this used to be
+       (can.idType, can.idAddress) (itself), so every PGN60 frame was addressed back to the
+       modem instead of the panel. PU28-Timberline's own ProcessMessage() doesn't actually check
+       the destination for PGN60 (see its messages.cpp comment), so the panel picked these up
+       anyway - but any receiver that DOES check the destination would ignore them. */
+    uint32_t id60 = (60u<<20) | ((uint32_t)Can::BROADCAST_TYPE<<13) | ((uint32_t)Can::BROADCAST_ADDRESS<<10)
                   | ((uint32_t)can.idType<<3) | can.idAddress;
 
     /* Sub-packet 0: D[1] = 2 bits/bool (00=off,01=on,11=no data):
@@ -114,14 +119,15 @@ void Work_C::canBroadcast(void) {
     }
 
     if (dueForPeriodic) {
-        uint32_t id18 = (18u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
+        /* Same self-addressing bug as id60 above - broadcast to everyone, not to self. */
+        uint32_t id18 = (18u<<20) | ((uint32_t)Can::BROADCAST_TYPE<<13) | ((uint32_t)Can::BROADCAST_ADDRESS<<10)
                       | ((uint32_t)can.idType<<3) | can.idAddress;
         can.SendMessage(id18,
             VERSION_1, VERSION_2, VERSION_3, VERSION_4,
             0xFF, 0xFF, 0xFF, 0xFF);
     }
 
-    /* PGN=1 [0,0] broadcast (toType=127/toAddr=7 — the all-bits-set
+    /* PGN=1 [0,0] broadcast (Can::BROADCAST_TYPE/BROADCAST_ADDRESS - the all-bits-set
        wildcard address, same convention PU28-Timberline's own messages.cpp
        uses for its own broadcast queries) — "who are you". Now just a
        last-resort fallback: Timberline::maybeQueryNewDevice() already
@@ -136,7 +142,7 @@ void Work_C::canBroadcast(void) {
     static uint32_t timerDiscoveryBroadcast = 0;
     if ((core.getTick() - timerDiscoveryBroadcast) >= 60000) {
         timerDiscoveryBroadcast = core.getTick();
-        uint32_t id1 = (1u<<20) | (127u<<13) | (7u<<10)
+        uint32_t id1 = (1u<<20) | ((uint32_t)Can::BROADCAST_TYPE<<13) | ((uint32_t)Can::BROADCAST_ADDRESS<<10)
                      | ((uint32_t)can.idType<<3) | can.idAddress;
         can.SendMessage(id1, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
     }
@@ -154,8 +160,9 @@ void Work_C::canBroadcast(void) {
             if (strcmp(lastOperatorName, modem.network.operatorName) != 0) {
                 strncpy(lastOperatorName, modem.network.operatorName, sizeof(lastOperatorName)-1);
                 lastOperatorName[sizeof(lastOperatorName)-1] = 0;
+                /* Broadcast, not to self - same bug as id60/id18 above. */
                 stringTransfer.sendString(modem.network.operatorName, STRID_OPERATOR_NAME,
-                                           can.idType, can.idAddress);
+                                           Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS);
             }
         } else {
             lastOperatorName[0] = 0;
@@ -188,7 +195,7 @@ void Work_C::canBroadcast(void) {
     static uint32_t timerStr = 0;
     if ((core.getTick() - timerStr) >= 2000) {
         timerStr = core.getTick();
-        stringTransfer.broadcastNext(can.idType, can.idAddress);
+        stringTransfer.broadcastNext(Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS); /* not to self - same bug as above */
     }
 }
 

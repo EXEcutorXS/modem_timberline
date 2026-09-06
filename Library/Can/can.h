@@ -59,6 +59,17 @@ class Can
 		uint8_t idType;
 		uint8_t idAddress;
 
+		/* "Everyone on the bus" destination - type/address are 7/3-bit fields (see DeviceId's
+		   own range check on the CAN Tool side: type<=127, address<=7), so all-ones is the
+		   classic broadcast wildcard. Most receivers don't even check the destination fields
+		   for status/telemetry PGNs (see PU28-Timberline's messages.cpp ProcessMessage()
+		   comment) - these constants exist purely so a call site reads "broadcast" instead of
+		   bare 127/7 (see Work_C::canBroadcast(), DataActualizator::handler(), onSmsReceived()).
+		   enum, not static const, matching this project's own idiom for scoped integer
+		   constants (see StringTransfer.h's MAX_REGS/MAX_LEN/etc.) - avoids any ODR-linkage
+		   question around a static const member used across translation units. */
+		enum { BROADCAST_TYPE = 127, BROADCAST_ADDRESS = 7 };
+
     private:
         CanTxMessage TxMessage;
 };

@@ -1160,6 +1160,23 @@ function getSeenDevices() {
   return out;
 }
 
+/* /firmware/<type>/versions (see fetchOtaVersionsForType below) lists every
+   published version under a device *type* folder, which can span multiple
+   incompatible subtypes at once — e.g. type 126 holds both 126.3.x
+   (PU-28 Timberline) and 126.6.x (PU-28 Multihot CN) builds side by side,
+   same as type 34's 12V vs 24V split (see deviceTypeName()'s own comment
+   on why subtype = the version's 2nd byte). Offering the *whole* type's
+   list to a specific device used to let you pick a build meant for a
+   different subtype/voltage variant entirely — filtered down here to only
+   the ones matching this device's own subtype before they ever reach a
+   <select>. subtype === null (a connected device that hasn't published a
+   full x.y.z.w version yet) intentionally shows nothing rather than
+   falling back to the unfiltered list. */
+function versionsForSubtype(versions, subtype) {
+  if (!versions || subtype === null) return [];
+  return versions.filter((v) => parseInt(v.split('.')[1], 10) === subtype);
+}
+
 const otaVersionsByType = {};
 const otaVersionsFetchedTypes = new Set();
 async function fetchOtaVersionsForType(type) {
@@ -1250,7 +1267,9 @@ function checkOtaLoadDone(type, confirmedStagedVersion) {
 function updateSelfOtaCard(status, staging) {
   const card = $('selfOtaCard');
   if (!card) return;
-  const ownType = rawStatus.modemVersion ? parseInt(rawStatus.modemVersion.split('.')[0], 10) : null;
+  const modemVerParts = rawStatus.modemVersion ? rawStatus.modemVersion.split('.') : null;
+  const ownType = modemVerParts ? parseInt(modemVerParts[0], 10) : null;
+  const ownSubtype = modemVerParts && modemVerParts[1] !== undefined ? parseInt(modemVerParts[1], 10) : null;
   if (!ownType) { card.classList.add('hidden'); return; }
   card.classList.remove('hidden');
 
@@ -1272,7 +1291,7 @@ function updateSelfOtaCard(status, staging) {
     };
   }
 
-  const versions = otaVersionsByType[ownType];
+  const versions = versionsForSubtype(otaVersionsByType[ownType], ownSubtype);
   const select = card.querySelector('#selfOtaVersion');
   if (document.activeElement !== select) {
     const prevValue = select.value;
@@ -1470,7 +1489,7 @@ function renderOtaPanel() {
       `${t('deviceAddressLabel')} ${dev.address} · ${dev.version} ${t('deviceVersionLabel')}`;
     card.querySelector('[data-role="flash"]').textContent = t('canRelayFlash');
 
-    const versions = otaVersionsByType[dev.type];
+    const versions = versionsForSubtype(otaVersionsByType[dev.type], dev.subtype);
     const select = card.querySelector('[data-role="version"]');
     if (document.activeElement !== select) {
       const prevValue = select.value;

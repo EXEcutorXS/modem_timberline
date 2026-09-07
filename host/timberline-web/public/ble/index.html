@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Timberline BLE control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
+<script>
+  /* Same localStorage key as the main /app.js — theme choice is shared
+     across both pages on this origin. Applied synchronously, before the
+     stylesheet below ever paints, so there's no flash of the OS theme. */
+  (function () {
+    var saved = localStorage.getItem('timberline-theme');
+    if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved;
+  })();
+</script>
+<style>
+  /* ── Tokens and base elements — 1:1 with the main /index.html ────────── */
+  :root {
+    --bg: #f2f3f5; --card: #ffffff; --border: #e2e4e8; --text: #1c1e21; --muted: #767a82;
+    --accent: #1fa971; --accent-text: #ffffff; --heat: #ea8a3c; --vent: #3d97dd; --danger: #e5484d;
+    --shadow: 0 1px 3px rgba(20,20,30,0.06), 0 1px 2px rgba(20,20,30,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131417; --card: #1d1f23; --border: #303338; --text: #eceef0; --muted: #92969e;
+      --accent: #29c07f; --accent-text: #06231a; --heat: #ef9a52; --vent: #5aacea; --danger: #f2686c;
+      --shadow: 0 1px 3px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f2f3f5; --card: #ffffff; --border: #e2e4e8; --text: #1c1e21; --muted: #767a82;
+    --accent: #1fa971; --accent-text: #ffffff; --heat: #ea8a3c; --vent: #3d97dd; --danger: #e5484d;
+    --shadow: 0 1px 3px rgba(20,20,30,0.06), 0 1px 2px rgba(20,20,30,0.08);
+  }
+  :root[data-theme="dark"] {
+    --bg: #131417; --card: #1d1f23; --border: #303338; --text: #eceef0; --muted: #92969e;
+    --accent: #29c07f; --accent-text: #06231a; --heat: #ef9a52; --vent: #5aacea; --danger: #f2686c;
+    --shadow: 0 1px 3px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 480px; margin: 32px auto; padding: 0 16px 60px;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { font-size: 22px; letter-spacing: -0.02em; margin: 8px 0 20px; }
+  h1 a { color: var(--muted); font-size: 13px; font-weight: 400; text-decoration: none; margin-left: 8px; }
+  h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+       color: var(--muted); margin: 20px 0 8px; }
+  .hidden { display: none !important; }
+  p.hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+  button {
+    padding: 9px 16px; margin: 4px 4px 4px 0; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+    color: var(--text); font-size: 14px; font-weight: 500;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.danger-outline { color: var(--danger); border-color: var(--danger); }
+  button.small { padding: 5px 10px; font-size: 12px; }
+
+  .card {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+    box-shadow: var(--shadow); padding: 12px 14px; margin: 0 0 10px;
+  }
+
+  .conn-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 10px; flex-wrap: wrap; }
+  .conn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .conn-dot.connected { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+  .conn-dot.connecting { background: var(--heat); animation: conn-pulse 1s ease-in-out infinite; }
+  .conn-dot.disconnected { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
+  @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  #connLabel { font-weight: 600; color: var(--text); }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+           background: var(--border); color: var(--muted); }
+  .badge.on { background: var(--accent); color: var(--accent-text); }
+
+  /* ── Icon toggle buttons (heater/element/floor/engine) — exact copy of
+     the main app, including the SVG paths themselves in ICONS (see app.js). */
+  .icon-row { display: flex; gap: 8px; margin: 16px 0; }
+  .icon-btn {
+    position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 14px 4px; margin: 0; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
+  }
+  .icon-btn svg { width: 26px; height: 26px; }
+  .icon-btn .icon-label { font-size: 12px; }
+  .icon-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .icon-btn:disabled { opacity: 0.4; }
+
+  .pending-spinner {
+    position: absolute; top: 6px; right: 6px; width: 14px; height: 14px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: pending-spin 0.7s linear infinite; pointer-events: none;
+  }
+  @keyframes pending-spin { to { transform: rotate(360deg); } }
+
+  /* ── Zone cards + setpoint drum pickers — also copied from the main
+     app (zone-row/zone-btn/drum-row and all the inertia physics in app.js). */
+  .zone-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+  .zone-btn {
+    position: relative; flex: 1 1 calc(33.333% - 6px); min-width: calc(33.333% - 6px);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 8px 0; margin: 0; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); color: var(--muted); cursor: pointer; box-shadow: var(--shadow);
+  }
+  .zone-btn .zone-temp { font-size: 13px; color: var(--muted); }
+  .zone-info { display: flex; align-items: center; gap: 4px; }
+  .zone-btn .zone-spinner {
+    top: 50%; left: 50%; right: auto; margin: -10px 0 0 -10px;
+    width: 20px; height: 20px; opacity: 0.7; z-index: 1;
+  }
+  .zone-btn.state-off  { background: var(--card); color: var(--muted); }
+  .zone-btn.state-heat { background: var(--heat); color: #fff; }
+  .zone-btn.state-vent { background: var(--vent); color: #fff; }
+  .zone-btn.state-heat .zone-temp,
+  .zone-btn.state-vent .zone-temp { color: rgba(255,255,255,0.85); }
+  .zone-btn.selected { outline: 3px solid var(--text); outline-offset: -3px; }
+
+  .zone-icon-wrap {
+    position: absolute; top: 6px; bottom: 6px; left: 6px;
+    display: flex; align-items: stretch; gap: 3px;
+    opacity: 0.5; pointer-events: none;
+  }
+  .zone-icon { aspect-ratio: 1 / 1; height: 100%; }
+  .zone-icon svg { width: 100%; height: 100%; }
+
+  .zone-menu-btn {
+    position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
+    padding: 2px 6px; margin: 0; border: none; background: none;
+    font-size: 14px; line-height: 1.4; color: inherit; cursor: pointer;
+  }
+  .zone-menu {
+    position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2); z-index: 10; overflow: hidden;
+  }
+  .zone-menu-item {
+    display: block; width: 100%; margin: 0; padding: 9px; border: none;
+    border-bottom: 1px solid var(--border); background: var(--card); color: var(--text);
+    text-align: center; cursor: pointer; border-radius: 0;
+  }
+  .zone-menu-item:last-child { border-bottom: none; }
+  .zone-menu-item.active { font-weight: bold; background: var(--bg); }
+
+  .drum-row { display: flex; gap: 8px; margin: 0 0 8px; }
+  .drum {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+    padding: 6px 0 8px; user-select: none; -webkit-user-select: none; box-shadow: var(--shadow);
+  }
+  .drum-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .drum-reel-mask {
+    position: relative; width: 100%; overflow: hidden; cursor: ns-resize;
+    touch-action: none;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
+            mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
+  }
+  .drum-reel-mask.pending { animation: conn-pulse 1.2s ease-in-out infinite; }
+  .drum-reel { position: absolute; left: 0; right: 0; will-change: transform; }
+  .reel-item {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 600; color: var(--text);
+  }
+  .drum-highlight {
+    position: absolute; left: 8%; right: 8%; top: 50%; transform: translateY(-50%);
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    pointer-events: none;
+  }
+  .drum-static {
+    font-size: 16px; font-weight: 600; padding: 14px 4px; color: var(--muted);
+    cursor: pointer; touch-action: none;
+  }
+  .drum.auto .drum-static { color: var(--vent); }
+
+  /* ── Settings (floor/engine/schedule/misc) — same collapsible cards and
+     range sliders as in the main app. ─────────────────────────────────── */
+  .settings-group { border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+                     box-shadow: var(--shadow); padding: 2px 14px 12px; margin: 0 0 10px; }
+  .settings-group > summary { margin: 10px 0; cursor: pointer; font-weight: 600; }
+  .setting-row { margin: 10px 0; }
+  .setting-row label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .setting-row .setting-value { color: var(--text); font-weight: 600; }
+  .setting-row input[type=range] { width: 100%; accent-color: var(--accent); }
+  .setting-row input[type=range].pending { accent-color: var(--vent); }
+  .setting-row input[type=time] {
+    padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+    color: var(--text); font-size: 13px; width: 100%;
+  }
+  .setting-row-flat { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 13px; }
+  .setting-row-flat .label { color: var(--muted); }
+
+  #errorsCard { border-color: var(--danger); }
+  #errorsCard.no-errors { border-color: var(--border); }
+  .error-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; color: var(--danger); }
+  #errorsCard.no-errors .no-errors-text { color: var(--accent); font-weight: 600; }
+
+  #rawLog { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+            max-height: 220px; overflow: auto; font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+
+  #err { color: var(--danger); font-size: 14px; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 8px 0; }
+</style>
+</head>
+<body>
+  <h1>Timberline BLE <a href="/">← main control panel</a></h1>
+
+  <div id="unsupportedBox" class="card hidden">
+    <p class="hint">This browser doesn't support Web Bluetooth. Open this page
+    in Chrome or Edge on a computer/Android device (over HTTPS), or in an app
+    with Web Bluetooth support.</p>
+  </div>
+
+  <div id="app">
+    <div class="conn-status">
+      <span id="connDot" class="conn-dot"></span>
+      <span id="connLabel">Not connected</span>
+    </div>
+
+    <div id="connectBox" class="card">
+      <button id="connectBtn" class="primary">Connect via Bluetooth</button>
+      <button id="disconnectBtn" class="hidden">Disconnect</button>
+      <button id="connectAllBtn" class="small">Show all devices</button>
+      <p class="hint">If "Connect via Bluetooth" doesn't find the panel (known
+      issue on some third-party iOS browsers, e.g. Bluefy), try "Show all
+      devices" and pick "Autoterm PU" (or "Timberline…") from the full list —
+      you only need to do this once. After the first successful connection
+      this page remembers that exact device and reconnects to it
+      automatically on future visits, no list or picker involved.</p>
+      <div id="knownDevices"></div>
+      <p id="err"></p>
+    </div>
+
+    <div id="controlBox" class="hidden">
+      <div id="iconRow" class="icon-row"></div>
+
+      <div class="card">
+        <div class="setting-row-flat">
+          <span class="label">Outdoor temperature</span>
+          <span id="outdoorTemp" class="badge">—</span>
+        </div>
+        <div class="setting-row-flat">
+          <span class="label">Domestic water</span>
+          <span id="domesticWaterBadge" class="badge">—</span>
+        </div>
+      </div>
+
+      <div id="zoneRow" class="zone-row"></div>
+      <div id="drumRow" class="drum-row"></div>
+
+      <details id="floorGroup" class="settings-group hidden">
+        <summary>Floor heating</summary>
+      </details>
+
+      <details id="engineGroup" class="settings-group hidden">
+        <summary>Engine heater</summary>
+      </details>
+
+      <details id="scheduleGroup" class="settings-group">
+        <summary>Day/night schedule</summary>
+        <div class="setting-row">
+          <label><span>Day start</span></label>
+          <input id="dayStart" type="time">
+        </div>
+        <div class="setting-row">
+          <label><span>Night start</span></label>
+          <input id="nightStart" type="time">
+        </div>
+      </details>
+
+      <div id="errorsCard" class="card no-errors">
+        <h3 style="margin-top:0">Errors</h3>
+        <div id="errorsList"></div>
+        <button id="clearErrorsBtn" class="small">Clear errors</button>
+      </div>
+
+      <details id="miscGroup" class="settings-group">
+        <summary>Misc</summary>
+        <div class="setting-row-flat"><span class="label">Heater firmware</span><span id="heaterFw">—</span></div>
+        <div class="setting-row-flat"><span class="label">Panel firmware</span><span id="panelFw">—</span></div>
+        <button id="syncTimeBtn" class="small">Sync time</button>
+        <button id="forgetBtn" class="small danger-outline">Forget this device</button>
+      </details>
+
+      <details id="rawDetails">
+        <summary>Packet log</summary>
+        <div id="rawLog"></div>
+      </details>
+    </div>
+  </div>
+
+  <script src="/ble/app.js"></script>
+</body>
+</html>

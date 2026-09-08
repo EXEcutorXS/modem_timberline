@@ -203,9 +203,11 @@
   .error-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; color: var(--danger); }
   #errorsCard.no-errors .no-errors-text { color: var(--accent); font-weight: 600; }
 
-  #rawLog { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px;
-            max-height: 220px; overflow: auto; font-family: ui-monospace, Menlo, Consolas, monospace;
-            font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+  /* Burst-transfer round log (Frag_N / done-total) - one of these sits right
+     under each progress bar, showing only that transfer's own rounds. */
+  .frag-log { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+              max-height: 160px; overflow: auto; font-family: ui-monospace, Menlo, Consolas, monospace;
+              font-size: 13px; white-space: pre-wrap; word-break: break-all; margin-top: 6px; }
 
   #err { color: var(--danger); font-size: 14px; }
   details > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 8px 0; }
@@ -287,14 +289,133 @@
         <summary>Misc</summary>
         <div class="setting-row-flat"><span class="label">Heater firmware</span><span id="heaterFw">—</span></div>
         <div class="setting-row-flat"><span class="label">Panel firmware</span><span id="panelFw">—</span></div>
+        <div class="setting-row-flat"><span class="label">MBC-2 firmware</span><span id="hcuFw">—</span></div>
         <button id="syncTimeBtn" class="small">Sync time</button>
         <button id="forgetBtn" class="small danger-outline">Forget this device</button>
       </details>
 
-      <details id="rawDetails">
-        <summary>Packet log</summary>
-        <div id="rawLog"></div>
+      <details id="fragSettingsGroup" class="settings-group">
+        <summary>Burst transfer timing</summary>
+        <p class="hint">Tuning knobs for the fragment burst-transfer protocol used by all 3 upload
+          tools below (self-update, distribution slots, raw upload). Saved in this browser.</p>
+        <div class="setting-row-flat">
+          <span class="label">Gap between mini-fragments (ms)</span>
+          <input id="fragGapMs" type="number" min="0" max="1000" step="1" style="width:64px">
+        </div>
+        <div class="setting-row-flat">
+          <span class="label">Settle delay before checking (ms)</span>
+          <input id="fragSettleMs" type="number" min="0" max="5000" step="10" style="width:64px">
+        </div>
       </details>
+
+      <details id="restoreGroup" class="settings-group">
+        <summary>Self-update (restore area)</summary>
+        <p class="hint">Loads a build into the panel's dedicated restore area and reboots to apply
+          it, in one step. The panel's own bootloader verifies and applies it. Only versions
+          matching what's <em>currently running</em> are listed (same logo/language variant) —
+          this is a single fixed-purpose area, not one of the 3 generic slots below (those can
+          hold firmware for any other device, no restriction). Newest matching version is
+          pre-selected; pick another to roll back or repeat a specific build instead.</p>
+        <select id="restoreVersionSelect" style="width:100%;margin-bottom:6px"><option value="">Connect first…</option></select>
+        <div id="restoreNote" class="hint"></div>
+        <div id="restoreProgressWrap" class="hidden" style="margin-top:8px">
+          <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+            <div id="restoreProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+          </div>
+          <div id="restoreProgressText" class="hint"></div>
+          <pre id="restoreFragLog" class="frag-log"></pre>
+          <button id="restoreFragLogCopyBtn" class="small" style="margin-top:4px">Copy log</button>
+        </div>
+        <button id="restoreUpdateBtn" class="small primary" style="margin-top:8px" disabled>Update now</button>
+        <button id="restoreCancelBtn" class="small danger-outline hidden" style="margin-top:8px">Cancel</button>
+        <button id="restoreApplyBtn" class="small danger-outline" style="margin-top:8px">Reboot &amp; apply staged update</button>
+      </details>
+
+      <details id="memoryGroup" class="settings-group">
+        <summary>External memory (BLE)</summary>
+
+        <div class="setting-row-flat" style="gap:6px">
+          <button id="memTabSlotsBtn" class="small primary">Distribution slots</button>
+          <button id="memTabRawBtn" class="small">Low-level memory</button>
+        </div>
+
+        <div id="memTabSlots">
+          <p class="hint">For relaying to OTHER CAN devices (heaters, MBC-2, other panels…) —
+            any type/version, no filter. Writes data, then the slot's meta record, ready for
+            SlotsScreen's "Burn" on the panel.</p>
+          <div class="setting-row">
+            <select id="fwVersionSelect" style="width:100%;margin-bottom:6px"><option>Loading…</option></select>
+            <select id="fwSlotSelect" style="width:100%;margin-bottom:6px">
+              <option value="0">Slot 0</option>
+              <option value="1">Slot 1</option>
+              <option value="2">Slot 2</option>
+            </select>
+            <div id="fwInfo" class="hint"></div>
+            <div id="fwProgressWrap" class="hidden" style="margin-top:8px">
+              <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+                <div id="fwProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+              </div>
+              <div id="fwProgressText" class="hint"></div>
+              <pre id="fwFragLog" class="frag-log"></pre>
+              <button id="fwFragLogCopyBtn" class="small" style="margin-top:4px">Copy log</button>
+            </div>
+            <button id="fwLoadBtn" class="small primary" style="margin-top:8px">Fetch &amp; upload to slot</button>
+            <button id="fwCancelBtn" class="small danger-outline hidden" style="margin-top:8px">Cancel</button>
+          </div>
+        </div>
+
+        <div id="memTabRaw" class="hidden">
+          <p class="hint">Raw address+length access to the external flash (8&nbsp;MB) — the same
+            protocol CAN&nbsp;Tool already uses, mirrored over BLE. Diagnostic tool; not needed
+            for normal use.</p>
+
+          <div class="setting-row-flat">
+            <span class="label">Read 4 bytes at</span>
+            <span>
+              <input id="memReadAddr" type="text" placeholder="0x000000" size="9">
+              <button id="memReadBtn" class="small">Read</button>
+            </span>
+          </div>
+          <div id="memReadResult" class="hint"></div>
+
+          <div class="setting-row-flat">
+            <span class="label">Checksum of region</span>
+            <span>
+              <input id="memCrcAddr" type="text" placeholder="addr" size="9">
+              <input id="memCrcLen" type="text" placeholder="len" size="7">
+              <button id="memCrcBtn" class="small">Compute</button>
+            </span>
+          </div>
+          <div id="memCrcResult" class="hint"></div>
+
+          <div class="setting-row-flat">
+            <span class="label">Erase 64&nbsp;KB block #</span>
+            <span>
+              <input id="memEraseBlock" type="number" min="0" max="127" size="4">
+              <button id="memEraseBtn" class="small">Erase block</button>
+            </span>
+          </div>
+          <button id="memEraseChipBtn" class="small danger-outline">Erase ENTIRE chip</button>
+
+          <div class="setting-row" style="margin-top:16px">
+            <label><span>Upload local file to address</span></label>
+            <input id="memUploadAddr" type="text" placeholder="0x000000" style="width:100%;margin-bottom:6px">
+            <input id="memUploadFile" type="file">
+            <button id="memUploadBtn" class="small primary" style="margin-top:8px">Upload</button>
+            <button id="memUploadCancelBtn" class="small danger-outline hidden" style="margin-top:8px">Cancel</button>
+          </div>
+
+          <div id="memProgressWrap" class="hidden" style="margin-top:8px">
+            <div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+              <div id="memProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+            </div>
+            <div id="memProgressText" class="hint"></div>
+            <pre id="memFragLog" class="frag-log"></pre>
+            <button id="memFragLogCopyBtn" class="small" style="margin-top:4px">Copy log</button>
+          </div>
+        </div>
+      </details>
+
     </div>
   </div>
 

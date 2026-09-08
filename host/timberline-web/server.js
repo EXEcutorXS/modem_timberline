@@ -242,6 +242,32 @@ app.get('/firmware/:type/versions', (req, res) => {
     res.json({ versions });
 });
 
+/* Every published version across every type, one call - added for the BLE
+   page's distribution-slots picker: a slot can hold firmware for whatever
+   CAN device it's meant to relay to next, not just one type, unlike the main
+   app's per-connected-device dropdowns (fetchOtaVersionsForType) or the BLE
+   page's own restore-area picker (deliberately filtered to the panel's own
+   type/subtype - see PU28-Timberline's Version.h). Scans public/firmware/
+   itself for type subdirectories rather than trusting a fixed list, so a
+   newly-published type shows up with no code change on either side. */
+app.get('/firmware/versions', (req, res) => {
+    const firmwareDir = path.join(__dirname, 'public', 'firmware');
+    let typeDirs;
+    try {
+        typeDirs = fs.readdirSync(firmwareDir, { withFileTypes: true })
+            .filter((e) => e.isDirectory() && FIRMWARE_TYPE_RE.test(e.name))
+            .map((e) => e.name);
+    } catch (e) {
+        return res.json({ types: {} }); /* nothing published yet - not an error */
+    }
+    const types = {};
+    for (const type of typeDirs) {
+        const versions = listFirmwareFiles(type).map((f) => f.version).sort();
+        if (versions.length > 0) types[type] = versions;
+    }
+    res.json({ types });
+});
+
 /* ── getlink / magic-link support ─────────────────────────────────────────
    The modem publishes a token to "<username>/cmd/actual/linkToken" (retained)
    when it handles the "getlink" SMS command. This backend observes that

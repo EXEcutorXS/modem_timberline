@@ -33,6 +33,8 @@ const CHAR_RX_UUID = 'd973f2e2-b19e-11e2-9e96-0800200c9a66'; // browser -> devic
 
 const PACKET_TYPE = {
   SETUP: 1, STATUS: 2, WORK: 3, FIRMWARE: 8, ID: 5, TIME: 7, CONN_STATUS: 9,
+  REBOOT: 11, MEMORY: 12, MEMORY_DATA: 13,
+  FRAG_INIT: 14, FRAG_DATA: 15, FRAG_MAP: 16, FRAG_CRC: 17, FRAG_PROGRAM: 18, FRAG_DATA_ACK: 19,
 };
 
 const ZONE_COUNT = 5;
@@ -95,7 +97,7 @@ const state = {
   floorSetpoint: 25, floorHysteresis: 2,
   engineSetpoint: 20, engineTimeLimit: 60,
   underfloorConnected: false, engineConnected: false,
-  heaterVersion: null, panelVersion: null,
+  heaterVersion: null, panelVersion: null, hcuVersion: null,
   haveSetup: false, haveStatus: false, haveWork: false,
 };
 
@@ -135,7 +137,6 @@ function forgetStoredKey(deviceId) {
 /* ── Parsing incoming packets (device -> browser) ─────────────────────── */
 function parsePacket(b) {
   const ptype = b[0];
-  logPacket('RX', ptype, b);
 
   if (ptype === 0xFF) { setConnLabel('BLE bridge reports: not connected', 'disconnected'); return ptype; }
 
@@ -190,8 +191,14 @@ function parsePacket(b) {
       break;
     }
     case PACKET_TYPE.FIRMWARE: {
+      // Wire order (BluetoothHandler.cpp case 8): heater, then the panel's OWN
+      // version (_CRCR[6..9] at ADDRESS_CRC), then the MBC-2/HCU's version last -
+      // b[9..12] is HCU, NOT the panel, despite what this used to assume (that bug
+      // showed up as the restore-update filter matching against "125.x.x.x", the
+      // MBC-2's device type, instead of the panel's own "126.x.x.x").
       state.heaterVersion = [b[1], b[2], b[3], b[4]].join('.');
-      state.panelVersion = [b[9], b[10], b[11], b[12]].join('.');
+      state.panelVersion = [b[5], b[6], b[7], b[8]].join('.');
+      state.hcuVersion = [b[9], b[10], b[11], b[12]].join('.');
       break;
     }
     case PACKET_TYPE.CONN_STATUS: {
@@ -200,6 +207,47 @@ function parsePacket(b) {
       onPaired(key);
       break;
     }
+    case PACKET_TYPE.MEMORY: {
+      // Response to the external-flash memory server (see writeMemoryRegion() below) —
+      // mirrors the device's own reply shape for each sub-command, keyed by b[1].
+      const sub = b[1];
+      const resp = { sub };
+      if (sub === 2) { // query: staged length (16-bit) + running checksum (signed 32-bit)
+        resp.count = (b[2] << 8) | b[3];
+        resp.crc = (b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7];
+      } else if (sub === 8) { // read4 result
+        resp.status = b[2];
+        resp.bytes = [b[3], b[4], b[5], b[6]];
+      } else if (sub === 10) { // region checksum result
+        resp.status = b[2];
+        resp.crc = (b[3] << 24) | (b[4] << 16) | (b[5] << 8) | b[6];
+      } else { // 0 (set-address), 4 (commit), 6 (erase) - plain ack
+        resp.status = b[2];
+      }
+      resolveMemWaiters(resp);
+      break;
+    }
+    // Burst-transfer protocol responses (see writeMemoryRegionBurst() below) - share
+    // resolveMemWaiters()/waitForMemResponse() with TYPE_MEMORY above: both are used
+    // strictly request-then-await, never concurrently, so one waiter queue is enough.
+    case PACKET_TYPE.FRAG_INIT:
+      resolveMemWaiters({ sub: 14, status: b[1] });
+      break;
+    case PACKET_TYPE.FRAG_MAP:
+      resolveMemWaiters({ sub: 16, bitmap: b.slice(1, 17) });
+      break;
+    case PACKET_TYPE.FRAG_CRC:
+      resolveMemWaiters({ sub: 17, crc: ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]) >>> 0 });
+      break;
+    case PACKET_TYPE.FRAG_PROGRAM:
+      resolveMemWaiters({
+        sub: 18, status: b[1],
+        crc: ((b[2] << 24) | (b[3] << 16) | (b[4] << 8) | b[5]) >>> 0,
+      });
+      break;
+    case PACKET_TYPE.FRAG_DATA_ACK:
+      resolveMemWaiters({ sub: 19, status: b[1], index: b[2] });
+      break;
     default:
       break;
   }
@@ -278,25 +326,669 @@ function buildIdPacket(ownId, key) {
   return b;
 }
 
+/* ── External-flash memory server (stage 1: raw address+length access) ───
+   Mirrors the device's CAN PGN107/108 "memory server" (User/Can/messages.cpp
+   in PU28-Timberline) byte-for-byte over BLE instead: same sub-command
+   values, same non-cryptographic "×170771 rolling" checksum — chosen so the
+   firmware and this page agree on what a fragment's checksum even means.
+   Reliability follows the same pattern as the firmware's own CAN-relay tool
+   (SlotsScreen.cpp): write in MEM_FRAGMENT_SIZE-byte fragments, ask the
+   device what it actually staged (length+checksum), and only commit a
+   fragment to flash once that matches what we meant to send — otherwise
+   resend the whole fragment. writeValueWithoutResponse() can silently drop
+   a packet; without this round-trip a dropped byte would corrupt the image
+   with no way to notice. */
+// Real-hardware testing found a hard, consistent ceiling around 17 data
+// packets before a burst starts silently dropping packets (awaiting each
+// writeValueWithoutResponse() isn't enough pacing on its own - see
+// MEM_PACKET_GAP_MS below), so 512B (~29 packets) meant every fragment sat
+// right at that edge. 128B (~8 packets) stays comfortably under it even if
+// the gap isn't perfectly tuned, and a retry only costs resending 8 packets
+// instead of 29.
+const MEM_FRAGMENT_SIZE = 128;
+const MEM_DATA_CHUNK = 18;     // usable bytes per 20-byte BLE packet (byte0=type, byte1=count)
+// A full image is hundreds of fragments; retries are cheap (resending one
+// small fragment, not the whole transfer), but too few retries means the
+// odds of some single fragment somewhere hitting a transient failure that
+// many times over a multi-minute run add up fast enough to abort an
+// otherwise-good transfer.
+const MEM_MAX_RETRIES = 10;
+// The OS/GATT layer accepting a write into ITS OWN queue (what awaiting
+// writeValueWithoutResponse() actually waits for) isn't the same as that
+// packet having gone out over the air yet - some stacks (this was on iOS/
+// Bluefy, whose Web Bluetooth support is CoreBluetooth under the hood, and
+// CoreBluetooth's own write-without-response has no real queueing beyond a
+// small internal buffer) silently drop anything past that once it fills.
+// 20ms fixed the drops; 10ms reproduced them (worse than before, since more
+// packets means more chances to hit the wall); 15ms still wasn't enough
+// (aborted at 13% on real hardware, despite the smaller MEM_FRAGMENT_SIZE
+// above too) - back to the one value confirmed to actually work.
+const MEM_PACKET_GAP_MS = 20;
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// Exactly replicates the firmware's `int32_t crc; crc += byte*170771; crc ^=
+// (crc>>16)&0xFFFF;` - `|0` truncates to a 32-bit signed int (matching
+// int32_t wraparound) and JS's `>>` is arithmetic (sign-extending) just like
+// C's on a signed operand, so this produces the identical value bit-for-bit.
+function memCrcStep(crc, byte) {
+  crc = (crc + byte * 170771) | 0;
+  crc = (crc ^ ((crc >> 16) & 0xFFFF)) | 0;
+  return crc;
+}
+
+function buildMemSetAddress(addr) {
+  const b = pkt();
+  b[0] = PACKET_TYPE.MEMORY; b[1] = 0;
+  b[2] = (addr >>> 24) & 0xFF; b[3] = (addr >>> 16) & 0xFF;
+  b[4] = (addr >>> 8) & 0xFF; b[5] = addr & 0xFF;
+  return b;
+}
+function buildMemQuery() { const b = pkt(); b[0] = PACKET_TYPE.MEMORY; b[1] = 2; return b; }
+function buildMemCommit() { const b = pkt(); b[0] = PACKET_TYPE.MEMORY; b[1] = 4; return b; }
+function buildMemErase(block) { // 0-127 = one 64KB block, 255 = whole chip
+  const b = pkt(); b[0] = PACKET_TYPE.MEMORY; b[1] = 6; b[2] = block; return b;
+}
+function buildMemRead4(addr) {
+  const b = pkt(); b[0] = PACKET_TYPE.MEMORY; b[1] = 8;
+  b[2] = (addr >>> 24) & 0xFF; b[3] = (addr >>> 16) & 0xFF;
+  b[4] = (addr >>> 8) & 0xFF; b[5] = addr & 0xFF;
+  return b;
+}
+function buildMemCrcRegion(addr, len) {
+  const b = pkt(); b[0] = PACKET_TYPE.MEMORY; b[1] = 10;
+  b[2] = (addr >>> 24) & 0xFF; b[3] = (addr >>> 16) & 0xFF;
+  b[4] = (addr >>> 8) & 0xFF; b[5] = addr & 0xFF;
+  b[6] = (len >>> 16) & 0xFF; b[7] = (len >>> 8) & 0xFF; b[8] = len & 0xFF;
+  return b;
+}
+function buildMemDataChunk(bytes, offset, count) {
+  const b = pkt(); b[0] = PACKET_TYPE.MEMORY_DATA; b[1] = count;
+  for (let i = 0; i < count; i++) b[2 + i] = bytes[offset + i];
+  return b;
+}
+
+// One waiter per in-flight request - the memory sub-protocol is always used
+// strictly request-then-await-response (see writeMemoryFragment()/the
+// mem*() helpers below), so there's never more than one pending at a time.
+let memWaiters = [];
+function resolveMemWaiters(resp) {
+  const waiters = memWaiters; memWaiters = [];
+  for (const w of waiters) { clearTimeout(w.timer); w.resolve(resp); }
+}
+function waitForMemResponse(timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      memWaiters = memWaiters.filter((w) => w.timer !== timer);
+      reject(new Error('timed out waiting for a response from the device'));
+    }, timeoutMs);
+    memWaiters.push({ resolve, timer });
+  });
+}
+
+async function memSetAddress(addr) { await queueWriteStrict(buildMemSetAddress(addr)); return waitForMemResponse(); }
+async function memQuery() { await queueWriteStrict(buildMemQuery()); return waitForMemResponse(); }
+async function memCommit() { await queueWriteStrict(buildMemCommit()); return waitForMemResponse(); }
+async function memErase(block) { await queueWriteStrict(buildMemErase(block)); return waitForMemResponse(15000); } // a chip erase can take a while
+async function memRead4(addr) { await queueWriteStrict(buildMemRead4(addr)); return waitForMemResponse(); }
+async function memCrcRegion(addr, len) { await queueWriteStrict(buildMemCrcRegion(addr, len)); return waitForMemResponse(8000); }
+
+// Writes one fragment (<= MEM_FRAGMENT_SIZE bytes), retrying the whole
+// fragment (not just the missing byte - there's no way to tell which byte
+// was dropped) up to MEM_MAX_RETRIES times if the device's reported
+// length/checksum don't match what was sent. Each data packet is awaited
+// individually (queueWriteStrict, not fire-and-forget) AND followed by
+// MEM_PACKET_GAP_MS of real wall-clock delay - surfaces a failed write
+// immediately instead of leaving memQuery() to time out for no visible
+// reason, and the explicit sleep (not just the await) is what actually
+// avoids the GATT-stack packet drops described above.
+// onPacket(sent, total), if given, fires after every packet in THIS fragment
+// (reset each retry attempt - a fragment that's being retried reports its
+// own progress from 0 again, not a running total across attempts).
+async function writeMemoryFragment(addr, bytes, onPacket) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < MEM_MAX_RETRIES; attempt++) {
+    try {
+      await memSetAddress(addr);
+      let localCrc = 0;
+      const totalPackets = Math.max(1, Math.ceil(bytes.length / MEM_DATA_CHUNK));
+      let sent = 0;
+      for (let off = 0; off < bytes.length; off += MEM_DATA_CHUNK) {
+        const count = Math.min(MEM_DATA_CHUNK, bytes.length - off);
+        await queueWriteStrict(buildMemDataChunk(bytes, off, count));
+        await sleep(MEM_PACKET_GAP_MS);
+        for (let i = 0; i < count; i++) localCrc = memCrcStep(localCrc, bytes[off + i]);
+        sent++;
+        if (onPacket) onPacket(sent, totalPackets);
+      }
+      const resp = await memQuery();
+      if (resp.count === bytes.length && resp.crc === localCrc) {
+        await memCommit();
+        return;
+      }
+      lastErr = new Error(`checksum mismatch (device: ${resp.count}B/0x${(resp.crc >>> 0).toString(16)}, `
+        + `expected: ${bytes.length}B/0x${(localCrc >>> 0).toString(16)})`);
+    } catch (e) {
+      lastErr = e;
+    }
+    console.warn(`writeMemoryFragment @0x${addr.toString(16)} attempt ${attempt + 1} failed: ${lastErr.message}`);
+  }
+  throw new Error(`fragment @0x${addr.toString(16)} failed after ${MEM_MAX_RETRIES} attempts: ${lastErr.message}`);
+}
+
+// Writes an arbitrary Uint8Array to the external flash starting at
+// startAddr, fragment by fragment. Does NOT erase first - the caller is
+// responsible for erasing the target region (memErase()) beforehand, same
+// division of responsibility as the CAN protocol this mirrors.
+// onProgress(bytesDone, bytesTotal, packetsDone, packetsTotal) fires after
+// every single data packet (not just once per fragment) so real transfer
+// progress - or a stall - is visible as it happens, not just at fragment
+// boundaries every MEM_FRAGMENT_SIZE bytes.
+async function writeMemoryRegion(startAddr, data, onProgress) {
+  const packetsTotal = Math.max(1, Math.ceil(data.length / MEM_DATA_CHUNK));
+  let packetsDoneBefore = 0;
+  for (let off = 0; off < data.length; off += MEM_FRAGMENT_SIZE) {
+    const chunk = data.subarray(off, Math.min(off + MEM_FRAGMENT_SIZE, data.length));
+    await writeMemoryFragment(startAddr + off, chunk, (sentInFragment) => {
+      if (onProgress) {
+        const bytesDone = off + Math.min(sentInFragment * MEM_DATA_CHUNK, chunk.length);
+        onProgress(bytesDone, data.length, packetsDoneBefore + sentInFragment, packetsTotal);
+      }
+    });
+    packetsDoneBefore += Math.ceil(chunk.length / MEM_DATA_CHUNK);
+  }
+}
+
+/* ── Burst-transfer protocol (stage 2 write path) ─────────────────────────
+   Replaces writeMemoryRegion()/writeMemoryFragment() above as the actual
+   write path runMemUpload() uses (that pair stays in place, still backing
+   the low-level "Upload local file" tool's write and every memErase/
+   memRead4/memCrcRegion diagnostic call - nothing there changes).
+
+   Where the old protocol paced every single packet at MEM_PACKET_GAP_MS
+   (20ms) and resent an entire fragment on ANY mismatch, this one fires a
+   whole fragment's mini-fragments as a fire-and-forget burst - "whatever
+   arrives, arrives" - then asks the device for a bitmap of exactly which
+   of the (up to 128) 16-byte mini-fragments actually landed, and resends
+   only the missing ones, repeating until the map comes back clean. A
+   CRC32 of the whole fragment and then a flash-program+readback-verify
+   close out each fragment. See bluetooth.h's TYPE_FRAG_* /
+   BluetoothHandler.cpp for the device side.
+
+   Real-hardware testing (2026-09-08) found "fire-and-forget" still needs
+   two delays, just far smaller than the old protocol's per-packet ack
+   round-trip: a gap between individual mini-fragment sends (the same
+   GATT-stack queue-depth ceiling that made the old protocol need
+   MEM_PACKET_GAP_MS applies here too, just less severely since nothing is
+   awaiting a per-packet reply), and a settle delay after a whole burst
+   before asking for the map - the device needs some time to finish
+   processing what already arrived before a map request reflects it.
+   Both are user-tunable (fragGapMs/fragSettleMs in index.html, read by
+   getFragTiming() below) rather than fixed constants - what real hardware
+   actually needs turned out to need live experimentation, not a single
+   value baked into the code. */
+const FRAG_SIZE = 2048;   // matches PU28-Timberline's fragBuf[2048] staging buffer
+const FRAG_MINI_SIZE = 16; // matches TYPE_FRAG_DATA's 20-byte packet: type(1)+index(1)+data(16)+CRC16(2)
+const FRAG_GAP_MS_DEFAULT = 2;
+const FRAG_SETTLE_MS_DEFAULT = 50;
+const FRAG_MAP_ROUNDS = 25;   // burst + up to this many "resend only what's missing" rounds
+const FRAG_OUTER_RETRIES = 10; // if a fragment doesn't converge (or fails CRC32/program) even after
+                               // FRAG_MAP_ROUNDS, restart that fragment from TYPE_FRAG_INIT this many times.
+                               // Real-hardware logs (2026-09-08) showed occasional multi-second dropouts
+                               // that outlast FRAG_CTRL_RETRIES - bumped from 5 to give those more room
+                               // before failing the whole transfer.
+
+// Real-hardware testing (2026-09-08) found the burst+map round trip pays a
+// fixed cost (settleMs + a map request/response) no matter how few packets
+// are actually missing - and in practice a round almost always converges to
+// "only a handful left" within 2-3 rounds regardless of gap/settle tuning.
+// Once this few remain, it's cheaper to just ack each one individually
+// (TYPE_FRAG_DATA_ACK) than to pay for another whole burst+settle+map round.
+const FRAG_TAIL_THRESHOLD = 8;
+const FRAG_TAIL_RETRIES = 4; // per straggler, before giving up on it (falls back to another map round)
+
+// Reads the two timing inputs (index.html's "Burst transfer timing" panel),
+// falling back to the defaults above if the field is missing/empty/invalid.
+// Read once per whole-region transfer (writeMemoryRegionBurst), not re-read
+// per packet/round - a mid-transfer edit takes effect on the next transfer.
+function getFragTiming() {
+  const gapEl = document.getElementById('fragGapMs');
+  const settleEl = document.getElementById('fragSettleMs');
+  const gap = gapEl ? parseInt(gapEl.value, 10) : NaN;
+  const settle = settleEl ? parseInt(settleEl.value, 10) : NaN;
+  return {
+    gapMs: Number.isFinite(gap) && gap >= 0 ? gap : FRAG_GAP_MS_DEFAULT,
+    settleMs: Number.isFinite(settle) && settle >= 0 ? settle : FRAG_SETTLE_MS_DEFAULT,
+  };
+}
+
+// Persists the two timing inputs across reloads and pre-fills them on page
+// load - called once from wireMemoryControls().
+function initFragTimingInputs() {
+  const gapEl = document.getElementById('fragGapMs');
+  const settleEl = document.getElementById('fragSettleMs');
+  if (!gapEl || !settleEl) return;
+  const savedGap = parseInt(localStorage.getItem('pu28ble_frag_gap_ms'), 10);
+  const savedSettle = parseInt(localStorage.getItem('pu28ble_frag_settle_ms'), 10);
+  gapEl.value = Number.isFinite(savedGap) ? savedGap : FRAG_GAP_MS_DEFAULT;
+  settleEl.value = Number.isFinite(savedSettle) ? savedSettle : FRAG_SETTLE_MS_DEFAULT;
+  gapEl.onchange = () => localStorage.setItem('pu28ble_frag_gap_ms', gapEl.value);
+  settleEl.onchange = () => localStorage.setItem('pu28ble_frag_settle_ms', settleEl.value);
+}
+
+// Thrown by checkCancelled() when the user hits a Cancel button mid-transfer
+// - a distinct type so callers can tell "user cancelled" apart from a real
+// transport/verification failure (no retry, no scary error text).
+class TransferCancelled extends Error {
+  constructor() { super('Cancelled by user'); this.name = 'TransferCancelled'; }
+}
+function checkCancelled(token) {
+  if (token && token.cancelled) throw new TransferCancelled();
+}
+
+// Exactly replicates the firmware's crc32Update()/crc32Of() (CRC-32/ISO-HDLC,
+// poly 0xEDB88320, init/final 0xFFFFFFFF - the same algorithm SlotsScreen.cpp's
+// CAN-relay and the bootloader already use, just applied here to a whole
+// BLE-staged fragment instead).
+function crc32Update(crc, byte) {
+  crc ^= byte;
+  for (let bit = 0; bit < 8; bit++) crc = (crc & 1) ? ((crc >>> 1) ^ 0xEDB88320) : (crc >>> 1);
+  return crc >>> 0;
+}
+function crc32Of(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = crc32Update(crc, bytes[i]);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function buildFragInit(addr, len, crc32) {
+  const b = pkt();
+  b[0] = PACKET_TYPE.FRAG_INIT;
+  b[1] = (addr >>> 24) & 0xFF; b[2] = (addr >>> 16) & 0xFF;
+  b[3] = (addr >>> 8) & 0xFF; b[4] = addr & 0xFF;
+  b[5] = (len >>> 8) & 0xFF; b[6] = len & 0xFF;
+  b[7] = (crc32 >>> 24) & 0xFF; b[8] = (crc32 >>> 16) & 0xFF;
+  b[9] = (crc32 >>> 8) & 0xFF; b[10] = crc32 & 0xFF;
+  return b;
+}
+// type is PACKET_TYPE.FRAG_DATA (fire-and-forget) or FRAG_DATA_ACK (device
+// always replies) - identical 20-byte payload either way, see bluetooth.h.
+function buildFragData(type, index, bytes, off, validCount) {
+  const b = pkt();
+  b[0] = type;
+  b[1] = index;
+  for (let i = 0; i < validCount; i++) b[2 + i] = bytes[off + i];
+  const crc = crc16Modbus(bytes.subarray(off, off + validCount)); // same CRC16/ARC as the firmware's crc16Of()
+  b[18] = (crc >>> 8) & 0xFF;
+  b[19] = crc & 0xFF;
+  return b;
+}
+function buildFragMapRequest() { const b = pkt(); b[0] = PACKET_TYPE.FRAG_MAP; return b; }
+function buildFragCrcRequest() { const b = pkt(); b[0] = PACKET_TYPE.FRAG_CRC; return b; }
+function buildFragProgramRequest() { const b = pkt(); b[0] = PACKET_TYPE.FRAG_PROGRAM; return b; }
+
+// fragInit/fragMapRequest/fragCrcRequest/fragProgramRequest are each a single
+// request-packet + single response-packet round trip, unlike the mini-fragment
+// burst which is designed from the ground up to tolerate loss. Losing just
+// ONE of these (the request write itself, or the one reply notification) used
+// to blow away everything a fragment's burst+tail-fill had already recovered,
+// forcing a full outer retry - re-sending all 128 mini-fragments from
+// scratch (real-hardware logs 2026-09-08 showed exactly this: a lone lost map
+// request mid-fragment, and the whole fragment restarted from TYPE_FRAG_INIT).
+// withCtrlRetry() retries just the one request/response instead.
+const FRAG_CTRL_RETRIES = 5;
+async function withCtrlRetry(fn, label, token) {
+  let lastErr;
+  for (let i = 0; i < FRAG_CTRL_RETRIES; i++) {
+    checkCancelled(token);
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof TransferCancelled) throw e;
+      lastErr = e;
+      console.warn(`${label} attempt ${i + 1}/${FRAG_CTRL_RETRIES} failed: ${e.message}`);
+    }
+  }
+  throw lastErr;
+}
+
+async function fragInit(addr, len, crc32, token) {
+  return withCtrlRetry(async () => {
+    await queueWriteStrict(buildFragInit(addr, len, crc32));
+    return waitForMemResponse();
+  }, 'fragInit', token);
+}
+async function fragMapRequest(token) {
+  return withCtrlRetry(async () => {
+    await queueWriteStrict(buildFragMapRequest());
+    return waitForMemResponse();
+  }, 'fragMapRequest', token);
+}
+async function fragCrcRequest(token) {
+  return withCtrlRetry(async () => {
+    await queueWriteStrict(buildFragCrcRequest());
+    return waitForMemResponse(8000);
+  }, 'fragCrcRequest', token);
+}
+async function fragProgramRequest(token) {
+  return withCtrlRetry(async () => {
+    await queueWriteStrict(buildFragProgramRequest());
+    return waitForMemResponse(8000);
+  }, 'fragProgramRequest', token);
+}
+
+// Sends one mini-fragment and waits for its individual ack (TYPE_FRAG_DATA_ACK) -
+// used by fragTailFill() to mop up the last few stragglers one at a time
+// instead of paying for a whole burst+settle+map round to recover 1-3 packets.
+async function fragDataAckSend(idx, bytes) {
+  const off = idx * FRAG_MINI_SIZE;
+  const validCount = Math.min(FRAG_MINI_SIZE, bytes.length - off);
+  await queueWriteStrict(buildFragData(PACKET_TYPE.FRAG_DATA_ACK, idx, bytes, off, validCount));
+  return waitForMemResponse();
+}
+
+// Which mini-fragment indexes (0..miniCount-1) the device's bitmap says it
+// does NOT have a CRC16-valid copy of yet.
+function fragBitmapMissing(bitmap, miniCount) {
+  const missing = [];
+  for (let i = 0; i < miniCount; i++) {
+    if (!(bitmap[i >> 3] & (1 << (i & 7)))) missing.push(i);
+  }
+  return missing;
+}
+
+// Fire-and-forget burst - not awaited/acked per packet (that's the whole
+// point of this protocol: let some drop, find out via the map, resend only
+// those), but paced gapMs apart so the phone's GATT stack doesn't just drop
+// everything past its outbound queue depth (see the file-header comment
+// above). queueWrite() (not queueWriteStrict()) is still correct here: an
+// individual write failing is just another way a mini-fragment can end up
+// "missing", already handled by the map round that follows. Checks the
+// cancel token between packets so hitting Cancel mid-burst stops promptly
+// instead of finishing the whole burst first.
+async function fragBurstSend(bytes, indexes, gapMs, token) {
+  for (const idx of indexes) {
+    checkCancelled(token);
+    const off = idx * FRAG_MINI_SIZE;
+    const validCount = Math.min(FRAG_MINI_SIZE, bytes.length - off);
+    queueWrite(buildFragData(PACKET_TYPE.FRAG_DATA, idx, bytes, off, validCount));
+    await sleep(gapMs);
+  }
+}
+
+// Resolves a small number of stragglers one at a time via TYPE_FRAG_DATA_ACK
+// instead of another burst+settle+map round - each packet gets its own
+// immediate round-trip confirmation, no waiting for a settle delay or a
+// separate map request to find out whether it landed. Retries a given
+// straggler up to FRAG_TAIL_RETRIES times (a single ack write/response can
+// still fail like any other BLE round-trip); returns whatever indexes are
+// still unresolved after that (normally empty - the caller falls back to
+// another ordinary map round for anything left, rather than treating that
+// as fatal).
+async function fragTailFill(bytes, indexes, logElId, token) {
+  const stillMissing = [];
+  for (const idx of indexes) {
+    checkCancelled(token);
+    let ok = false;
+    for (let attempt = 0; attempt < FRAG_TAIL_RETRIES && !ok; attempt++) {
+      try {
+        const resp = await fragDataAckSend(idx, bytes);
+        if (resp.status === 0) ok = true;
+      } catch (e) {
+        console.warn(`fragTailFill: ack for mini-fragment ${idx} failed (attempt ${attempt + 1}): ${e.message}`);
+      }
+    }
+    if (!ok) stillMissing.push(idx);
+  }
+  return stillMissing;
+}
+
+// Round-level summary for a burst transfer - a dedicated small panel per
+// upload flow (restoreFragLog / fwFragLog / memFragLog in index.html),
+// deliberately NOT the shared "Packet log" panel: that one interleaves
+// every packet type from all BLE activity, which made the round-by-round
+// numbers impossible to pick out during an actual transfer. Prints
+// "Frag_N" once per fragment/retry, then one "done/total" line per map
+// round, e.g.:
+//   Frag_1/3
+//   178/256
+//   223/256
+//   256/256
+//   Frag_2/3
+//   ...
+function logFrag(line, logElId) {
+  const el = document.getElementById(logElId || 'memFragLog');
+  if (!el) return;
+  el.textContent += (el.textContent ? '\n' : '') + line;
+  el.scrollTop = el.scrollHeight;
+}
+
+// Copies one frag-log panel's text to the clipboard, prefixed with the
+// timing settings that produced it (gap/settle only make sense alongside
+// the rounds they shaped) - lets the user hand a failed transfer's log
+// over for diagnosis without having to retype or screenshot it.
+function copyFragLog(logElId, btn) {
+  const el = document.getElementById(logElId);
+  if (!el) return;
+  const timing = getFragTiming();
+  const header = `[gap=${timing.gapMs}ms settle=${timing.settleMs}ms ${new Date().toLocaleString()}]`;
+  const text = `${header}\n${el.textContent || '(empty)'}`;
+  const showCopied = () => {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  };
+  const fallbackCopy = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); showCopied(); } catch (e) { alert('Copy failed: ' + e.message); }
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(showCopied).catch(fallbackCopy);
+  } else {
+    fallbackCopy();
+  }
+}
+
+function wireFragLogCopyButtons() {
+  [['restoreFragLogCopyBtn', 'restoreFragLog'], ['fwFragLogCopyBtn', 'fwFragLog'], ['memFragLogCopyBtn', 'memFragLog']]
+    .forEach(([btnId, logElId]) => {
+      const btn = document.getElementById(btnId);
+      if (btn) btn.onclick = () => copyFragLog(logElId, btn);
+    });
+}
+
+// onRound(miniDone, miniTotal) fires after each map-check round (including
+// the initial one right after the burst), so progress is visible converging
+// even though - unlike the old protocol - individual packets aren't tracked.
+// `token` (a {cancelled: bool} object, see checkCancelled()) is checked at
+// every await boundary - a TransferCancelled thrown here is NOT retried,
+// unlike every other failure, and propagates straight out to the caller.
+async function writeFragmentBurst(addr, bytes, fragLabel, onRound, logElId, timing, token) {
+  const crc32 = crc32Of(bytes);
+  const miniCount = Math.max(1, Math.ceil(bytes.length / FRAG_MINI_SIZE));
+  let lastErr = null;
+
+  for (let attempt = 0; attempt < FRAG_OUTER_RETRIES; attempt++) {
+    checkCancelled(token);
+    try {
+      logFrag(attempt === 0 ? fragLabel : `${fragLabel} (retry ${attempt + 1})`, logElId);
+      await fragInit(addr, bytes.length, crc32, token);
+
+      const allIndexes = Array.from({ length: miniCount }, (_, i) => i);
+      await fragBurstSend(bytes, allIndexes, timing.gapMs, token);
+      await sleep(timing.settleMs);
+      checkCancelled(token);
+
+      let missing = allIndexes;
+      for (let round = 0; round < FRAG_MAP_ROUNDS; round++) {
+        checkCancelled(token);
+        const mapResp = await fragMapRequest(token);
+        missing = fragBitmapMissing(mapResp.bitmap, miniCount);
+        const doneCount = miniCount - missing.length;
+        logFrag(`${doneCount}/${miniCount}`, logElId);
+        if (onRound) onRound(doneCount, miniCount);
+        if (missing.length === 0) break;
+
+        if (missing.length <= FRAG_TAIL_THRESHOLD) {
+          // Cheaper to ack these few individually than pay for another
+          // whole burst+settle+map round trip - see fragTailFill().
+          missing = await fragTailFill(bytes, missing, logElId, token);
+          const tailDone = miniCount - missing.length;
+          logFrag(`${tailDone}/${miniCount} (tail-fill)`, logElId);
+          if (onRound) onRound(tailDone, miniCount);
+          if (missing.length === 0) break;
+          continue; // whatever tail-fill couldn't resolve gets a normal map round next
+        }
+
+        await fragBurstSend(bytes, missing, timing.gapMs, token);
+        await sleep(timing.settleMs);
+      }
+      if (missing.length > 0) {
+        throw new Error(`${missing.length}/${miniCount} mini-fragments still missing after ${FRAG_MAP_ROUNDS} rounds`);
+      }
+
+      const crcResp = await fragCrcRequest(token);
+      if (crcResp.crc !== crc32) {
+        throw new Error(`fragment CRC32 mismatch (device 0x${crcResp.crc.toString(16)}, expected 0x${crc32.toString(16)})`);
+      }
+
+      const progResp = await fragProgramRequest(token);
+      if (progResp.status !== 0) {
+        throw new Error(`flash programming/verify failed (readback CRC32 0x${progResp.crc.toString(16)})`);
+      }
+      return; // success
+    } catch (e) {
+      if (e instanceof TransferCancelled) throw e;
+      lastErr = e;
+      console.warn(`writeFragmentBurst @0x${addr.toString(16)} attempt ${attempt + 1} failed: ${e.message}`);
+    }
+  }
+  throw new Error(`fragment @0x${addr.toString(16)} failed after ${FRAG_OUTER_RETRIES} attempts: ${lastErr.message}`);
+}
+
+// Drop-in replacement for writeMemoryRegion() with the same onProgress(bytesDone,
+// bytesTotal, packetsDone, packetsTotal) shape (here "packets" = mini-fragments
+// confirmed received, so existing progress-bar rendering needs no changes).
+async function writeMemoryRegionBurst(startAddr, data, onProgress, logElId, token) {
+  const timing = getFragTiming();
+  const miniTotal = Math.max(1, Math.ceil(data.length / FRAG_MINI_SIZE));
+  const fragTotal = Math.max(1, Math.ceil(data.length / FRAG_SIZE));
+  let miniDoneBefore = 0;
+  let fragIndex = 0;
+  for (let off = 0; off < data.length; off += FRAG_SIZE) {
+    fragIndex++;
+    const chunk = data.subarray(off, Math.min(off + FRAG_SIZE, data.length));
+    await writeFragmentBurst(startAddr + off, chunk, `Frag_${fragIndex}/${fragTotal}`, (doneInFrag, totalInFrag) => {
+      if (onProgress) {
+        const bytesDone = off + Math.min(doneInFrag * FRAG_MINI_SIZE, chunk.length);
+        onProgress(bytesDone, data.length, miniDoneBefore + doneInFrag, miniTotal);
+      }
+    }, logElId, timing, token);
+    miniDoneBefore += Math.ceil(chunk.length / FRAG_MINI_SIZE);
+  }
+}
+
+/* ── Screen wake lock ──────────────────────────────────────────────────────
+   A multi-minute BLE transfer stops dead the moment the phone's screen locks
+   - iOS/Android both suspend background JS enough to stall mid-transfer BLE
+   writes. It resumes on its own once the screen wakes again (per the user's
+   own report), so nothing is actually broken - there's just no reason to
+   make someone babysit the screen for several minutes when a standard API
+   exists for exactly this. Held only for the duration of an actual transfer
+   (acquireWakeLock()/releaseWakeLock() bracket each upload flow below), not
+   the whole BLE session, so normal screen-timeout behavior is untouched the
+   rest of the time. Supported in current Chrome/Edge/Android and Safari
+   16.4+ (so also Bluefy, a WKWebView wrapper, on any reasonably current
+   iOS) - unsupported browsers just silently proceed without it, same as
+   before this existed. */
+let wakeLock = null;
+let wakeLockWanted = false; // re-requested on visibilitychange if a transfer is still running
+
+async function acquireWakeLock() {
+  wakeLockWanted = true;
+  if (!('wakeLock' in navigator) || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (e) {
+    console.warn('[wakeLock] request failed (transfer continues without it):', e.message);
+  }
+}
+
+function releaseWakeLock() {
+  wakeLockWanted = false;
+  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+}
+
+// The wake lock is auto-released by the browser whenever the page goes into
+// the background (tab-switch, app-switch) - re-request it the moment it's
+// foregrounded again, but only if a transfer is still actually in progress.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && wakeLockWanted) acquireWakeLock();
+});
+
 /* ── BLE connection ────────────────────────────────────────────────────── */
 let ble = { device: null, server: null, txChar: null, rxChar: null };
 let pairing = false;
 let pairingTimer = null;
 let writeChain = Promise.resolve();
 
+// Protocol-wide packet integrity (2026-09-08, replaces the earlier
+// "just pace it more gently" band-aid - see BluetoothHandler.cpp's matching
+// comment for the full incident writeup). The panel's BLE transport
+// (Bluetooth::handler() in bluetooth.cpp - bit-banged SPI to the module,
+// no framing/resync) had NO integrity check on any inbound command packet
+// except this app's own burst sub-protocol - a corrupted byte landing in
+// buf[0] as a low value (1/2/3...) got dispatched as TYPE_SETUP/TYPE_WORK/etc
+// with zero validation, causing real hardware to report spurious zone/
+// element/heater activation under heavy BLE traffic. Device isn't in
+// production yet, so this is a real protocol fix, not a workaround: every
+// outbound packet except the three that already use byte 19 for their own
+// data (MEMORY_DATA's rolling checksum, FRAG_DATA/FRAG_DATA_ACK's CRC16)
+// now carries a CRC-8 (poly 0x07, init 0x00) of bytes[0..18] in byte 19.
+// The firmware drops anything that fails this check before it ever reaches
+// the command dispatcher - see the matching check in BluetoothHandler.cpp.
+function crc8Of(bytes, len) {
+  let crc = 0;
+  for (let i = 0; i < len; i++) {
+    crc ^= bytes[i];
+    for (let b = 0; b < 8; b++) crc = (crc & 0x80) ? ((crc << 1) ^ 0x07) & 0xFF : (crc << 1) & 0xFF;
+  }
+  return crc;
+}
+const CRC8_EXEMPT_TYPES = new Set([PACKET_TYPE.MEMORY_DATA, PACKET_TYPE.FRAG_DATA, PACKET_TYPE.FRAG_DATA_ACK]);
+
+async function doWrite(bytes) {
+  if (!ble.rxChar) throw new Error('not connected');
+  if (!CRC8_EXEMPT_TYPES.has(bytes[0])) bytes[19] = crc8Of(bytes, 19);
+  if (ble.rxChar.writeValueWithoutResponse) await ble.rxChar.writeValueWithoutResponse(bytes);
+  else await ble.rxChar.writeValue(bytes);
+}
+
+// Fire-and-forget - swallows write failures (logged, not thrown). Every existing
+// caller in this file (telemetry/setpoint/time-sync packets etc.) assumes
+// queueWrite() never rejects, so this keeps that contract.
 function queueWrite(bytes) {
   writeChain = writeChain.then(() => doWrite(bytes)).catch((e) => console.error('BLE write error', e));
   return writeChain;
 }
-async function doWrite(bytes) {
-  if (!ble.rxChar) return;
-  logPacket('TX', bytes[0], bytes);
-  try {
-    if (ble.rxChar.writeValueWithoutResponse) await ble.rxChar.writeValueWithoutResponse(bytes);
-    else await ble.rxChar.writeValue(bytes);
-  } catch (e) {
-    console.error('BLE write failed', e);
-  }
+
+// Same ordering/queue as queueWrite() (both thread through the one shared
+// writeChain, so relative order is preserved regardless of which of the two
+// a given packet uses), but the returned promise actually rejects on failure.
+// Used by the memory-protocol code below (writeMemoryFragment et al.): a
+// silently swallowed write there used to leave callers waiting out a full
+// response timeout for a device reply that a failed write could never
+// produce - this makes that failure visible immediately instead.
+function queueWriteStrict(bytes) {
+  const result = writeChain.then(() => doWrite(bytes));
+  writeChain = result.catch(() => {});
+  return result;
 }
 
 function onNotify(event) {
@@ -603,17 +1295,6 @@ function forgetDevice() {
   if (localStorage.getItem(LAST_DEVICE_KEY) === ble.device.id) localStorage.removeItem(LAST_DEVICE_KEY);
   if (ble.device.forget) ble.device.forget();
   doDisconnect();
-}
-
-/* ── Packet log (the collapsed "Packet log" panel) ────────────────────── */
-const rawLogEntries = [];
-function logPacket(dir, ptype, bytes) {
-  const hex = Array.from(bytes, (x) => x.toString(16).padStart(2, '0')).join(' ');
-  const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
-  rawLogEntries.push(`${time} ${dir === 'RX' ? '←' : '→'} [${ptype}] ${hex}`);
-  if (rawLogEntries.length > 200) rawLogEntries.shift();
-  const el = document.getElementById('rawLog');
-  if (el) { el.textContent = rawLogEntries.slice().reverse().join('\n'); }
 }
 
 function setConnLabel(text, cls) {
@@ -1176,6 +1857,7 @@ function renderMisc() {
   dhw.classList.toggle('on', state.domesticWaterOn);
   document.getElementById('heaterFw').textContent = state.heaterVersion || '—';
   document.getElementById('panelFw').textContent = state.panelVersion || '—';
+  document.getElementById('hcuFw').textContent = state.hcuVersion || '—';
 }
 
 function render() {
@@ -1186,6 +1868,7 @@ function render() {
   renderSchedule();
   renderErrors();
   renderMisc();
+  renderRestorePanel();
 }
 
 /* ── Static control wiring ────────────────────────────────────────────── */
@@ -1211,6 +1894,503 @@ function wireStaticControls() {
   };
 }
 
+/* ── External memory (BLE) panel — diagnostic front-end for the writeMemoryRegion()
+   protocol above. Stage 1 of firmware distribution over BLE: raw address+length
+   access only, so it can be exercised (and trusted) before stage 2 wires it up to
+   server-hosted firmware images and stage 3 automates loading a whole slot. */
+function parseHexAddr(str) {
+  const v = parseInt(str, 16);
+  if (!Number.isFinite(v) || v < 0) throw new Error('invalid address');
+  return v >>> 0;
+}
+
+function showMemTab(name) {
+  const isSlots = name === 'slots';
+  document.getElementById('memTabSlots').classList.toggle('hidden', !isSlots);
+  document.getElementById('memTabRaw').classList.toggle('hidden', isSlots);
+  document.getElementById('memTabSlotsBtn').classList.toggle('primary', isSlots);
+  document.getElementById('memTabRawBtn').classList.toggle('primary', !isSlots);
+}
+
+function wireMemoryControls() {
+  initFragTimingInputs();
+  wireFragLogCopyButtons();
+  document.getElementById('memTabSlotsBtn').onclick = () => showMemTab('slots');
+  document.getElementById('memTabRawBtn').onclick = () => showMemTab('raw');
+
+  document.getElementById('memReadBtn').onclick = async () => {
+    const out = document.getElementById('memReadResult');
+    try {
+      const addr = parseHexAddr(document.getElementById('memReadAddr').value);
+      out.textContent = 'Reading…';
+      const resp = await memRead4(addr);
+      out.textContent = resp.status === 0
+        ? '0x' + resp.bytes.map((b) => b.toString(16).padStart(2, '0')).join('')
+        : 'out of bounds';
+    } catch (e) { out.textContent = 'Error: ' + e.message; }
+  };
+
+  document.getElementById('memCrcBtn').onclick = async () => {
+    const out = document.getElementById('memCrcResult');
+    try {
+      const addr = parseHexAddr(document.getElementById('memCrcAddr').value);
+      const len = parseInt(document.getElementById('memCrcLen').value, 10);
+      if (!Number.isFinite(len) || len <= 0) throw new Error('invalid length');
+      out.textContent = 'Computing…';
+      const resp = await memCrcRegion(addr, len);
+      out.textContent = resp.status === 0 ? '0x' + (resp.crc >>> 0).toString(16) : 'out of bounds';
+    } catch (e) { out.textContent = 'Error: ' + e.message; }
+  };
+
+  document.getElementById('memEraseBtn').onclick = async () => {
+    const block = parseInt(document.getElementById('memEraseBlock').value, 10);
+    if (!Number.isFinite(block) || block < 0 || block > 127) { alert('Block index must be 0-127'); return; }
+    if (!confirm(`Erase 64KB block #${block}? This cannot be undone.`)) return;
+    try { await memErase(block); alert('Block erased.'); } catch (e) { alert('Erase failed: ' + e.message); }
+  };
+
+  document.getElementById('memEraseChipBtn').onclick = async () => {
+    if (!confirm('Erase the ENTIRE external flash chip (8 MB)? This destroys ALL stored firmware slots and cannot be undone.')) return;
+    try { await memErase(255); alert('Chip erased.'); } catch (e) { alert('Erase failed: ' + e.message); }
+  };
+
+  document.getElementById('memUploadBtn').onclick = async () => {
+    const file = document.getElementById('memUploadFile').files[0];
+    if (!file) { alert('Choose a file first'); return; }
+    let addr;
+    try { addr = parseHexAddr(document.getElementById('memUploadAddr').value); }
+    catch (e) { alert(e.message); return; }
+    const data = new Uint8Array(await file.arrayBuffer());
+    await acquireWakeLock();
+    try {
+      await runMemUpload(document.getElementById('memUploadBtn'), addr, data);
+    } finally {
+      releaseWakeLock();
+    }
+  };
+
+  wireServerFirmwareControls();
+}
+
+// Shared by every upload source (local file / server-fetched, distribution
+// slots / restore area) - takes its progress-bar/text element ids explicitly
+// (defaulting to the "External memory" section's own) so progress always
+// renders in whichever section the button that triggered it actually lives
+// in. It used to be hardcoded to the "External memory" section's elements
+// even when called from "Self-update", which sits in its own collapsible
+// <details> - if that one happened to be open and "External memory" closed,
+// the only visible feedback for a multi-minute transfer was silence followed
+// by a sudden "Done", which is exactly what looked like an instant, clearly
+// fake completion.
+function formatElapsed(ms) {
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = Math.round(totalSec - m * 60);
+  return `${m}m ${s}s`;
+}
+
+// Returns true on a completed, verified transfer; false on cancel or failure
+// (message already shown in `text`) - callers that do more afterward (write
+// a meta record, reboot) MUST check this and bail out rather than treat "the
+// call returned" as "the transfer succeeded" (see updateRestoreArea() /
+// fwLoadBtn's handler: writing a slot/restore meta record for data that was
+// never fully, verifiably written would make the device treat a
+// cancelled/failed transfer as a valid image).
+async function runMemUpload(triggerBtn, addr, data, els) {
+  const wrap = document.getElementById(els?.wrap || 'memProgressWrap');
+  const bar = document.getElementById(els?.bar || 'memProgressBar');
+  const text = document.getElementById(els?.text || 'memProgressText');
+  const logElId = els?.log || 'memFragLog';
+  const logEl = document.getElementById(logElId);
+  const cancelBtn = document.getElementById(els?.cancelBtn || 'memUploadCancelBtn');
+  if (logEl) logEl.textContent = ''; // clear any previous run's rounds before this one starts
+  triggerBtn.disabled = true;
+  wrap.classList.remove('hidden');
+  bar.style.width = '0%';
+
+  const token = { cancelled: false };
+  if (cancelBtn) {
+    cancelBtn.classList.remove('hidden');
+    cancelBtn.disabled = false;
+    cancelBtn.onclick = () => {
+      token.cancelled = true;
+      cancelBtn.disabled = true;
+      text.textContent = 'Cancelling…';
+    };
+  }
+
+  const t0 = performance.now();
+  try {
+    await writeMemoryRegionBurst(addr, data, (bytesDone, bytesTotal, packetsDone, packetsTotal) => {
+      const pct = Math.round((bytesDone / bytesTotal) * 100);
+      bar.style.width = pct + '%';
+      text.textContent = `Transferred mini-fragment ${packetsDone}/${packetsTotal} `
+        + `(${bytesDone}/${bytesTotal} bytes, ${pct}%)`;
+    }, logElId, token);
+    text.textContent = `Done — ${data.length} bytes written at 0x${addr.toString(16)} `
+      + `in ${formatElapsed(performance.now() - t0)}.`;
+    return true;
+  } catch (e) {
+    text.textContent = e instanceof TransferCancelled
+      ? `Cancelled after ${formatElapsed(performance.now() - t0)}.`
+      : 'Upload failed: ' + e.message;
+    return false;
+  } finally {
+    triggerBtn.disabled = false;
+    if (cancelBtn) cancelBtn.classList.add('hidden');
+  }
+}
+
+/* ── Firmware from server (stage 2) ────────────────────────────────────────
+   Same server endpoints the main MQTT app already uses for OTA (see
+   host/README.md "Firmware OTA", host/timberline-web/server.js) — no new
+   backend code needed, this just calls them from the browser instead of
+   having the modem fetch them over cellular AT+HTTP. Deliberately does NOT
+   apply the main app's versionsForSubtype() filter (which hides e.g. Multihot
+   builds when a Timberline-subtype device is connected) - every published
+   126.x version is listed, since any of the panel's 3 generic slots can hold
+   any of them regardless of what's currently running. */
+const FIRMWARE_TYPE = '126';
+
+// Mirrors PU28-Timberline's User/Memory/memory.h slot layout exactly - keep
+// these in sync if that header's constants ever change.
+const MEM_CHIP_SIZE = 0x800000;
+const MEM_SLOT_COUNT = 3;
+const MEM_SLOT_META_SIZE = 0x10000;
+const MEM_SLOT_DATA_SIZE = 0x80000;
+const MEM_SLOT_SIZE = MEM_SLOT_META_SIZE + MEM_SLOT_DATA_SIZE;
+const MEM_SLOTS_START = MEM_CHIP_SIZE - MEM_SLOT_COUNT * MEM_SLOT_SIZE;
+function slotMetaAddr(n) { return MEM_SLOTS_START + n * MEM_SLOT_SIZE; }
+function slotDataAddr(n) { return slotMetaAddr(n) + MEM_SLOT_META_SIZE; }
+
+// Slot meta record (14 bytes) - matches Memory::writeFirmwareMeta() exactly
+// (PU28-BOOT-CAN/User/Main/memory.cpp, read back by PU28-Timberline's own
+// Memory::readFirmwareMeta()): target address(4) + len(4) + CRC16(2) +
+// version(4), all little-endian. Unlike the restore header, this DOES carry
+// a target address - a slot's image is meant for some other device's own
+// flash (whatever address SlotsScreen's CAN relay will later copy it to),
+// not this panel's, so that address has to come from somewhere: the
+// server's per-version /profile endpoint, the same "flashBase" baked into
+// the published filename (<version>_0x<flashBase>.bin - see host/README.md).
+const MEM_SLOT_META_SIZE_BYTES = 14;
+
+// Type is always the version string's own first segment (this org's version
+// scheme is <type>.<subtype/voltage>.<...>.<...> - see host/README.md), so
+// there's never a separate type to track alongside a version string.
+function firmwareTypeOf(version) { return version.split('.')[0]; }
+
+async function fetchFirmwareProfile(version) {
+  const r = await fetch(`/firmware/${firmwareTypeOf(version)}/${version}/profile`);
+  if (!r.ok) throw new Error(`profile fetch failed: HTTP ${r.status}`);
+  const text = await r.text();
+  const m = /flashBase=0x([0-9A-Fa-f]+)/.exec(text);
+  if (!m) throw new Error('server profile response missing flashBase');
+  return { flashBase: parseInt(m[1], 16) };
+}
+
+function buildSlotMeta(flashBase, len, crc, version) {
+  const verParts = version.split('.').map(Number);
+  const meta = new Uint8Array(MEM_SLOT_META_SIZE_BYTES);
+  meta[0] = flashBase & 0xFF; meta[1] = (flashBase >>> 8) & 0xFF;
+  meta[2] = (flashBase >>> 16) & 0xFF; meta[3] = (flashBase >>> 24) & 0xFF;
+  meta[4] = len & 0xFF; meta[5] = (len >>> 8) & 0xFF;
+  meta[6] = (len >>> 16) & 0xFF; meta[7] = (len >>> 24) & 0xFF;
+  meta[8] = crc & 0xFF; meta[9] = (crc >>> 8) & 0xFF;
+  meta[10] = verParts[0] || 0; meta[11] = verParts[1] || 0;
+  meta[12] = verParts[2] || 0; meta[13] = verParts[3] || 0;
+  return meta;
+}
+
+// Panel backup/restore area, right before the slots above - a single fixed-purpose
+// region PU28-BOOT-CAN's bootloader auto-restores from on BOOT_MAGIC_UPDATE, NOT one
+// of the generic distribution slots. Mirrors PU28-Timberline's User/Memory/memory.h
+// (added there alongside this feature - that app never wrote here before).
+const MEM_BACKUP_META_SIZE = 0x10000;
+const MEM_BACKUP_DATA_SECTORS = 4;
+const MEM_BACKUP_DATA_SIZE = MEM_BACKUP_DATA_SECTORS * 0x10000;
+const MEM_BACKUP_SIZE = MEM_BACKUP_META_SIZE + MEM_BACKUP_DATA_SIZE;
+const MEM_BACKUP_META_ADDR = MEM_SLOTS_START - MEM_BACKUP_SIZE;
+const MEM_ADDRESS_BACKUP = MEM_BACKUP_META_ADDR + MEM_BACKUP_META_SIZE;
+const MEM_BACKUP_HEADER_SIZE = 16;
+const BACKUP_MAGIC_0 = 0xBB;
+const BACKUP_MAGIC_1 = 0xAA;
+
+// CRC-16/Modbus (poly 0xA001, init 0xFFFF, no final XOR) - matches PU28-BOOT-CAN's
+// calcCrc()/ADDRESS_CRC and server.js's crc16() bit-for-bit, the one checksum every
+// *stored* firmware-integrity check in this org uses. Distinct from memCrcStep()
+// above, which only verifies one BLE fragment survived transport intact - this one
+// goes into the restore header itself, exactly like Boot::saveBackup() computes it.
+function crc16Modbus(bytes) {
+  let crc = 0xFFFF;
+  for (let i = 0; i < bytes.length; i++) {
+    let b = bytes[i];
+    for (let bit = 0; bit < 8; bit++) {
+      const carry = crc & 1;
+      crc >>= 1;
+      if ((b & 1) !== carry) crc ^= 0xA001;
+      b >>= 1;
+    }
+  }
+  return crc & 0xFFFF;
+}
+
+function buildRebootPacket(mode) { // mirrors CAN PGN1 command 22's D[2] - see BluetoothHandler.cpp case 11
+  const b = pkt(); b[0] = PACKET_TYPE.REBOOT; b[1] = mode; return b;
+}
+
+let deviceTypeNames = {};
+async function loadDeviceTypeNames() {
+  try {
+    const r = await fetch('/device-types.json');
+    deviceTypeNames = await r.json();
+  } catch (e) { /* purely cosmetic - versions still list fine without names */ }
+}
+function firmwareDisplayName(version) {
+  const subtype = version.split('.').slice(0, 2).join('.'); // e.g. "126.3"
+  const name = deviceTypeNames[subtype];
+  return name ? `${version} — ${name}` : version;
+}
+
+function populateVersionSelect(sel, versions, emptyLabel) {
+  sel.innerHTML = '';
+  if (versions.length === 0) {
+    sel.innerHTML = `<option value="">${emptyLabel}</option>`;
+    return;
+  }
+  for (const v of versions) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = firmwareDisplayName(v);
+    sel.appendChild(opt);
+  }
+}
+
+// Every published 126.x version (this device's own type only) - feeds
+// renderRestorePanel()'s subtype filter. Self-update deliberately stays
+// scoped to one type/subtype (see Version.h) - unlike the slots dropdown
+// below, this one is NOT meant to show everything on the server.
+let allFirmwareVersions = [];
+
+async function fetchFirmwareVersions() {
+  try {
+    const r = await fetch(`/firmware/${FIRMWARE_TYPE}/versions`);
+    const data = await r.json();
+    allFirmwareVersions = Array.isArray(data.versions) ? data.versions : [];
+    renderRestorePanel();
+  } catch (e) {
+    console.error('fetchFirmwareVersions failed', e);
+  }
+}
+
+// Every published version across every type on the server (see server.js's
+// GET /firmware/versions) - the distribution-slots dropdown: a slot can hold
+// firmware for whatever CAN device it's meant to relay to next, so unlike
+// the restore picker above, this one is genuinely unfiltered.
+async function fetchAllFirmwareVersions() {
+  const sel = document.getElementById('fwVersionSelect');
+  try {
+    const r = await fetch('/firmware/versions');
+    const data = await r.json();
+    const versions = Object.values(data.types || {}).flat().sort(compareVersions);
+    populateVersionSelect(sel, versions, '(none published)');
+  } catch (e) {
+    sel.innerHTML = '<option value="">(failed to load — see console)</option>';
+    console.error('fetchAllFirmwareVersions failed', e);
+  }
+}
+
+// "126.3.0.28" -> "126.3" - the axis a self-update must stay within (logo x
+// language variant, see Version.h's VERSION_2 in PU28-Timberline). Everything
+// past that (the 3rd/4th bytes) is exactly what an update is meant to change.
+function panelSubtype() {
+  return state.panelVersion ? state.panelVersion.split('.').slice(0, 2).join('.') : null;
+}
+
+// Numeric, not lexicographic - "126.3.0.9" must sort below "126.3.0.28".
+function compareVersions(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+// render() runs on every incoming BLE packet (several a second once connected) -
+// renderRestorePanel() used to rebuild the <select>'s <option> list every single
+// call regardless of whether anything actually changed, which reset/closed the
+// dropdown out from under the user mid-click (visible as constant flicker,
+// impossible to pick anything). restoreRenderedKey caches what's currently in
+// the DOM (subtype + the exact version list) so the rebuild - and the value
+// reset that comes with it - only happens when that content genuinely changes,
+// never on a render() tick that has nothing new to show here.
+let restoreRenderedKey = null;
+
+function renderRestorePanel() {
+  const sel = document.getElementById('restoreVersionSelect');
+  const note = document.getElementById('restoreNote');
+  const btn = document.getElementById('restoreUpdateBtn');
+  const subtype = panelSubtype();
+  if (!subtype) {
+    if (restoreRenderedKey !== null) {
+      sel.innerHTML = '<option value="">(waiting for panel firmware info…)</option>';
+      btn.disabled = true;
+      restoreRenderedKey = null;
+    }
+    note.textContent = 'Connect and wait a few seconds for the panel to report its own firmware version.';
+    return;
+  }
+  const matching = allFirmwareVersions
+    .filter((v) => v.split('.').slice(0, 2).join('.') === subtype)
+    .sort(compareVersions).reverse(); // newest first
+  note.textContent = `Panel is running ${state.panelVersion} — showing only ${subtype}.x builds `
+    + `(self-update must stay within the same logo/language variant).`;
+
+  const key = subtype + '|' + matching.join(',');
+  if (key === restoreRenderedKey) return; // nothing actually changed - leave the DOM (and any open dropdown) alone
+  const previousValue = sel.value;
+  populateVersionSelect(sel, matching, `(no ${subtype}.x versions published)`);
+  if (matching.length > 0) {
+    sel.value = (restoreRenderedKey !== null && restoreRenderedKey.startsWith(subtype + '|') && matching.includes(previousValue))
+      ? previousValue  // keep the user's own pick across re-renders
+      : matching[0];   // subtype (or the published list) just changed - default to newest
+  }
+  restoreRenderedKey = key;
+  btn.disabled = matching.length === 0;
+}
+
+async function updateRestoreArea(version, btn, note) {
+  note.textContent = `Step 1/4 — downloading ${version} from server…`;
+  const r = await fetch(`/firmware/${FIRMWARE_TYPE}/${version}/firmware.bin`);
+  if (!r.ok) throw new Error(`server returned HTTP ${r.status}`);
+  const data = new Uint8Array(await r.arrayBuffer());
+  if (data.length > MEM_BACKUP_DATA_SIZE) {
+    throw new Error(`image is ${data.length}B, larger than the restore area's ${MEM_BACKUP_DATA_SIZE}B`);
+  }
+  note.textContent = `Step 1/4 — downloaded ${data.length} bytes.`;
+
+  const blocksNeeded = Math.ceil(data.length / 0x10000);
+  note.textContent = `Step 2/4 — erasing restore area (1 meta block + ${blocksNeeded} data block(s))…`;
+  await memErase(MEM_BACKUP_META_ADDR >>> 16);
+  for (let i = 0; i < blocksNeeded; i++) await memErase((MEM_ADDRESS_BACKUP >>> 16) + i);
+  note.textContent = `Step 2/4 — erased ${1 + blocksNeeded} block(s).`;
+
+  note.textContent = `Step 3/4 — transferring ${data.length} bytes over BLE…`;
+  const ok = await runMemUpload(btn, MEM_ADDRESS_BACKUP, data, {
+    wrap: 'restoreProgressWrap', bar: 'restoreProgressBar', text: 'restoreProgressText',
+    log: 'restoreFragLog', cancelBtn: 'restoreCancelBtn',
+  });
+  if (!ok) throw new Error('transfer did not complete — restore metadata not written, panel not touched');
+
+  const crc = crc16Modbus(data);
+  const verParts = version.split('.').map(Number);
+  const hdr = new Uint8Array(MEM_BACKUP_HEADER_SIZE).fill(0xFF);
+  hdr[0] = BACKUP_MAGIC_0; hdr[1] = BACKUP_MAGIC_1;
+  hdr[2] = data.length & 0xFF; hdr[3] = (data.length >>> 8) & 0xFF;
+  hdr[4] = (data.length >>> 16) & 0xFF; hdr[5] = (data.length >>> 24) & 0xFF;
+  hdr[6] = crc & 0xFF; hdr[7] = (crc >>> 8) & 0xFF;
+  hdr[8] = verParts[0] || 0; hdr[9] = verParts[1] || 0; hdr[10] = verParts[2] || 0; hdr[11] = verParts[3] || 0;
+  note.textContent = 'Step 4/4 — writing restore metadata (length/CRC16/version)…';
+  await writeMemoryFragment(MEM_BACKUP_META_ADDR, hdr);
+  note.textContent = 'Step 4/4 — metadata written.';
+  return { data, crc };
+}
+
+function wireServerFirmwareControls() {
+  loadDeviceTypeNames().then(() => { fetchFirmwareVersions(); fetchAllFirmwareVersions(); });
+
+  document.getElementById('restoreUpdateBtn').onclick = async () => {
+    const version = document.getElementById('restoreVersionSelect').value;
+    const note = document.getElementById('restoreNote');
+    const btn = document.getElementById('restoreUpdateBtn');
+    if (!version) return;
+    if (!confirm(`Update to ${version} now? This erases the current restore-area backup, writes `
+      + `the new image, then reboots the panel to apply it — the BLE connection will drop.`)) return;
+    btn.disabled = true;
+    await acquireWakeLock();
+    try {
+      const { data, crc } = await updateRestoreArea(version, btn, note);
+      note.textContent = `${version} staged (${data.length}B, CRC16 0x${crc.toString(16)}) — rebooting to apply…`;
+      queueWrite(buildRebootPacket(10));
+    } catch (e) {
+      note.textContent = 'Failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      releaseWakeLock();
+    }
+  };
+
+  document.getElementById('restoreApplyBtn').onclick = () => {
+    if (!confirm('Reboot the panel now and apply the staged restore-area update (if valid)? '
+      + 'The BLE connection will drop.')) return;
+    queueWrite(buildRebootPacket(10));
+  };
+
+  document.getElementById('fwLoadBtn').onclick = async () => {
+    const version = document.getElementById('fwVersionSelect').value;
+    const slot = parseInt(document.getElementById('fwSlotSelect').value, 10);
+    const info = document.getElementById('fwInfo');
+    const btn = document.getElementById('fwLoadBtn');
+    if (!version) { alert('No version selected'); return; }
+    btn.disabled = true;
+    await acquireWakeLock();
+    try {
+      info.textContent = `Step 1/4 — downloading ${version} from server…`;
+      const [r, profile] = await Promise.all([
+        fetch(`/firmware/${firmwareTypeOf(version)}/${version}/firmware.bin`),
+        fetchFirmwareProfile(version),
+      ]);
+      if (!r.ok) throw new Error(`server returned HTTP ${r.status}`);
+      const data = new Uint8Array(await r.arrayBuffer());
+      if (data.length > MEM_SLOT_DATA_SIZE) {
+        throw new Error(`image is ${data.length}B, larger than a slot's ${MEM_SLOT_DATA_SIZE}B data region`);
+      }
+      info.textContent = `Step 1/4 — downloaded ${data.length} bytes, target 0x${profile.flashBase.toString(16)}.`;
+
+      const blocksNeeded = Math.ceil(data.length / 0x10000);
+      info.textContent = `Step 2/4 — erasing slot ${slot} (1 meta block + ${blocksNeeded} data block(s))…`;
+      await memErase(slotMetaAddr(slot) >>> 16);
+      for (let i = 0; i < blocksNeeded; i++) await memErase((slotDataAddr(slot) >>> 16) + i);
+      info.textContent = `Step 2/4 — erased ${1 + blocksNeeded} block(s).`;
+
+      info.textContent = `Step 3/4 — transferring ${data.length} bytes over BLE…`;
+      const ok = await runMemUpload(btn, slotDataAddr(slot), data, {
+        wrap: 'fwProgressWrap', bar: 'fwProgressBar', text: 'fwProgressText',
+        log: 'fwFragLog', cancelBtn: 'fwCancelBtn',
+      });
+      if (!ok) throw new Error('transfer did not complete — slot metadata not written');
+
+      // CRC16/ARC over the exact bytes just confirmed written (per-fragment
+      // ×170771 checks during the transfer above already guarantee those
+      // landed correctly) - this is the DIFFERENT checksum the slot meta
+      // record itself stores and SlotsScreen's own crcOk()/PGN110 broadcast
+      // check against, not a re-verification of the transfer.
+      const crc = crc16Modbus(data);
+      info.textContent = `Step 4/4 — writing slot metadata (target 0x${profile.flashBase.toString(16)}, `
+        + `${data.length}B, CRC16 0x${crc.toString(16)}, v${version})…`;
+      await writeMemoryFragment(slotMetaAddr(slot), buildSlotMeta(profile.flashBase, data.length, crc, version));
+
+      info.textContent = `Done — slot ${slot} now holds ${version} (${data.length}B, target `
+        + `0x${profile.flashBase.toString(16)}). Ready to relay via SlotsScreen's "Burn" on the panel.`;
+    } catch (e) {
+      info.textContent = 'Failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      releaseWakeLock();
+    }
+  };
+
+  document.getElementById('fwSlotSelect').onchange = () => {
+    // Convenience: keep the manual-address field in sync so switching between
+    // "fetch from server" and "upload local file" against the same slot
+    // doesn't require recomputing the hex address by hand.
+    const slot = parseInt(document.getElementById('fwSlotSelect').value, 10);
+    document.getElementById('memUploadAddr').value = '0x' + slotDataAddr(slot).toString(16);
+  };
+}
+
 /* The day/night start times don't track pending — same simplification as
    the rest of the "flat" WORK fields, refreshed straight from telemetry on
    every render (unless the field is currently focused for editing). */
@@ -1230,6 +2410,7 @@ function renderSchedule() {
     return;
   }
   wireStaticControls();
+  wireMemoryControls();
   renderKnownDevices();
   render();
   tryAutoReconnect();

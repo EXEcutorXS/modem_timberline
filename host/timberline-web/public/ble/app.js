@@ -612,12 +612,27 @@ function buildFragInit(addr, len, crc32) {
 }
 // type is PACKET_TYPE.FRAG_DATA (fire-and-forget) or FRAG_DATA_ACK (device
 // always replies) - identical 20-byte payload either way, see bluetooth.h.
+//
+// 2026-09-08 hardening: the CRC16 used to cover only the data bytes, not the
+// index byte (b[1]) that decides where the firmware writes them - and this
+// packet type is exempt from the protocol-wide CRC-8 (CRC8_EXEMPT_TYPES,
+// below) precisely because byte 19 already holds this CRC16. On the bit-
+// banged SPI transport's own admitted lack of framing/resync, a single-byte
+// corruption landing on an index the firmware had ALREADY received would
+// silently overwrite good data with garbage while leaving that index's
+// bitmap bit set - invisible to the TYPE_FRAG_MAP round trip, only caught
+// (if at all) by the whole-fragment CRC32 at TYPE_FRAG_PROGRAM, forcing a
+// full 2048-byte fragment resend. Longer firmware images mean more mini-
+// fragments and proportionally higher odds of hitting exactly this case -
+// matches the observed correlation between long files and aborted
+// transfers. Fixed by folding the index into the same CRC16 - see
+// BluetoothHandler.cpp's storeFragMini() for the matching firmware change.
 function buildFragData(type, index, bytes, off, validCount) {
   const b = pkt();
   b[0] = type;
   b[1] = index;
   for (let i = 0; i < validCount; i++) b[2 + i] = bytes[off + i];
-  const crc = crc16Modbus(bytes.subarray(off, off + validCount)); // same CRC16/ARC as the firmware's crc16Of()
+  const crc = crc16Modbus(b.subarray(1, 2 + validCount)); // index (b[1]) + data - same CRC16/ARC as the firmware's crc16Of()
   b[18] = (crc >>> 8) & 0xFF;
   b[19] = crc & 0xFF;
   return b;

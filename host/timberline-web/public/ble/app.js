@@ -2150,6 +2150,40 @@ function crc16Modbus(bytes) {
   return crc & 0xFFFF;
 }
 
+// PU28-BOOT-CAN's calcCrc() (User/Main/main.c) computes the restore-area
+// verification CRC over the flash region straight after copying the backup
+// in, but with two ranges forced to 0xFF instead of read as-is - the
+// settings sector and the version/CRC marker block, both of which are
+// expected to legitimately differ from whatever byte values happen to sit
+// there in the uploaded .bin (settings get rewritten at runtime; the
+// version marker is compile-time metadata the bootloader deliberately
+// doesn't hold the app to). crc16Modbus(data) alone reproduces neither
+// exclusion, so the declared CRC in our restore-area header NEVER matched
+// what the bootloader recomputes after restoring - "CRC mismatch!" on
+// literally every self-update, 100% of the time, found 2026-09-09. Mirrors
+// the bootloader's own constants (PU28-BOOT-CAN's main.h), which have
+// drifted from this app's own core.h ADDRESS_SETTINGS (0x0803F800) - the
+// bootloader's compiled value (0x0803E800) is what actually matters here,
+// not this repo's.
+const BOOT_MAIN_PROGRAM_START = 0x0800C000;
+const BOOT_ADDRESS_SETTINGS = 0x0803E800;
+const BOOT_ADDRESS_SETTINGS_SIZE = 0x800;
+const BOOT_ADDRESS_CRC = 0x0801C000;
+const BOOT_ADDRESS_CRC_SIZE = 16;
+
+function maskForBootloaderCrc(data) {
+  const masked = data.slice();
+  const blank = (absStart, size) => {
+    const relStart = absStart - BOOT_MAIN_PROGRAM_START;
+    const start = Math.max(0, relStart);
+    const end = Math.min(masked.length, relStart + size);
+    for (let i = start; i < end; i++) masked[i] = 0xFF;
+  };
+  blank(BOOT_ADDRESS_SETTINGS, BOOT_ADDRESS_SETTINGS_SIZE);
+  blank(BOOT_ADDRESS_CRC, BOOT_ADDRESS_CRC_SIZE);
+  return masked;
+}
+
 function buildRebootPacket(mode) { // mirrors CAN PGN1 command 22's D[2] - see BluetoothHandler.cpp case 11
   const b = pkt(); b[0] = PACKET_TYPE.REBOOT; b[1] = mode; return b;
 }
@@ -2299,7 +2333,10 @@ async function updateRestoreArea(version, btn, note) {
   });
   if (!ok) throw new Error('transfer did not complete — restore metadata not written, panel not touched');
 
-  const crc = crc16Modbus(data);
+  // Masked, NOT raw data - see maskForBootloaderCrc()'s comment: the bootloader's
+  // own verification CRC blanks the settings/version-marker ranges, so the
+  // declared CRC here must match that, not a plain CRC of the uploaded bytes.
+  const crc = crc16Modbus(maskForBootloaderCrc(data));
   const verParts = version.split('.').map(Number);
   const hdr = new Uint8Array(MEM_BACKUP_HEADER_SIZE).fill(0xFF);
   hdr[0] = BACKUP_MAGIC_0; hdr[1] = BACKUP_MAGIC_1;

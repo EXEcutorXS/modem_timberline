@@ -41,13 +41,38 @@ class Timberline
 	   can target any device on the bus this way, not only MBC-2. */
 	enum { SEEN_DEVICE_MAX = 8 };
 	struct SeenDevice {
-		bool    active;
-		uint8_t type;
-		uint8_t address;
-		uint8_t version[4];
+		bool     active;
+		uint8_t  type;
+		uint8_t  address;
+		uint8_t  version[4];
+		uint32_t lastSeenTick; /* core.getTick() at the last recordSeenDevice()/
+		                          maybeQueryNewDevice() touch for this slot — see
+		                          expireStaleDevices() below. Refreshed on every
+		                          PGN=18 announcement regardless of whether the
+		                          version actually changed (recordSeenDevice()'s
+		                          own memcmp early-return only gates the MQTT
+		                          publish, not this). */
 	};
 	SeenDevice seenDevices[SEEN_DEVICE_MAX];
 	void recordSeenDevice(uint8_t type, uint8_t address, const uint8_t* version);
+
+	/* A device that goes quiet (unplugged, powered off, a bootloader that
+	   only ever spoke once during a one-off relay) used to stay in
+	   seenDevices[] — and in the retained "dev<type>_<addr>" MQTT topic the
+	   web UI's device list is built from — forever, until this modem itself
+	   rebooted. Called once per Work_C::handler() tick (see work.cpp);
+	   frees the slot and clears its retained topic (publishes "", now safe
+	   — see doMqttPub()'s own 2026-09-12 comment on why an empty payload
+	   used to silently misfire) once nothing has refreshed lastSeenTick for
+	   STALE_TIMEOUT_MS. Slot reuse for a genuinely new device at the same
+	   address was already unaffected by this — that path never depended on
+	   the old slot ever being marked inactive first. */
+	enum { STALE_TIMEOUT_MS = 20000 }; /* ~4x the protocol's own 5s PGN=18 cadence
+	                                       (see work.cpp's canBroadcast()) — enough
+	                                       slack for one or two missed announcements
+	                                       without falsely expiring a device that's
+	                                       still actually there. */
+	void expireStaleDevices(void);
 
 	/* Passive discovery: called for every incoming CAN frame (any PGN,
 	   see ProcessCanMessage) with its sender's type+address. The first

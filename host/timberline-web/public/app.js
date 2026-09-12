@@ -1149,6 +1149,16 @@ function getSeenDevices() {
   for (const k in rawStatus) {
     const m = /^dev(\d+)_(\d+)$/.exec(k);
     if (!m) continue;
+    /* Empty value = the modem expired this device (Timberline::
+       expireStaleDevices(), added 2026-09-12 — a device that stopped
+       announcing itself over CAN used to linger here forever, since MQTT
+       retains the last "dev<type>_<addr>" value and this object only ever
+       accumulates keys). The modem clears the retained topic by publishing
+       "" for it; the key itself still exists in rawStatus (retained-empty
+       still arrives as a message, not a delete), so the key's presence
+       alone isn't "still on the bus" any more — the value has to be
+       non-empty too. */
+    if (!rawStatus[k]) continue;
     const parts = rawStatus[k].split('.');
     out.push({
       type: parseInt(m[1], 10), address: parseInt(m[2], 10),

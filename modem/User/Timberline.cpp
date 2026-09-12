@@ -513,6 +513,7 @@ void Timberline::recordSeenDevice(uint8_t type, uint8_t address, const uint8_t* 
         slot->address = address;
         memset(slot->version, 0xFF, 4);  /* guarantees the memcmp below sees a change on first sight */
     }
+    slot->lastSeenTick = core.getTick(); /* every call, not just on a real version change — see expireStaleDevices() */
     if (memcmp(slot->version, version, 4) == 0) return;
     memcpy(slot->version, version, 4);
 
@@ -551,8 +552,32 @@ void Timberline::maybeQueryNewDevice(uint8_t type, uint8_t address) {
     slot->type    = type;
     slot->address = address;
     memset(slot->version, 0xFF, 4);
+    slot->lastSeenTick = core.getTick(); /* don't let it look already-stale before the PGN=6 reply ever lands */
 
     can.SendMessage(canId(6, type, address), 0,18, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);
+}
+
+/* See STALE_TIMEOUT_MS's own comment in Timberline.h. Runs every
+   Work_C::handler() tick (work.cpp) — cheap, just a fixed 8-slot scan, no
+   need to pace it further. */
+void Timberline::expireStaleDevices(void) {
+    uint32_t now = core.getTick();
+    for (int i = 0; i < SEEN_DEVICE_MAX; i++) {
+        if (!seenDevices[i].active) continue;
+        if ((now - seenDevices[i].lastSeenTick) < STALE_TIMEOUT_MS) continue;
+
+        char topic[16];
+        int  n = 0;
+        const char* pre = "dev";
+        while (*pre) topic[n++] = *pre++;
+        n = appendUint(topic, n, seenDevices[i].type);
+        topic[n++] = '_';
+        n = appendUint(topic, n, seenDevices[i].address);
+        topic[n] = 0;
+        modem.mqttPublish(topic, ""); /* retained + empty = broker deletes the retained message (see doMqttPub()) */
+
+        seenDevices[i].active = false;
+    }
 }
 
 

@@ -1753,7 +1753,23 @@ void Modem::doMqttPub(void) {
         if (atCmd(topicBuf, 3000)) { if (answer & ANS_ERROR) pubFailed = true; step++; }
         break;
     case 2: {
+        /* A genuinely empty value (e.g. "otaStaged"/"otaError" clearing back
+           to "nothing") means len=0 here — confirmed on real hardware
+           2026-09-12 that AT+CMQTTPAYLOAD=0,0 is rejected outright (ERROR),
+           yet the AT+CMQTTPUB right after it still reports success,
+           publishing whatever was left over in the module's payload buffer
+           from the *previous* publish instead of actually clearing the
+           topic. Skip straight to the PUB step (case 4) for an empty value
+           — the module already has no payload staged for this client
+           (nothing else ever calls CMQTTPAYLOAD without following through
+           to PUB in this state machine), so publishing without (re)staging
+           one sends a genuine zero-length payload, which is what a retained
+           "cleared" topic actually needs to look like on the wire (MQTT
+           spec: zero-length retained payload deletes the retained message
+           — a 1-byte placeholder would just retain *that* byte forever
+           instead). */
         int n = (int)strlen(mqttScratch.pubQueue[pubIdx].value);
+        if (n == 0) { step = 4; break; }
         int cn = 0;
         const char* pre = "AT+CMQTTPAYLOAD=0,";
         while (*pre) cmdBuf[cn++] = *pre++;

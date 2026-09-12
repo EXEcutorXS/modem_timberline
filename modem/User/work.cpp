@@ -29,6 +29,7 @@ void Work_C::handler(void) {
     dataActualizator.handler();
     timberline.mqttActualizerHandler();
     timberline.mqttTelemetryHandler();
+    timberline.expireStaleDevices();
     canRelay.handler();
 
     /* canBroadcast() (periodic PGN18/60 + the string round-robin it drives)

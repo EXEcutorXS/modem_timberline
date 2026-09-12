@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 14
+#define VERSION_4 15
 /*
 
 Адрес        Длина      Назначение региона
@@ -18,7 +18,18 @@
 0x20000000   ~144 KB    RAM (рабочая область загрузчика/приложения)
 0x20023FFC     4 B      BOOT_MAGIC_ADDR — флаг "войти в загрузчик / в приложение"
 
+//TODO
+//Датчик температуры добавить в телеметрию
+//Добавить управление нагрузками
+//Добавить синхронизацию времени
 
+121.0.0.15
+Devices that go quiet on the CAN bus now expire from the device list after
+~20s instead of staying forever (Timberline::expireStaleDevices) - fixes
+the retained "dev<type>_<addr>" topic never clearing. Also fixed
+AT+CMQTTPAYLOAD=0,0 being rejected by the module for any empty-value
+publish (otaStaged/otaError/etc "" clears were silently republishing stale
+content instead) - doMqttPub() now skips straight to PUB for an empty value
 121.0.0.14
 OTA firmware fetch no longer hits the app's own :3000 directly — nginx now
 carves out a plain-HTTP exception for /firmware/ requests on port 80

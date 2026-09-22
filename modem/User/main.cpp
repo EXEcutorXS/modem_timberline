@@ -7,6 +7,7 @@
 #include "randomize.h"
 #include "flash.h"
 #include "work.h"
+#include "ntc.h"
 #include "hw_config.h"
 #include "usb_lib.h"
 #include "usb_pwr.h"
@@ -43,6 +44,7 @@ int main(void)
     led.initialize();
     button.initialize();
     randomize.initialize();
+    ntc.initialize();
 
     Set_System();
     USB_Interrupts_Config();
@@ -58,5 +60,6 @@ int main(void)
         button.handler();
         led.handler();
         work.handler();
+        ntc.handler();
     }
 }

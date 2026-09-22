@@ -86,7 +86,7 @@ const I18N = {
     tankTemp: 'Tank temp', heaterTemp: 'Heater temp', voltage: 'Voltage', outdoorTemp: 'Outdoor temp',
     heaterState: 'Heater state', domesticWater: 'Domestic water', liquidLevel: 'Liquid level',
     pumpsRunning: 'Pumps running', floorTemp: 'Floor temp', floorPump: 'Floor pump',
-    engineTemp: 'Engine temp', enginePump: 'Engine pump', errorsLabel: 'Errors',
+    engineTemp: 'Engine temp', enginePump: 'Engine pump', errorsLabel: 'Errors', extTemp: 'External temp',
     onState: 'ON', offState: 'off', flowing: 'flowing', noneLabel: 'none',
     heaterIdle: 'Idle', heaterBlowing: 'Blowing', heaterIgnition: 'Ignition/warming', heaterWorkOnPower: 'Work on power',
     pump1: 'Pump 1', pump2: 'Pump 2', pump3: 'Pump 3', pump4: 'Pump 4',
@@ -129,7 +129,7 @@ const I18N = {
     tankTemp: 'Температура бака', heaterTemp: 'Температура котла', voltage: 'Напряжение', outdoorTemp: 'Уличная температура',
     heaterState: 'Состояние котла', domesticWater: 'Горячая вода', liquidLevel: 'Уровень жидкости',
     pumpsRunning: 'Работают насосы', floorTemp: 'Температура пола', floorPump: 'Насос пола',
-    engineTemp: 'Температура двигателя', enginePump: 'Насос двигателя', errorsLabel: 'Ошибки',
+    engineTemp: 'Температура двигателя', enginePump: 'Насос двигателя', errorsLabel: 'Ошибки', extTemp: 'Внешний датчик',
     onState: 'ВКЛ', offState: 'выкл', flowing: 'есть проток', noneLabel: 'нет',
     heaterIdle: 'Ожидание', heaterBlowing: 'Обдув', heaterIgnition: 'Розжиг/прогрев', heaterWorkOnPower: 'Работа на мощности',
     pump1: 'Насос 1', pump2: 'Насос 2', pump3: 'Насос 3', pump4: 'Насос 4',
@@ -172,7 +172,7 @@ const I18N = {
     tankTemp: 'Tanktemperatur', heaterTemp: 'Kesseltemperatur', voltage: 'Spannung', outdoorTemp: 'Außentemperatur',
     heaterState: 'Kesselstatus', domesticWater: 'Warmwasser', liquidLevel: 'Flüssigkeitsstand',
     pumpsRunning: 'Laufende Pumpen', floorTemp: 'Fußbodentemperatur', floorPump: 'Fußbodenpumpe',
-    engineTemp: 'Motortemperatur', enginePump: 'Motorpumpe', errorsLabel: 'Fehler',
+    engineTemp: 'Motortemperatur', enginePump: 'Motorpumpe', errorsLabel: 'Fehler', extTemp: 'Externe Temp.',
     onState: 'EIN', offState: 'aus', flowing: 'Durchfluss', noneLabel: 'keine',
     heaterIdle: 'Bereit', heaterBlowing: 'Gebläse', heaterIgnition: 'Zündung/Aufwärmen', heaterWorkOnPower: 'Volllast',
     pump1: 'Pumpe 1', pump2: 'Pumpe 2', pump3: 'Pumpe 3', pump4: 'Pumpe 4',
@@ -328,7 +328,7 @@ const buttonState = {};
 const connectedState = {};
 const rawStatus = {};
 
-/* Mirrors the 20-byte packed struct built in Timberline::mqttTelemetryHandler
+/* Mirrors the 21-byte packed struct built in Timberline::mqttTelemetryHandler
    (modem/User/Timberline.cpp) — byte-for-byte, keep the two in sync.
    Per-zone current temp/fan speed live here (zoneFanPwm/zoneCurrentTemp),
    not in the "zn<N>" actual topics (parseZoneStatus() below) — deliberately:
@@ -341,7 +341,7 @@ const rawStatus = {};
 function decodeTelemetry(b64) {
   try {
     const bin = atob(b64);
-    if (bin.length < 20) return null;
+    if (bin.length < 21) return null;
     const raw = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) raw[i] = bin.charCodeAt(i);
     const i8 = (v) => (v > 127 ? v - 256 : v);
@@ -364,6 +364,12 @@ function decodeTelemetry(b64) {
       engineTemp: i8(raw[18]),
       floorPumpState: !!(flags2 & 1),
       enginePumpState: !!((flags2 >> 1) & 1),
+      /* Optional external NTC on the modem's own A1 pin (see Library/Ntc
+         on the firmware side) - byte 20 is meaningless whenever this bit
+         is clear, so extTemp is left undefined rather than a misleading
+         i8(raw[20]) in that case; check extTempConnected first. */
+      extTempConnected: !!((flags2 >> 2) & 1),
+      extTemp: ((flags2 >> 2) & 1) ? i8(raw[20]) : undefined,
     };
   } catch (e) {
     console.error('bad telemetry payload', e);
@@ -1089,6 +1095,12 @@ function renderStatusTable() {
   if (connectedState.engineConnected === '1') {
     rows += statusRow(t('engineTemp'), `${tel.engineTemp}°`);
     rows += statusRow(t('enginePump'), tel.enginePumpState ? t('onState') : t('offState'));
+  }
+  /* Optional external NTC (modem's own A1 pin) - unlike floor/engine, its
+     "installed" bit lives inside this same telemetry blob (extTempConnected,
+     flags2 bit 2), not a separate connectedState topic - see decodeTelemetry(). */
+  if (tel.extTempConnected) {
+    rows += statusRow(t('extTemp'), `${tel.extTemp}°`);
   }
   if (errors && errors !== '0') {
     rows += `<tr class="errors-row"><td colspan="2">${t('errorsLabel')}: ${errors}</td></tr>`;

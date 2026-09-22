@@ -10,6 +10,7 @@
 #include "core.h"
 #include "flash.h"
 #include "log.h"
+#include "ntc.h"
 
 #include <string.h>
 
@@ -56,9 +57,11 @@ void Work_C::handler(void) {
  *       one, same pattern as sub-packet 1
  *   1 — settings flags — sent on change by DataActualizator, plus resent
  *       here every 10 s in case a panel missed the change-triggered one
- *   2 — operator code (numeric MCC+MNC, ASCII digits) — only when the
- *       operator isn't in the operator_names.cpp table; if it is, the
- *       resolved name is pushed instead via STRID_OPERATOR_NAME (PGN61/62)
+ *   2 — operator code: MCC/MNC as two big-endian Uint16 plus an MNC
+ *       digit-count byte (2 or 3) — always sent, even once the operator
+ *       resolves to a name (pushed separately via STRID_OPERATOR_NAME,
+ *       PGN61/62, when that happens) — shown together on the panel so the
+ *       resolved name can be cross-checked against the raw code
  *   3 — LAC + Cell ID
  *   Sub-packets 2-3 rarely change, sent every 10 s.
  * IMEI (and other long/variable strings) are no longer packed into PGN60 —
@@ -82,16 +85,20 @@ void Work_C::canBroadcast(void) {
      *   (only meaningful when useInternet && isInternetConnected). D[2]=CSQ.
      *   D[3] = networkAcT, raw <AcT> from the last +COPS? poll (real
      *   network tech — the panel buckets it into 2G/3G/4G for display).
+     *   D[4] = optional external NTC on A1 (see Library/Ntc), same
+     *   value+75 offset as every other temperature on this protocol
+     *   (floorTemperature/engineTemperature etc. — see Timberline.cpp),
+     *   0xFF when ntc.connected is false (sensor not wired up).
      *   Recomputed every tick (cheap — a handful of bitfield reads) and
      *   compared against the last sent value so a genuine transition
      *   (just registered, internet came up, MQTT connected/dropped) reaches
      *   the panel right away — confirmed on real hardware that relying on
      *   the fixed periodic send alone left the panel's modem-status icon
-     *   showing a stale colour for up to ~5s after the real change. CSQ/AcT
-     *   changing on their own doesn't trigger a resend — they're covered by
-     *   the periodic tick below, and diffing them here would spam a resend
-     *   on every signal-strength wobble even though nothing meaningful
-     *   (registration/internet/mqtt) actually changed. */
+     *   showing a stale colour for up to ~5s after the real change. CSQ/AcT/
+     *   modem temp changing on their own don't trigger a resend — they're
+     *   covered by the periodic tick below, and diffing them here would spam
+     *   a resend on every signal-strength wobble even though nothing
+     *   meaningful (registration/internet/mqtt) actually changed. */
     uint8_t d1 = (uint8_t)(  (modem.network.isRegistered ? 1u : 0u)
                             | ((modem.network.isRoaming   ? 1u : 0u) << 2)
                             | ((modem.internet.isInternetConnected ? 1u : 0u) << 4)
@@ -101,7 +108,9 @@ void Work_C::canBroadcast(void) {
         prevD1 = d1;
         timer = core.getTick();
         can.SendMessage(id60,
-            0, d1, modem.network.csq, modem.network.networkAcT, 0xFF, 0xFF, 0xFF, 0xFF);
+            0, d1, modem.network.csq, modem.network.networkAcT,
+            ntc.connected ? (uint8_t)(ntc.temperature + 75) : 0xFF,
+            0xFF, 0xFF, 0xFF);
     }
 
     /* Sub-packet 4: auto-registration status (see doAutoRegister() in
@@ -154,8 +163,11 @@ void Work_C::canBroadcast(void) {
         /* Sub-packet 1: settings flags — periodic safety-net resend. */
         dataActualizator.resendSettings();
 
-        /* Sub-packet 2: operator code, up to 5 ASCII digits (MCC+MNC) —
-           only sent when the operator isn't resolved to a name below. */
+        /* Operator NAME (PGN61/62 string) — sent whenever it's resolved and
+           has changed since the last send. Independent of sub-packet 2
+           below now (used to be an if/else: the code only went out while
+           the name was unresolved — see that block's own comment for why
+           that changed). */
         static char lastOperatorName[24] = {0};
         if (modem.network.operatorName[0]) {
             if (strcmp(lastOperatorName, modem.network.operatorName) != 0) {
@@ -167,12 +179,47 @@ void Work_C::canBroadcast(void) {
             }
         } else {
             lastOperatorName[0] = 0;
-            char op[5] = {0xFF,0xFF,0xFF,0xFF,0xFF};
-            for (uint8_t i = 0; i < 5 && modem.network.operatorCode[i]; i++)
-                op[i] = modem.network.operatorCode[i];
-            can.SendMessage(id60,
-                2, op[0], op[1], op[2], op[3], op[4], 0xFF, 0xFF);
         }
+
+        /* Sub-packet 2: operator code as MCC/MNC, two big-endian Uint16 plus
+           an MNC digit-count byte — binary instead of the previous 5 raw
+           ASCII digits (didn't match this protocol's own conventions —
+           every other multi-byte field here, LAC/CellID right below
+           included, is binary). Parsed from network.operatorCode (the
+           plain digit string AT+COPS reports, e.g. "25001") rather than
+           replacing that string's own storage — it's still used as-is for
+           the operator_names.cpp lookup and the Deutsche-Telekom-APN
+           special case (see Modem.cpp).
+
+           D[5] = MNC digit count (2 or 3 — 3GPP allows both; derived here
+           from how many characters are actually left in the string after
+           MCC's fixed 3 digits, exactly what AT+COPS itself reported).
+           Genuinely needed, not cosmetic: MNC "01" (2 digits) and a
+           hypothetical 3-digit MNC "001" are different real PLMN codes
+           that both parse to the numeric value 1 — a receiver formatting
+           this back into the human-recognizable 5/6-digit code (e.g.
+           Beeline RU = MCC 250 + MNC 01 = "25001", not "2501") needs the
+           original width to zero-pad correctly, not just the value.
+
+           Sent unconditionally on this same 10s tick now (was: only while
+           operatorName was empty) — there's real diagnostic value either
+           way (lets the code be cross-checked against the resolved name
+           right on the panel screen, see ModemInfo.cpp's DrawOperator()),
+           and it's only 5 bytes now instead of an ASCII string, so no
+           bandwidth reason left to suppress it once a name is known. 0/0/0
+           while operatorCode itself is still empty (not yet queried) — no
+           separate "unknown" sentinel, same as LAC/CellID below; no real
+           MCC is ever 000. */
+        uint16_t mcc = 0, mnc = 0;
+        uint8_t  mncDigits = 0;
+        {
+            const char* p = modem.network.operatorCode;
+            uint8_t i = 0;
+            for (; i < 3 && p[i]; i++) mcc = (uint16_t)(mcc * 10 + (uint16_t)(p[i] - '0'));
+            for (; p[i]; i++) { mnc = (uint16_t)(mnc * 10 + (uint16_t)(p[i] - '0')); mncDigits++; }
+        }
+        can.SendMessage(id60,
+            2, (uint8_t)(mcc>>8), (uint8_t)mcc, (uint8_t)(mnc>>8), (uint8_t)mnc, mncDigits, 0xFF, 0xFF);
 
         /* Sub-packet 3: LAC (16-bit) + Cell ID (32-bit), big-endian */
         can.SendMessage(id60,

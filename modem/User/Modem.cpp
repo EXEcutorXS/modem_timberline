@@ -804,6 +804,34 @@ void Modem::doIdle(void) {
         prevForce2gOnly = config.force2gOnly;
     }
 
+    /* Internet-down watchdog. Some carriers/cells can leave the module's
+       TCP/IP stack wedged in a state the plain periodic retry further down
+       (timers.net — just ST_INIT_NET, no teardown first) never recovers
+       from on its own, confirmed on real hardware: internet stayed down
+       indefinitely until someone manually toggled config.force2gOnly off
+       and back on, which works only because that path (just above) does a
+       real AT+CGACT=0 teardown before reiniting, not because 2G itself
+       matters. Once internet has been down continuously for 10 minutes —
+       long past any normal registration/retry delay — force that same
+       teardown+reinit automatically instead of waiting on a person to
+       notice and toggle it by hand. Tracked here (not as an InternetState
+       member) since it's pure idle-loop bookkeeping, same as
+       prevInternetAllowed/prevForce2gOnly above. */
+    static uint32_t internetDownSince = 0;
+    if (internetAllowed && !internet.isInternetConnected) {
+        if (internetDownSince == 0) {
+            internetDownSince = now;
+        } else if ((now - internetDownSince) >= 600000) { /* 10 min */
+            internetDownSince = now; /* restart the window - don't re-fire every idle pass while this teardown+reinit is itself in flight */
+            mqttScratch.netTeardownThenReinit = true;
+            if (mqtt.connected) { mqttScratch.teardownThenNet = true; setState(ST_MQTT_TEARDOWN); return; }
+            setState(ST_NET_TEARDOWN);
+            return;
+        }
+    } else {
+        internetDownSince = 0;
+    }
+
     /* Internet dropped out from under an active MQTT session — tear it down;
        doCheckInternet()'s own self-heal will bring the PDP context back, and
        the retry timer below will restart MQTT once internet.isInternetConnected again. */

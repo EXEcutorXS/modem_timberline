@@ -8,6 +8,7 @@
 #include "flash.h"
 #include "log.h"
 #include "core.h"
+#include "ntc.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1700,7 +1701,7 @@ void Timberline::mqttActualizerHandler(void) {
 
 /* ── mqttTelemetryHandler ────────────────────────────────────────────────
    Fast-changing status fields (temperatures, fan speeds, pump states, ...)
-   packed into one 20-byte struct and base64-encoded into a single
+   packed into one 21-byte struct and base64-encoded into a single
    "telemetry" topic, published unconditionally every
    modem.mqtt.telemetryIntervalSec seconds (5-60, default 15, settable live via
    cmd/desired/telemetryInt — see onMqttCommandReceived() and
@@ -1731,7 +1732,13 @@ void Timberline::mqttActualizerHandler(void) {
      12-16 zoneCurrentTemp[0..4] (int8 each)
      17   floorTemperature (int8)
      18   engineTemperature (int8)
-     19   flags2: bit 0 floorPumpState, bit 1 enginePumpState, bits 2-7 spare
+     19   flags2: bit 0 floorPumpState, bit 1 enginePumpState, bit 2 ntc.connected
+          (byte 20 is meaningless while this is clear — same "optional
+          hardware" convention as floorPumpState/enginePumpState above,
+          just one flag bit instead of a whole extra byte), bits 3-7 spare
+     20   ntc.temperature (int8) — optional external NTC on A1, see
+          Library/Ntc; garbage/stale whenever flags2 bit 2 is clear, so a
+          reader must check that bit before trusting this byte at all
    errors[] is deliberately NOT included here — see the CSV "errors" topic
    above; it's a rare event, not worth the binary/base64 treatment. */
 void Timberline::mqttTelemetryHandler(void) {
@@ -1740,7 +1747,7 @@ void Timberline::mqttTelemetryHandler(void) {
     if (!modem.mqtt.connected || (now - timerTelemetry) < (uint32_t)modem.mqtt.telemetryIntervalSec * 1000) return;
     timerTelemetry = now;
 
-    uint8_t raw[20];
+    uint8_t raw[21];
     raw[0] = (uint8_t)tankTemperature;
     raw[1] = (uint8_t)(int8_t)heaters.Instances[mainHeaterNum].Tliquid;
 
@@ -1765,7 +1772,9 @@ void Timberline::mqttTelemetryHandler(void) {
     raw[17] = (uint8_t)floorTemperature;
     raw[18] = (uint8_t)engineTemperature;
     raw[19] = (uint8_t)((floorPumpState  ? 1 : 0)
-                       | ((enginePumpState ? 1 : 0) << 1));
+                       | ((enginePumpState ? 1 : 0) << 1)
+                       | ((ntc.connected   ? 1 : 0) << 2));
+    raw[20] = (uint8_t)ntc.temperature;
 
     char b64[36];
     base64Encode(raw, sizeof(raw), b64);

@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 15
+#define VERSION_4 16
 /*
 
 Адрес        Длина      Назначение региона
@@ -23,6 +23,10 @@
 //Добавить управление нагрузками
 //Добавить синхронизацию времени
 
+121.0.0.16
+Internet 10 minututes watchdow added
+Temperature sensor enabled
+New MNC/MCC CAN Protocol
 121.0.0.15
 Devices that go quiet on the CAN bus now expire from the device list after
 ~20s instead of staying forever (Timberline::expireStaleDevices) - fixes

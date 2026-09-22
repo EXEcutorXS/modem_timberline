@@ -473,7 +473,7 @@ const SECTIONS = { ru: [
     [240,120,320,180,"Язык интерфейса","См. раздел «Язык интерфейса»."],
     [80,180,160,240,"Оформление","Стиль барабана + цветовая тема. См. раздел «Оформление»."],
     [160,180,240,240,"Версии прошивки","Прямой путь, минуя «Текущие показания». См. раздел «Версии прошивки»."],
-    [240,180,320,240,"Модем","Видна только при подключении модема."],
+    [240,180,320,240,"Модем","Видна только при подключении модема. См. раздел «Статус модема»."],
   ],
   extra:`<div class="note">Плитка левого нижнего угла (ряд 4, колонка 1) намеренно пустая — раньше здесь был ярлык отсека прошивки, сейчас он перенесён на экран «Версии прошивки» (кнопка справа внизу того экрана).</div>`
 },
@@ -690,6 +690,70 @@ const SECTIONS = { ru: [
     <div><b>Element</b>наработка ТЭНа</div>
   </div>`
 },
+{
+  id:"modeminfo", tag:"Экран 16 · статус модема", title:"Статус модема",
+  access:"Меню → плитка «Модем» (видна только при подключённом модеме), либо главный экран → значок модема в шапке.",
+  lede:"Регистрация в сотовой сети, роуминг, уровень сигнала, оператор, IMEI и последнее полученное SMS. Две кнопки внизу ведут на статус интернета/MQTT и на настройки модема.",
+  img:"16_modem_info.png",
+  hot:[
+    [0,190,50,240,"Назад","Возврат в меню."],
+    [140,195,180,235,"Статус интернета","См. раздел «Статус интернета»."],
+    [275,195,315,235,"Настройки","См. раздел «Настройки модема»."],
+  ],
+  extra:`<div class="readonly-grid">
+    <div><b>Registered</b>зарегистрирован ли модем в сотовой сети</div>
+    <div><b>Roaming</b>идёт ли сейчас роуминг</div>
+    <div><b>Signal</b>уровень сигнала CSQ, 0–31 (<code>--</code> — неизвестен)</div>
+    <div><b>Operator</b>имя оператора либо его код, если имя ещё не пришло</div>
+    <div><b>IMEI</b>серийный номер модуля</div>
+    <div><b>Last SMS</b>номер отправителя; текст последнего SMS — четырьмя строками ниже</div>
+  </div>
+  <div class="note">Все поля обновляются сами по себе по мере поступления данных от модема — отдельного запроса/обновления с этого экрана не требуется.</div>`
+},
+{
+  id:"modemsettings", tag:"Экран 17 · настройки модема", title:"Настройки модема",
+  access:"Экран «Статус модема» → значок шестерёнки (правая нижняя кнопка).",
+  lede:"Пять переключателей поведения модема. Кнопки «Применить» нет — каждое касание сразу уходит в модем по CAN.",
+  img:"17_modem_settings.png",
+  hot:[
+    [5,10,315,43,"Только SMS","Модем работает только через SMS-команды, без мобильного интернета."],
+    [5,48,315,81,"Только 2G","Запрещает 3G/4G — модем всегда цепляется только к 2G."],
+    [5,86,315,119,"Роуминг","Разрешает регистрацию в сети роуминга."],
+    [5,124,315,157,"SMS неиспр.","Присылать SMS-уведомление при появлении ошибки."],
+    [5,162,315,195,"Подтв.команд","Присылать SMS-подтверждение на каждую принятую SMS-команду."],
+    [0,190,50,240,"Назад","Возврат на экран «Статус модема»."],
+  ]
+},
+{
+  id:"modeminternet", tag:"Экран 18 · статус интернета", title:"Статус интернета",
+  access:"Экран «Статус модема» → значок земного шара (средняя нижняя кнопка).",
+  lede:"Подключение к интернету и MQTT-брокеру: технология сети, адрес проверки связи, брокер, логин, пароль модема.",
+  img:"18_modem_internet.png",
+  hot:[
+    [0,190,50,240,"Назад","Возврат на экран «Статус модема»."],
+    [50,190,150,240,"QR / REG","Один и тот же слот, три состояния: <b>QR</b> — открывает QR-код ссылки регистрации, если она уже известна (см. раздел «QR-код привязки»); <b>REG</b> — если модем ещё вообще не настроен (нет логина) и ссылки ещё нет, запускает автоматическую регистрацию (<span class=\"sub\">«...» — запрос выполняется, «!» коротко при ошибке</span>); ничего не показывается, если модем уже настроен, но ссылки пока нет."],
+  ],
+  extra:`<div class="readonly-grid">
+    <div><b>Internet</b>есть ли выход в интернет</div>
+    <div><b>MQTT</b>подключение к брокеру</div>
+    <div><b>Mode</b>технология сети: 2G / 3G / 4G</div>
+    <div><b>Check URL</b>адрес, по которому проверяется реальный доступ в интернет</div>
+    <div><b>Broker</b>адрес MQTT-брокера</div>
+    <div><b>Login</b>логин модема на брокере</div>
+    <div><b>Password</b>пароль модема на брокере</div>
+  </div>
+  <div class="note">Ссылка для QR-кода появляется после SMS-команды <code>getlink</code> либо после успешной автоматической регистрации через кнопку REG.</div>`
+},
+{
+  id:"modemqr", tag:"Экран 19 · QR-код", title:"QR-код привязки",
+  access:"Экран «Статус интернета» → кнопка «QR» (видна только когда ссылка регистрации уже известна).",
+  lede:"Та же ссылка для входа в веб-приложение, что и в SMS-ответе на команду «getlink», — в виде QR-кода, чтобы не вводить её вручную на телефоне.",
+  img:"19_modem_qr.png",
+  hot:[
+    [0,190,50,240,"Назад","Возврат на экран «Статус интернета»."],
+  ],
+  extra:`<div class="note">Если ссылка ещё не известна, вместо кода показывается подсказка отправить SMS с командой <code>getlink</code> — но открыть этот экран в таком состоянии всё равно нельзя: кнопка на предыдущем экране просто не появляется, пока ссылки нет (см. раздел «Статус интернета»).</div>`
+},
 ], en: [
 {
   id:"home", tag:"Screen 1 · home", title:"Home screen",
@@ -739,7 +803,7 @@ const SECTIONS = { ru: [
     [240,120,320,180,"Interface language","See the “Interface Language” section."],
     [80,180,160,240,"Appearance","Drum style + color theme. See the “Appearance” section."],
     [160,180,240,240,"Firmware versions","A direct shortcut, bypassing “Live Readings”. See the “Firmware Versions” section."],
-    [240,180,320,240,"Modem","Visible only when a modem is connected."],
+    [240,180,320,240,"Modem","Visible only when a modem is connected. See the “Modem Status” section."],
   ],
   extra:`<div class="note">The bottom-left tile (row 4, column 1) is deliberately empty — it used to hold the firmware-bay shortcut, which has since moved to the “Firmware Versions” screen (the button at its bottom right).</div>`
 },
@@ -956,6 +1020,70 @@ const SECTIONS = { ru: [
     <div><b>Element</b>electric element run-time</div>
   </div>`
 },
+{
+  id:"modeminfo", tag:"Screen 16 · modem status", title:"Modem status",
+  access:"Menu → “Modem” tile (visible only when a modem is connected), or home screen → modem icon in the header.",
+  lede:"Cellular registration, roaming, signal level, operator, IMEI, and the last received SMS. The two buttons at the bottom lead to internet/MQTT status and modem settings.",
+  img:"16_modem_info.png",
+  hot:[
+    [0,190,50,240,"Back","Returns to the menu."],
+    [140,195,180,235,"Internet status","See the “Internet Status” section."],
+    [275,195,315,235,"Settings","See the “Modem Settings” section."],
+  ],
+  extra:`<div class="readonly-grid">
+    <div><b>Registered</b>whether the modem is registered on the cellular network</div>
+    <div><b>Roaming</b>whether roaming is currently active</div>
+    <div><b>Signal</b>CSQ signal level, 0–31 (<code>--</code> — unknown)</div>
+    <div><b>Operator</b>operator name, or its code if the name hasn't arrived yet</div>
+    <div><b>IMEI</b>the module's serial number</div>
+    <div><b>Last SMS</b>sender's number; the message text follows on the four lines below</div>
+  </div>
+  <div class="note">Every field updates on its own as data arrives from the modem — no separate refresh/request from this screen is needed.</div>`
+},
+{
+  id:"modemsettings", tag:"Screen 17 · modem settings", title:"Modem settings",
+  access:"“Modem Status” screen → gear icon (bottom-right button).",
+  lede:"Five behavior toggles. There's no “Apply” button — each tap goes straight to the modem over CAN.",
+  img:"17_modem_settings.png",
+  hot:[
+    [5,10,315,43,"Only SMS","The modem works via SMS commands only, no mobile internet."],
+    [5,48,315,81,"Only 2G","Forbids 3G/4G — the modem always attaches to 2G only."],
+    [5,86,315,119,"Roaming","Allows registering on a roaming network."],
+    [5,124,315,157,"Fault SMS","Send an SMS notification whenever an error appears."],
+    [5,162,315,195,"Cmd ack.","Send an SMS confirmation for every SMS command received."],
+    [0,190,50,240,"Back","Returns to the “Modem Status” screen."],
+  ]
+},
+{
+  id:"modeminternet", tag:"Screen 18 · internet status", title:"Internet status",
+  access:"“Modem Status” screen → globe icon (middle bottom button).",
+  lede:"Internet and MQTT broker connectivity: network technology, the connectivity check address, broker, login, and the modem's password.",
+  img:"18_modem_internet.png",
+  hot:[
+    [0,190,50,240,"Back","Returns to the “Modem Status” screen."],
+    [50,190,150,240,"QR / REG","One shared slot, three states: <b>QR</b> — opens the registration link's QR code once it's known (see “QR Code”); <b>REG</b> — if the modem isn't configured at all yet (no login) and no link exists yet, triggers auto-registration (<span class=\"sub\">“...” while the request is in flight, “!” briefly on error</span>); nothing shown if the modem is already configured but no link exists yet."],
+  ],
+  extra:`<div class="readonly-grid">
+    <div><b>Internet</b>whether there's internet access</div>
+    <div><b>MQTT</b>broker connection status</div>
+    <div><b>Mode</b>network technology: 2G / 3G / 4G</div>
+    <div><b>Check URL</b>the address used to verify real internet access</div>
+    <div><b>Broker</b>MQTT broker address</div>
+    <div><b>Login</b>the modem's login on the broker</div>
+    <div><b>Password</b>the modem's password on the broker</div>
+  </div>
+  <div class="note">The QR code's link appears after the “getlink” SMS command, or after a successful auto-registration via the REG button.</div>`
+},
+{
+  id:"modemqr", tag:"Screen 19 · QR code", title:"QR code",
+  access:"“Internet Status” screen → “QR” button (visible only once a registration link is already known).",
+  lede:"The same link sent back by the “getlink” SMS command, as a QR code, so it doesn't have to be typed in by hand on a phone.",
+  img:"19_modem_qr.png",
+  hot:[
+    [0,190,50,240,"Back","Returns to the “Internet Status” screen."],
+  ],
+  extra:`<div class="note">If the link isn't known yet, this screen falls back to a prompt to send the “getlink” SMS command instead of a code — but that state can't actually be reached through normal navigation: the button on the previous screen simply doesn't appear until a link exists (see “Internet Status”).</div>`
+},
 ], de: [
 {
   id:"home", tag:"Bildschirm 1 · Start", title:"Startbildschirm",
@@ -1005,7 +1133,7 @@ const SECTIONS = { ru: [
     [240,120,320,180,"Sprache","Siehe Abschnitt „Sprache der Oberfläche“."],
     [80,180,160,240,"Erscheinungsbild","Trommelstil + Farbthema. Siehe Abschnitt „Erscheinungsbild“."],
     [160,180,240,240,"Firmware-Versionen","Direkter Weg, an „Live-Messwerte“ vorbei. Siehe Abschnitt „Firmware-Versionen“."],
-    [240,180,320,240,"Modem","Nur sichtbar bei angeschlossenem Modem."],
+    [240,180,320,240,"Modem","Nur sichtbar bei angeschlossenem Modem. Siehe Abschnitt „Modemstatus“."],
   ],
   extra:`<div class="note">Die Kachel unten links (Reihe 4, Spalte 1) ist absichtlich leer — früher befand sich hier die Verknüpfung zum Firmware-Fach, die inzwischen auf den Bildschirm „Firmware-Versionen“ verschoben wurde (Taste unten rechts auf diesem Bildschirm).</div>`
 },
@@ -1221,6 +1349,70 @@ const SECTIONS = { ru: [
     <div><b>Heater</b>Betriebsstunden der Heizung</div>
     <div><b>Element</b>Betriebsstunden des Heizelements</div>
   </div>`
+},
+{
+  id:"modeminfo", tag:"Bildschirm 16 · Modemstatus", title:"Modemstatus",
+  access:"Menü → Kachel „Modem“ (nur sichtbar bei angeschlossenem Modem), oder Startbildschirm → Modemsymbol in der Kopfzeile.",
+  lede:"Netzregistrierung, Roaming, Signalstärke, Betreiber, IMEI und die zuletzt empfangene SMS. Die beiden Tasten unten führen zum Internet-/MQTT-Status und zu den Modemeinstellungen.",
+  img:"16_modem_info.png",
+  hot:[
+    [0,190,50,240,"Zurück","Kehrt zum Menü zurück."],
+    [140,195,180,235,"Internetstatus","Siehe Abschnitt „Internetstatus“."],
+    [275,195,315,235,"Einstellungen","Siehe Abschnitt „Modemeinstellungen“."],
+  ],
+  extra:`<div class="readonly-grid">
+    <div><b>Registered</b>ob das Modem im Mobilfunknetz registriert ist</div>
+    <div><b>Roaming</b>ob gerade Roaming aktiv ist</div>
+    <div><b>Signal</b>CSQ-Signalstärke, 0–31 (<code>--</code> — unbekannt)</div>
+    <div><b>Operator</b>Name des Betreibers, oder dessen Code, falls der Name noch nicht angekommen ist</div>
+    <div><b>IMEI</b>Seriennummer des Moduls</div>
+    <div><b>Last SMS</b>Absendernummer; der Nachrichtentext folgt in den vier Zeilen darunter</div>
+  </div>
+  <div class="note">Alle Felder aktualisieren sich von selbst, sobald Daten vom Modem eintreffen — ein separates Aktualisieren/Anfragen von diesem Bildschirm aus ist nicht nötig.</div>`
+},
+{
+  id:"modemsettings", tag:"Bildschirm 17 · Modemeinstellungen", title:"Modemeinstellungen",
+  access:"Bildschirm „Modemstatus“ → Zahnrad-Symbol (Taste unten rechts).",
+  lede:"Fünf Verhaltens-Schalter. Es gibt keine „Übernehmen“-Taste — jedes Antippen geht sofort per CAN an das Modem.",
+  img:"17_modem_settings.png",
+  hot:[
+    [5,10,315,43,"Nur SMS","Das Modem arbeitet nur über SMS-Befehle, ohne mobiles Internet."],
+    [5,48,315,81,"Nur 2G","Verbietet 3G/4G — das Modem bucht sich immer nur in 2G ein."],
+    [5,86,315,119,"Roaming","Erlaubt die Registrierung in einem Roaming-Netz."],
+    [5,124,315,157,"Fehler SMS","Sendet eine SMS-Benachrichtigung, sobald ein Fehler auftritt."],
+    [5,162,315,195,"Befehl Best.","Sendet eine SMS-Bestätigung für jeden empfangenen SMS-Befehl."],
+    [0,190,50,240,"Zurück","Kehrt zum Bildschirm „Modemstatus“ zurück."],
+  ]
+},
+{
+  id:"modeminternet", tag:"Bildschirm 18 · Internetstatus", title:"Internetstatus",
+  access:"Bildschirm „Modemstatus“ → Globus-Symbol (mittlere Taste unten).",
+  lede:"Internet- und MQTT-Broker-Verbindung: Netztechnologie, Prüfadresse für die Verbindung, Broker, Login, Passwort des Modems.",
+  img:"18_modem_internet.png",
+  hot:[
+    [0,190,50,240,"Zurück","Kehrt zum Bildschirm „Modemstatus“ zurück."],
+    [50,190,150,240,"QR / REG","Ein gemeinsamer Platz, drei Zustände: <b>QR</b> — öffnet den QR-Code des Registrierungslinks, sobald dieser bekannt ist (siehe „QR-Code“); <b>REG</b> — falls das Modem noch gar nicht konfiguriert ist (kein Login) und noch kein Link existiert, löst dies die automatische Registrierung aus (<span class=\"sub\">„...“ während die Anfrage läuft, kurz „!“ bei einem Fehler</span>); nichts wird angezeigt, wenn das Modem bereits konfiguriert ist, aber noch kein Link existiert."],
+  ],
+  extra:`<div class="readonly-grid">
+    <div><b>Internet</b>ob eine Internetverbindung besteht</div>
+    <div><b>MQTT</b>Verbindungsstatus zum Broker</div>
+    <div><b>Mode</b>Netztechnologie: 2G / 3G / 4G</div>
+    <div><b>Check URL</b>Adresse, mit der der tatsächliche Internetzugang geprüft wird</div>
+    <div><b>Broker</b>Adresse des MQTT-Brokers</div>
+    <div><b>Login</b>Login des Modems beim Broker</div>
+    <div><b>Password</b>Passwort des Modems beim Broker</div>
+  </div>
+  <div class="note">Der Link für den QR-Code erscheint nach dem SMS-Befehl „getlink“ oder nach einer erfolgreichen automatischen Registrierung über die REG-Taste.</div>`
+},
+{
+  id:"modemqr", tag:"Bildschirm 19 · QR-Code", title:"QR-Code",
+  access:"Bildschirm „Internetstatus“ → Taste „QR“ (nur sichtbar, sobald ein Registrierungslink bereits bekannt ist).",
+  lede:"Derselbe Link, der auch als Antwort auf den SMS-Befehl „getlink“ kommt — als QR-Code, damit er auf dem Telefon nicht von Hand eingegeben werden muss.",
+  img:"19_modem_qr.png",
+  hot:[
+    [0,190,50,240,"Zurück","Kehrt zum Bildschirm „Internetstatus“ zurück."],
+  ],
+  extra:`<div class="note">Ist der Link noch nicht bekannt, zeigt dieser Bildschirm stattdessen einen Hinweis, den SMS-Befehl „getlink“ zu senden — dieser Zustand ist über die normale Navigation aber gar nicht erreichbar: Die Taste auf dem vorherigen Bildschirm erscheint erst, sobald ein Link existiert (siehe „Internetstatus“).</div>`
 },
 ]};
 

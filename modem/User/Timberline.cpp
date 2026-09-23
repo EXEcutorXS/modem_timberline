@@ -1871,6 +1871,25 @@ void Timberline::sendStatus(const char* phone, bool german) {
     if (n < 139) msg[n++] = '.';
     if (n < 139) msg[n++] = '0' + v10%10;
     n = apStr(msg, n, "V");
+    msg[n++] = '\n';
+
+    /* ── Internet / MQTT ── */
+    n = apStr(msg, n, "Internet:");
+    n = apStr(msg, n, modem.internet.isInternetConnected ? (de ? "ein" : "on") : (de ? "aus" : "off"));
+    msg[n++] = '\n';
+
+    n = apStr(msg, n, "MQTT:");
+    n = apStr(msg, n, modem.mqtt.connected ? (de ? "ein" : "on") : (de ? "aus" : "off"));
+
+    /* ── Optional external NTC on A1 (see Library/Ntc) — only shown if a
+       sensor is actually wired up, same "hardware not always there" idea
+       as the zones above and floor/engine elsewhere in this file. */
+    if (ntc.connected) {
+        msg[n++] = '\n';
+        n = apStr(msg, n, "Tmodem:");
+        n = apInt(msg, n, dispTemp(ntc.temperature));
+        n = apStr(msg, n, u);
+    }
 
     msg[n] = 0;
     modem.sendSms(phone, msg);

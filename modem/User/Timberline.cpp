@@ -1613,13 +1613,21 @@ void Timberline::mqttActualizerHandler(void) {
         modem.mqttPublish("canRelayFails", buf);
     }
     /* Which named step of CanRelay::handler()'s sequence — see CanRelay::Phase
-       in CanRelay.h — only meaningful while actually staging, same as
-       canRelayProgress above. */
+       in CanRelay.h — normally only meaningful while actually staging, same
+       as canRelayProgress above. RELAY_PHASE_UNSUPPORTED is the one
+       exception: CanRelay::finishUnsupported() sets it right as status
+       flips STAGING->ERROR in the very same tick, so the plain
+       RELAY_STAGING gate above would never let it out — it's ORed in here
+       by name specifically so it still gets one publish. Terminal by
+       construction (finishUnsupported() is the only place that ever sets
+       it, and a fresh relay always starts back at RELAY_PHASE_SWITCHING),
+       so there's no risk of it lingering stale across a later, different
+       relay attempt. */
     static CanRelay::Phase prevCanRelayPhase;
-    if (canRelay.status == CanRelay::RELAY_STAGING
+    if ((canRelay.status == CanRelay::RELAY_STAGING || canRelay.phase == CanRelay::RELAY_PHASE_UNSUPPORTED)
         && (canRelay.phase != prevCanRelayPhase || justConnected || relayJustStarted)) {
         prevCanRelayPhase = canRelay.phase;
-        static const char* canRelayPhaseStr[] = { "switching", "detected", "erasing", "erased", "transferring", "returning" };
+        static const char* canRelayPhaseStr[] = { "switching", "detected", "erasing", "erased", "transferring", "returning", "unsupported" };
         modem.mqttPublish("canRelayStep", canRelayPhaseStr[canRelay.phase]);
     }
     /* The target's own bootloader version (PGN=18 reply once it's switched

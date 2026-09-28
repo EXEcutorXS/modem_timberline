@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 16
+#define VERSION_4 17
 /*
 
 Адрес        Длина      Назначение региона
@@ -23,6 +23,9 @@
 //Добавить управление нагрузками
 //Добавить синхронизацию времени
 
+121.0.0.17
+Old bootloader now returning to main program automatically
+Special message for old bootloader
 121.0.0.16
 Internet 10 minututes watchdow added
 Temperature sensor enabled

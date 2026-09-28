@@ -1981,13 +1981,11 @@ void Modem::startAutoRegister(void) {
    modem to invent its own MQTT login/password, register a new account with
    the backend over HTTPS, and finish exactly like "getlink" would (fresh
    token, retained publish, connectionLink built) — so a QR code just
-   appears on the panel with no SMS round-trip at all. First time this
-   firmware has ever done HTTPS (AT+HTTPPARA="URL","https://…") — every
-   prior AT+HTTPACTION call (OTA, the example.com check) used plain http://.
-   Per SIMCOM's HTTP AT command manual, HTTPS is simply the https:// scheme
-   in the URL (default SSL context 0) — not yet verified on this exact
-   module; if it doesn't work as-is, see the plan doc for the plain-HTTP
-   fallback. */
+   appears on the panel with no SMS round-trip at all. The only
+   AT+HTTPACTION call in this firmware that uses https:// (every other one —
+   OTA, the example.com check — uses plain http://); confirmed working in
+   the field against multihot.online (real devices complete auto-
+   registration this way, +HTTPACTION: 0,200,...). */
 void Modem::doAutoRegister(void) {
     static char cmd[192];
     static uint32_t t = 0;

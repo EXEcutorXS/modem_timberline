@@ -33,7 +33,17 @@ class CanRelay
 	   sub-state machine) already does that; this is a read-only mirror of
 	   "which named stretch of it we're in" for display. */
 	enum Phase { RELAY_PHASE_SWITCHING, RELAY_PHASE_DETECTED, RELAY_PHASE_ERASING,
-	             RELAY_PHASE_ERASED, RELAY_PHASE_TRANSFERRING, RELAY_PHASE_RETURNING };
+	             RELAY_PHASE_ERASED, RELAY_PHASE_TRANSFERRING, RELAY_PHASE_RETURNING,
+	             /* Terminal phase, not a step in the normal sequence — set once,
+	                right before finishUnsupported() flips status to RELAY_ERROR,
+	                so mqttActualizerHandler gets one chance to publish it (see
+	                that function's own loosened gate) before the usual
+	                status==RELAY_STAGING-only publish condition would otherwise
+	                suppress it. Distinguishes "this bootloader/device combo can
+	                never be flashed over CAN, don't bother retrying" from every
+	                other RELAY_ERROR cause (timeout, a bad CRC, etc — all of
+	                which a retry might fix). */
+	             RELAY_PHASE_UNSUPPORTED };
 
 	bool     startRequested; /* same reentrancy rationale as Modem::OtaScratch::startRequested —
 	                             set from Timberline::onMqttCommandReceived(), which can run mid-parseLine() */
@@ -102,6 +112,17 @@ class CanRelay
 	void handleGen3(void);
 	void finishSuccess(void);
 	void finishFailed(void);
+	/* Same as finishFailed(), plus sends "switch back to app" first (see
+	   finishSuccess()) — called only from handleDetect()'s own two refusal
+	   paths (unknown/unsafe bootloader version, or a known-safe version
+	   that isn't built for this target device type). Both happen right
+	   after bootloaderSeen confirms the target really is sitting in the
+	   bootloader, before anything is erased or written, so returning it
+	   immediately is safe — unlike a failure mid-transfer (still just
+	   finishFailed(), see that function's own comment on why that gap is
+	   deliberately left as-is: a partial write there means "switch back to
+	   app" could hand control to a half-erased image). */
+	void finishUnsupported(void);
 };
 
 extern CanRelay canRelay;

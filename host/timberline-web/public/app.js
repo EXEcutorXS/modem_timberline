@@ -82,6 +82,7 @@ const I18N = {
     canRelayStepSwitching: 'Switching to bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedFound: 'found',
     canRelayStepErasing: 'Erasing memory…', canRelayStepErased: 'Erase successful',
     canRelayStepTransferring: 'Transferring fragment', canRelayStepReturning: 'Transfer complete, returning to app…',
+    canRelayStepUnsupported: 'Bootloader not supported — this device can\'t be flashed over CAN (modem firmware update needed)',
     canRelayFailsSuffix: 'retries',
     tankTemp: 'Tank temp', heaterTemp: 'Heater temp', voltage: 'Voltage', outdoorTemp: 'Outdoor temp',
     heaterState: 'Heater state', domesticWater: 'Domestic water', liquidLevel: 'Liquid level',
@@ -125,6 +126,7 @@ const I18N = {
     canRelayStepSwitching: 'Перевод в загрузчик…', canRelayStepDetectedPrefix: 'Загрузчик', canRelayStepDetectedFound: 'найден',
     canRelayStepErasing: 'Стирание памяти…', canRelayStepErased: 'Стирание успешно',
     canRelayStepTransferring: 'Передача фрагмента', canRelayStepReturning: 'Передача завершена, возврат в программу…',
+    canRelayStepUnsupported: 'Загрузчик не поддерживается — прошить это устройство по CAN нельзя (нужно обновление прошивки модема)',
     canRelayFailsSuffix: 'повторов',
     tankTemp: 'Температура бака', heaterTemp: 'Температура котла', voltage: 'Напряжение', outdoorTemp: 'Уличная температура',
     heaterState: 'Состояние котла', domesticWater: 'Горячая вода', liquidLevel: 'Уровень жидкости',
@@ -168,6 +170,7 @@ const I18N = {
     canRelayStepSwitching: 'Wechsel in den Bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedFound: 'gefunden',
     canRelayStepErasing: 'Speicher wird gelöscht…', canRelayStepErased: 'Löschen erfolgreich',
     canRelayStepTransferring: 'Übertrage Fragment', canRelayStepReturning: 'Übertragung abgeschlossen, zurück zur App…',
+    canRelayStepUnsupported: 'Bootloader nicht unterstützt — dieses Gerät kann nicht per CAN geflasht werden (Modem-Firmware-Update nötig)',
     canRelayFailsSuffix: 'Wiederholungen',
     tankTemp: 'Tanktemperatur', heaterTemp: 'Kesseltemperatur', voltage: 'Spannung', outdoorTemp: 'Außentemperatur',
     heaterState: 'Kesselstatus', domesticWater: 'Warmwasser', liquidLevel: 'Flüssigkeitsstand',
@@ -1629,6 +1632,15 @@ function renderOtaPanel() {
       else relayText = `${t('canRelayStatusStaging')} ${rawStatus.canRelayProgress || ''}${failsSuffix}`;
     }
     else if (relayStatus === 'done') relayText = t('canRelayStatusDone');
+    /* canRelayStep stays at its last published value even after status
+       flips to "error" (see CanRelay::finishUnsupported()/mqttActualizerHandler's
+       loosened publish gate in Timberline.cpp) - "unsupported" specifically
+       means the bootloader is unknown/unsafe or isn't built for this device
+       type, checked *before* anything was erased, so unlike every other
+       error here a retry won't help - the modem itself needs a firmware
+       update (a new BUILTIN_BOOTLOADERS entry) before this device can ever
+       be flashed over CAN. */
+    else if (relayStatus === 'error' && rawStatus.canRelayStep === 'unsupported') relayText = t('canRelayStepUnsupported');
     else if (relayStatus === 'error') relayText = t('canRelayStatusError');
     relayEl.textContent = relayText;
 

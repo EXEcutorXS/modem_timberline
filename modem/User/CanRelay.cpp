@@ -193,6 +193,14 @@ void CanRelay::finishFailed(void) {
     status = RELAY_ERROR;
     logRelayInfo("result=ERROR");
 }
+void CanRelay::finishUnsupported(void) {
+    phase = RELAY_PHASE_UNSUPPORTED;
+    can.SendMessage(canId(1, 123, 0), 0,22,1, 0xFF,0xFF,0xFF,0xFF,0xFF);
+    logRelayInfo("switch-to-app sent (unsupported bootloader/device combo)");
+    failed = true;
+    status = RELAY_ERROR;
+    logRelayInfo("result=ERROR (unsupported)");
+}
 
 /* ── detection ────────────────────────────────────────────────────────────
    Switches the target into its bootloader and identifies which flashing
@@ -259,7 +267,13 @@ void CanRelay::handleDetect(void) {
                    retry or a Load. */
                 const char* reason = (algo == 0) ? "bootloader-unknown-modem-firmware-update-needed" : "bootloader-algorithm-unsafe";
                 logRelayFail(1, reason, algo, false);
-                finishFailed();
+                /* Nothing erased/written yet, and the target is confirmed
+                   sitting in the bootloader right now (bootloaderSeen) — safe
+                   to hand it straight back to its own app instead of
+                   finishFailed()'s usual "leave it stranded" (see that
+                   function's own comment on why THAT stays as-is for a
+                   mid-relay failure, unlike this one). */
+                finishUnsupported();
                 break;
             }
             algorithm = algo;
@@ -274,7 +288,7 @@ void CanRelay::handleDetect(void) {
                algorithm question above. */
             if (!modem.isDeviceTypeSupportedByBootloader(bootloaderVersion, targetType)) {
                 logRelayFail(1, "bootloader-device-type-mismatch", targetType, false);
-                finishFailed();
+                finishUnsupported(); /* same rationale as the algo-unsafe branch above */
                 break;
             }
             phase = RELAY_PHASE_DETECTED;

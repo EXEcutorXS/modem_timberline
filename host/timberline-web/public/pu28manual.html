@@ -2,386 +2,10 @@
 <html lang="ru" id="html-root">
 <head>
 <meta charset="utf-8">
-<title id="doc-title">Пульт Timberline</title>
+<title id="doc-title">Пульт MultiHot</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<style>
-:root{
-  --paper:#f5f2ea;
-  --paper-raised:#fbf9f4;
-  --ink:#201d17;
-  --ink-dim:#5c564a;
-  --line:rgba(32,29,23,.15);
-  --line-strong:rgba(32,29,23,.32);
-  --panel:#242320;
-  --panel-line:rgba(255,255,255,.09);
-  --panel-tile:#302e29;
-  --accent:#c96a12;
-  --accent-ink:#7a3c05;
-  --accent-soft:#f0dcbc;
-  --danger:#a83b28;
-  --good:#2f7a52;
-  --hotspot:#c96a12;
-  --hotspot-ink:#fff8ee;
-  --radius:14px;
-  --serif-display:"Big Shoulders Display",sans-serif;
-  --sans:"IBM Plex Sans",system-ui,sans-serif;
-  --mono:"IBM Plex Mono",ui-monospace,monospace;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --paper:#161511;
-    --paper-raised:#1d1c17;
-    --ink:#ece7da;
-    --ink-dim:#a89e8a;
-    --line:rgba(236,231,218,.14);
-    --line-strong:rgba(236,231,218,.30);
-    --panel:#0f0e0c;
-    --panel-line:rgba(255,255,255,.08);
-    --panel-tile:#232019;
-    --accent:#e2872f;
-    --accent-ink:#ffd9a4;
-    --accent-soft:rgba(226,135,47,.18);
-    --danger:#e07156;
-    --good:#4fb27f;
-    --hotspot:#e2872f;
-    --hotspot-ink:#1a1206;
-  }
-}
-:root[data-theme="dark"]{
-  --paper:#161511;
-  --paper-raised:#1d1c17;
-  --ink:#ece7da;
-  --ink-dim:#a89e8a;
-  --line:rgba(236,231,218,.14);
-  --line-strong:rgba(236,231,218,.30);
-  --panel:#0f0e0c;
-  --panel-line:rgba(255,255,255,.08);
-  --panel-tile:#232019;
-  --accent:#e2872f;
-  --accent-ink:#ffd9a4;
-  --accent-soft:rgba(226,135,47,.18);
-  --danger:#e07156;
-  --good:#4fb27f;
-  --hotspot:#e2872f;
-  --hotspot-ink:#1a1206;
-}
-
-*{box-sizing:border-box;}
-body{
-  background:var(--paper);
-  color:var(--ink);
-  font-family:var(--sans);
-  font-size:15.5px;
-  line-height:1.55;
-}
-h1,h2,h3{font-family:var(--serif-display);text-wrap:balance;font-weight:700;letter-spacing:.01em;color:var(--ink);}
-a{color:var(--accent-ink);}
-code, .mono{font-family:var(--mono);}
-
-.wrap{
-  display:grid;
-  grid-template-columns:248px minmax(0,1fr);
-  gap:0;
-  max-width:1180px;
-  margin:0 auto;
-  min-width:0;
-}
-
-/* ---- lang switcher --------------------------------------------- */
-.langswitch{
-  position:fixed;
-  top:16px;
-  right:16px;
-  z-index:20;
-}
-.langswitch select{
-  appearance:none;
-  -webkit-appearance:none;
-  border-radius:999px;
-  border:1px solid var(--line-strong);
-  background:var(--paper-raised) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M0 0l5 6 5-6z" fill="%235c564a"/></svg>') no-repeat right 14px center;
-  color:var(--ink);
-  box-shadow:0 6px 16px -8px rgba(0,0,0,.35);
-  font-family:var(--mono);
-  font-size:12px;
-  letter-spacing:.04em;
-  padding:8px 32px 8px 16px;
-  cursor:pointer;
-}
-.langswitch select:focus{outline:2px solid var(--accent);outline-offset:2px;}
-
-/* ---- cover -------------------------------------------------- */
-.cover{
-  padding:56px 40px 40px;
-  border-bottom:1px solid var(--line);
-  grid-column:1/-1;
-  min-width:0;
-}
-.cover .eyebrow{
-  font-family:var(--mono);
-  font-size:12.5px;
-  letter-spacing:.14em;
-  text-transform:uppercase;
-  color:var(--accent-ink);
-  display:flex;gap:10px;align-items:center;
-}
-.cover .eyebrow::before{content:"";width:22px;height:2px;background:var(--accent);display:inline-block;}
-.cover h1{
-  font-size:clamp(34px,5vw,54px);
-  line-height:1.02;
-  margin:14px 0 10px;
-}
-.cover p.lede{
-  max-width:62ch;
-  color:var(--ink-dim);
-  font-size:16.5px;
-}
-.cover .plate{
-  margin-top:26px;
-  display:flex;
-  gap:28px;
-  flex-wrap:wrap;
-  align-items:flex-end;
-}
-.nameplate{
-  font-family:var(--mono);
-  font-size:12px;
-  color:var(--ink-dim);
-  border:1px solid var(--line-strong);
-  border-radius:8px;
-  padding:10px 14px;
-  display:grid;
-  grid-template-columns:auto minmax(0,1fr);
-  gap:3px 16px;
-  max-width:100%;
-}
-.nameplate b{color:var(--ink);font-weight:500;}
-
-/* ---- toc ------------------------------------------------------ */
-nav.toc{
-  position:sticky;
-  top:0;
-  align-self:start;
-  height:100vh;
-  overflow-y:auto;
-  padding:28px 18px 40px 40px;
-  border-right:1px solid var(--line);
-  min-width:0;
-}
-nav.toc .group-label{
-  font-family:var(--mono);
-  font-size:11px;
-  letter-spacing:.1em;
-  text-transform:uppercase;
-  color:var(--ink-dim);
-  margin:22px 0 8px;
-}
-nav.toc .group-label:first-child{margin-top:0;}
-nav.toc ol{list-style:none;margin:0;padding:0;counter-reset:sec;}
-nav.toc li{counter-increment:sec;}
-nav.toc a{
-  display:flex;
-  gap:8px;
-  padding:6px 8px;
-  margin:0 -8px;
-  border-radius:8px;
-  text-decoration:none;
-  color:var(--ink);
-  font-size:13.5px;
-  line-height:1.35;
-}
-nav.toc a:hover{background:var(--accent-soft);}
-nav.toc a::before{
-  content:counter(sec,decimal-leading-zero);
-  font-family:var(--mono);
-  color:var(--accent-ink);
-  font-size:12px;
-  flex:0 0 auto;
-  padding-top:1px;
-}
-
-main{padding:8px 40px 80px;min-width:0;}
-
-section.screen{
-  padding:52px 0;
-  border-bottom:1px solid var(--line);
-  scroll-margin-top:18px;
-}
-section.screen:last-child{border-bottom:none;}
-
-.screen-head{max-width:74ch;}
-.screen-head .tag{
-  font-family:var(--mono);
-  font-size:11.5px;
-  letter-spacing:.08em;
-  text-transform:uppercase;
-  color:var(--accent-ink);
-  display:inline-block;
-  margin-bottom:8px;
-}
-.screen-head h2{font-size:26px;margin:0 0 6px;}
-.screen-head .access{
-  font-size:13.5px;
-  color:var(--ink-dim);
-  margin:0 0 14px;
-  padding-left:14px;
-  border-left:2px solid var(--line-strong);
-}
-.screen-head .access b{color:var(--ink);font-weight:500;}
-.screen-head p.lede{color:var(--ink-dim);margin:0 0 4px;max-width:68ch;}
-
-.spec{
-  margin-top:26px;
-  display:grid;
-  grid-template-columns:300px minmax(0,1fr);
-  gap:32px;
-  align-items:start;
-}
-@media (max-width:760px){
-  .spec{grid-template-columns:minmax(0,1fr);}
-  .wrap{grid-template-columns:minmax(0,1fr);}
-  nav.toc{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line);padding:20px 20px 8px;}
-  main{padding:8px 20px 60px;}
-  .cover{padding:40px 20px 30px;}
-  .langswitch{top:10px;right:10px;}
-}
-
-.frame{
-  background:var(--panel);
-  border-radius:20px;
-  padding:14px;
-  border:1px solid var(--panel-line);
-  box-shadow:0 1px 0 var(--panel-line) inset, 0 18px 34px -22px rgba(0,0,0,.5);
-}
-.frame .screen-inner{
-  position:relative;
-  width:100%;
-  aspect-ratio:320/240;
-  background:#000;
-  border-radius:8px;
-}
-.frame .screen-inner img{
-  position:absolute;inset:0;
-  width:100%;height:100%;
-  display:block;
-  border-radius:8px;
-  overflow:hidden;
-  image-rendering:pixelated;
-}
-.frame figcaption{
-  font-family:var(--mono);
-  font-size:11px;
-  color:var(--ink-dim);
-  text-align:center;
-  margin-top:10px;
-}
-
-.hot{
-  position:absolute;
-  border:1.5px solid var(--hotspot);
-  border-radius:5px;
-  background:color-mix(in srgb, var(--hotspot) 16%, transparent);
-}
-.hot .num{
-  position:absolute;
-  top:-9px;left:-9px;
-  width:18px;height:18px;
-  border-radius:50%;
-  background:var(--hotspot);
-  color:var(--hotspot-ink);
-  font-family:var(--mono);
-  font-weight:500;
-  font-size:11px;
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:0 0 0 2px var(--panel);
-}
-
-.legend{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;}
-.legend li{
-  display:grid;
-  grid-template-columns:26px minmax(0,1fr);
-  gap:12px;
-  padding:9px 0;
-  border-bottom:1px solid var(--line);
-  align-items:baseline;
-}
-.legend li:last-child{border-bottom:none;}
-.legend .n{
-  font-family:var(--mono);
-  font-size:12px;
-  color:var(--hotspot-ink);
-  background:var(--hotspot);
-  width:20px;height:20px;border-radius:50%;
-  display:flex;align-items:center;justify-content:center;
-  transform:translateY(2px);
-}
-.legend .txt b{font-weight:600;}
-.legend .txt{color:var(--ink);font-size:14.5px;}
-.legend .txt .sub{color:var(--ink-dim);font-size:13px;}
-
-.note{
-  margin-top:18px;
-  padding:12px 16px;
-  border-radius:10px;
-  background:var(--paper-raised);
-  border:1px solid var(--line);
-  font-size:13.5px;
-  color:var(--ink-dim);
-  max-width:74ch;
-}
-.note b{color:var(--ink);font-weight:600;}
-
-.readonly-grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
-  gap:8px 20px;
-  margin-top:18px;
-  max-width:74ch;
-}
-.readonly-grid div{
-  font-size:13px;
-  color:var(--ink-dim);
-  padding:6px 0;
-  border-bottom:1px solid var(--line);
-}
-.readonly-grid div b{display:block;color:var(--ink);font-weight:500;font-size:13.5px;}
-
-.swatches{
-  display:grid;
-  grid-template-columns:repeat(7,minmax(70px,1fr));
-  gap:8px;
-  margin-top:16px;
-  max-width:76ch;
-}
-@media (max-width:600px){.swatches{grid-template-columns:repeat(4,1fr);}}
-.swatch{
-  border-radius:8px;
-  overflow:hidden;
-  border:1px solid var(--line-strong);
-}
-.swatch .chip{height:36px;}
-.swatch .lbl{
-  font-family:var(--mono);
-  font-size:10.5px;
-  padding:5px 7px;
-  color:var(--ink-dim);
-  background:var(--paper-raised);
-}
-
-.thumbrow{display:flex;gap:14px;margin-top:18px;flex-wrap:wrap;}
-.thumb{width:150px;}
-.thumb .frame{padding:8px;border-radius:14px;}
-.thumb figcaption{margin-top:6px;}
-
-footer{
-  padding:30px 40px 60px;
-  grid-column:1/-1;
-  font-size:12.5px;
-  color:var(--ink-dim);
-  border-top:1px solid var(--line);
-}
-</style>
+<link rel="stylesheet" href="manual.css">
 </head>
 <body>
 
@@ -392,6 +16,7 @@ footer{
 <div class="wrap">
 
   <div class="cover">
+    <p class="crumb" id="crumb"></p>
     <span class="eyebrow" id="cv-eyebrow"></span>
     <h1 id="cv-h1"></h1>
     <p class="lede" id="cv-lede"></p>
@@ -436,12 +61,12 @@ const SECTIONS = { ru: [
     [65,0,250,66,"Логотип","Долгое нажатие (&gt;0.4 c) открывает <b>главное меню</b>."],
     [74,37,108,69,"Индикатор ошибок","Нажатие открывает список активных ошибок."],
     [118,37,152,69,"Bluetooth","Синий — к пульту подключено мобильное приложение."],
-    [162,37,196,69,"Модем","Нажатие открывает статус модема (если подключён). <span class=\"sub\">Серый → синий → голубой → оранжевый → зелёный — по мере роста уровня связи, вплоть до облачного сервиса.</span>"],
+    [162,37,196,69,"Модем","Нажатие открывает статус модема (если подключён). Цвет значка показывает, до какого уровня дошла связь: <span class=\"sub\"><br><b>серый</b> — модем не подключён к системе;<br><b>синий</b> — модем подключён к системе;<br><b>голубой</b> — модем зарегистрирован в сотовой сети;<br><b>оранжевый</b> — модем подключён к интернету;<br><b>зелёный</b> — модем подключён к MQTT-брокеру (облачный сервис доступен).</span>"],
     [206,37,240,69,"ГВС","Индикатор состояния горячего водоснабжения."],
     [0,65,106,114,"Дневная уставка","Выбирает поле; барабаном меняется значение."],
     [107,65,213,114,"Ночная уставка","Выбирает поле; барабаном меняется значение."],
-    [214,65,320,114,"Вентилятор зоны","Ручной % или AUTO. <span class=\"sub\">Долгое нажатие переключает авто/ручной режим.</span>"],
-    [0,120,320,185,"Поле барабана","Здесь крутится физический барабан, если выбрано одно из полей выше; иначе показаны часы, уличная температура и три кнопки ниже."],
+    [214,65,320,114,"Вентилятор зоны","Ручной % или «Авто». <span class=\"sub\">Долгое нажатие переключает авто/ручной режим.</span>"],
+    [0,120,320,185,"Поле барабана","Сенсорное поле для изменения выбранной настройки: если выбрано одно из полей выше, проведите по нему пальцем, чтобы изменить значение; иначе показаны часы, уличная температура и три кнопки ниже."],
     [90,130,126,166,"Подогрев двигателя","Доступно только при подключённом модуле."],
     [130,130,166,166,"Тёплый пол","Доступно только при подключении."],
     [170,130,206,166,"Режим ECO","Переключение экономичного режима."],
@@ -451,7 +76,7 @@ const SECTIONS = { ru: [
     <figure class="thumb"><div class="frame"><div class="screen-inner"><img src="${IMG}00a_timberline_home_1zone.png"></div></div><figcaption>1 зона</figcaption></figure>
     <figure class="thumb"><div class="frame"><div class="screen-inner"><img src="${IMG}00b_timberline_home_2zone.png"></div></div><figcaption>2 зоны</figcaption></figure>
   </div>
-  <div class="note"><b>Барабан</b> — это не значок на экране, а физический поворотный диск на корпусе пульта. Экран лишь показывает его текущее положение (линейка с делениями) и то, каким полем он сейчас управляет.</div>`
+  <div class="note"><b>Барабан</b> — это не физическая ручка, а сенсорное поле на экране (линейка с делениями), предназначенное для изменения выбранной настройки. Проведите по нему пальцем влево или вправо, чтобы изменить значение в поле, которое сейчас выбрано.</div>`
 },
 {
   id:"menu", tag:"Экран 2 · навигация", title:"Главное меню",
@@ -487,17 +112,17 @@ const SECTIONS = { ru: [
     [215,195,315,235,"ECO","Переключение экономичного режима горелки."],
   ],
   extra:`<div class="readonly-grid">
-    <div><b>T flame</b>температура пламени</div>
-    <div><b>T liquid</b>температура теплоносителя</div>
-    <div><b>T overheat</b>температура перегрева</div>
-    <div><b>Glow plug</b>накальная свеча, %</div>
-    <div><b>Blower set / act.</b>нагнетатель: задание / факт</div>
-    <div><b>Fuel pump</b>частота топливного насоса, Гц</div>
-    <div><b>A Pressure</b>давление воздуха, кПа</div>
-    <div><b>Wat.pump</b>состояние водяного насоса</div>
-    <div><b>Power</b>расчётная мощность, кВт</div>
-    <div><b>Fuel cons.</b>расход топлива, л/ч</div>
-    <div><b>Voltage</b>бортовое напряжение, В</div>
+    <div><b>T пламени</b>температура пламени</div>
+    <div><b>T жидк.</b>температура теплоносителя</div>
+    <div><b>T перегр.</b>температура перегрева</div>
+    <div><b>Свеча</b>накальная свеча, %</div>
+    <div><b>Нагн.уст. / Нагн.реал.</b>нагнетатель: задание / факт</div>
+    <div><b>Топ.нас</b>частота топливного насоса, Гц</div>
+    <div><b>Давление</b>давление воздуха, кПа</div>
+    <div><b>Помпа</b>состояние водяного насоса</div>
+    <div><b>Мощность</b>расчётная мощность, кВт</div>
+    <div><b>Расход</b>расход топлива, л/ч</div>
+    <div><b>Напряж.</b>бортовое напряжение, В</div>
   </div>`
 },
 {
@@ -510,7 +135,7 @@ const SECTIONS = { ru: [
     [245,12,280,50,"Стиль барабана 2","Штрихи разной высоты."],
     [280,12,315,50,"Стиль барабана 3","Сплошные сегменты."],
     [6,54,310,114,"Сетка тем","14 готовых цветов плитки. Короткое нажатие применяет цвет сразу; рамка активной плитки становится белой."],
-    [55,190,260,235,"Лента оттенка","Нажатие в любой точке ленты задаёт произвольный оттенок; то же самое можно сделать вращением барабана."],
+    [55,190,260,235,"Лента оттенка","Нажатие в любой точке ленты задаёт произвольный оттенок; то же самое можно сделать, проведя пальцем по барабану."],
     [275,195,315,235,"Предпросмотр","Текущий выбранный цвет — квадрат того же размера, что и кнопка «Назад»."],
     [0,190,50,240,"Назад","Возврат в меню — тема и стиль уже сохранены."],
   ],
@@ -538,8 +163,8 @@ const SECTIONS = { ru: [
   lede:"Два защитных параметра, которые уходят напрямую в блок управления по CAN — в самом пульте не хранятся.",
   img:"04_setup_page2_timers.png",
   hot:[
-    [30,12,265,50,"Время работы системы","Максимальная непрерывная работа отопителя, 1–96 ч (значение выше показывается как «Unlimited»); после — принудительная остановка."],
-    [30,50,265,100,"Время работы насоса","Циркуляция теплоносителя после остановки горелки, 2–60 мин."],
+    [30,12,265,50,"Таймер работы","Максимальная непрерывная работа отопителя, 1–96 ч (значение выше показывается как «Безлимит»); после — принудительная остановка."],
+    [30,50,265,100,"Время помпы","Циркуляция теплоносителя после остановки горелки, 2–60 мин."],
     [0,200,50,240,"Назад",""],
   ],
   extra:`<div class="note">Кнопки «Применить» нет — выбранное поле меняется барабаном и уходит в блок управления немедленно, значение за значением.</div>`
@@ -599,8 +224,8 @@ const SECTIONS = { ru: [
   img:"08_display_setup_sleep.png",
   hot:[
     [0,0,320,53,"Режим сна","Переключает вариант: выключен / пустой экран / часы / часы+дата / часы+температура."],
-    [0,53,320,80,"Тайм-аут","Время бездействия до перехода в спящий режим, секунд."],
-    [0,80,320,110,"Ограничение подсветки","Верхний предел яркости экрана, %."],
+    [0,53,320,80,"Задержка","Время бездействия до перехода в спящий режим, секунд."],
+    [0,80,320,110,"Предел подсветки","Верхний предел яркости экрана, %."],
     [0,190,50,240,"Назад","Выход без сохранения."],
     [250,190,320,240,"Применить","Сохраняет и возвращает в меню."],
   ]
@@ -621,7 +246,7 @@ const SECTIONS = { ru: [
   img:"10_engine_preheat_setup.png",
   hot:[
     [0,25,320,60,"Уставка","Целевая температура прогрева, °C."],
-    [0,60,320,95,"Ограничение времени","Максимальная длительность цикла прогрева, мин."],
+    [0,60,320,95,"Ограничение","Максимальная длительность цикла прогрева, мин."],
     [0,190,50,240,"Назад",""],
   ],
   extra:`<div class="note">Как и «Таймеры системы» — изменения уходят в модуль немедленно через CAN, отдельного сохранения нет.</div>`
@@ -660,15 +285,15 @@ const SECTIONS = { ru: [
     [5,195,45,235,"Назад",""],
   ],
   extra:`<div class="readonly-grid">
-    <div><b>Fan 1–5</b>обороты вентиляторов зон, %</div>
-    <div><b>T.Tank</b>температура в баке</div>
-    <div><b>W.Flow</b>есть ли расход горячей воды</div>
-    <div><b>H.Pump</b>насос отопителя</div>
-    <div><b>Pump1 / Pump2</b>дополнительные насосы</div>
-    <div><b>Heater</b>состояние горелки (idle / blow / ign / work)</div>
-    <div><b>Element</b>состояние ТЭНа</div>
-    <div><b>T Heater</b>температура теплоносителя горелки</div>
-    <div><b>Liq.lvl</b>уровень жидкости</div>
+    <div><b>Вент. 1–5</b>обороты вентиляторов зон, %</div>
+    <div><b>Т.Бак</b>температура в баке</div>
+    <div><b>Поток</b>есть ли расход горячей воды</div>
+    <div><b>Помпа Б</b>насос отопителя</div>
+    <div><b>Помпа 1 / Помпа 2</b>дополнительные насосы</div>
+    <div><b>Нагрев.</b>состояние горелки (ЖДЁТ / ПРОДУВ / РОЗЖИГ / РАБОТА)</div>
+    <div><b>ТЭН</b>состояние ТЭНа</div>
+    <div><b>Т Нагр.</b>температура теплоносителя горелки</div>
+    <div><b>Ур.жидк.</b>уровень жидкости</div>
   </div>`
 },
 {
@@ -681,13 +306,13 @@ const SECTIONS = { ru: [
     [275,195,315,235,"Слоты прошивки","Короткий путь на экран «Слоты прошивки»."],
   ],
   extra:`<div class="readonly-grid">
-    <div><b>Heater</b>версия прошивки горелки</div>
-    <div><b>HCU</b>версия блока управления</div>
-    <div><b>Panel</b>версия прошивки этого пульта</div>
-    <div><b>Modem</b>версия прошивки модема</div>
-    <div><b>System</b>суммарная наработка системы</div>
-    <div><b>Heater</b>наработка горелки</div>
-    <div><b>Element</b>наработка ТЭНа</div>
+    <div><b>Нагреватель</b>версия прошивки горелки</div>
+    <div><b>МВС-2</b>версия блока управления</div>
+    <div><b>Пульт</b>версия прошивки этого пульта</div>
+    <div><b>Модем</b>версия прошивки модема</div>
+    <div><b>Система</b>суммарная наработка системы</div>
+    <div><b>Нагреватель</b>наработка горелки</div>
+    <div><b>ТЭН</b>наработка ТЭНа</div>
   </div>`
 },
 {
@@ -701,12 +326,12 @@ const SECTIONS = { ru: [
     [275,195,315,235,"Настройки","См. раздел «Настройки модема»."],
   ],
   extra:`<div class="readonly-grid">
-    <div><b>Registered</b>зарегистрирован ли модем в сотовой сети</div>
-    <div><b>Roaming</b>идёт ли сейчас роуминг</div>
-    <div><b>Signal</b>уровень сигнала CSQ, 0–31 (<code>--</code> — неизвестен)</div>
-    <div><b>Operator</b>имя оператора либо его код, если имя ещё не пришло</div>
+    <div><b>Регистрация</b>зарегистрирован ли модем в сотовой сети</div>
+    <div><b>Роуминг</b>идёт ли сейчас роуминг</div>
+    <div><b>Сигнал</b>уровень сигнала CSQ, 0–31 (<code>--</code> — неизвестен)</div>
+    <div><b>Оператор</b>имя оператора либо его код, если имя ещё не пришло</div>
     <div><b>IMEI</b>серийный номер модуля</div>
-    <div><b>Last SMS</b>номер отправителя; текст последнего SMS — четырьмя строками ниже</div>
+    <div><b>Посл. SMS</b>номер отправителя; текст последнего SMS — четырьмя строками ниже</div>
   </div>
   <div class="note">Все поля обновляются сами по себе по мере поступления данных от модема — отдельного запроса/обновления с этого экрана не требуется.</div>`
 },
@@ -734,13 +359,13 @@ const SECTIONS = { ru: [
     [50,190,150,240,"QR / REG","Один и тот же слот, три состояния: <b>QR</b> — открывает QR-код ссылки регистрации, если она уже известна (см. раздел «QR-код привязки»); <b>REG</b> — если модем ещё вообще не настроен (нет логина) и ссылки ещё нет, запускает автоматическую регистрацию (<span class=\"sub\">«...» — запрос выполняется, «!» коротко при ошибке</span>); ничего не показывается, если модем уже настроен, но ссылки пока нет."],
   ],
   extra:`<div class="readonly-grid">
-    <div><b>Internet</b>есть ли выход в интернет</div>
+    <div><b>Интернет</b>есть ли выход в интернет</div>
     <div><b>MQTT</b>подключение к брокеру</div>
-    <div><b>Mode</b>технология сети: 2G / 3G / 4G</div>
-    <div><b>Check URL</b>адрес, по которому проверяется реальный доступ в интернет</div>
-    <div><b>Broker</b>адрес MQTT-брокера</div>
-    <div><b>Login</b>логин модема на брокере</div>
-    <div><b>Password</b>пароль модема на брокере</div>
+    <div><b>Режим</b>технология сети: 2G / 3G / 4G</div>
+    <div><b>URL проверки</b>адрес, по которому проверяется реальный доступ в интернет</div>
+    <div><b>Брокер</b>адрес MQTT-брокера</div>
+    <div><b>Логин</b>логин модема на брокере</div>
+    <div><b>Пароль</b>пароль модема на брокере</div>
   </div>
   <div class="note">Ссылка для QR-кода появляется после SMS-команды <code>getlink</code> либо после успешной автоматической регистрации через кнопку REG.</div>`
 },
@@ -766,12 +391,12 @@ const SECTIONS = { ru: [
     [65,0,250,66,"Logo","A long press (&gt;0.4s) opens the <b>main menu</b>."],
     [74,37,108,69,"Error indicator","Tapping opens the list of active errors."],
     [118,37,152,69,"Bluetooth","Blue — a mobile app is connected to the panel."],
-    [162,37,196,69,"Modem","Tapping opens the modem status (if connected). <span class=\"sub\">Gray → blue → cyan → orange → green as the connection level improves, up to the cloud service.</span>"],
+    [162,37,196,69,"Modem","Tapping opens the modem status (if connected). The icon color shows how far the connection has got: <span class=\"sub\"><br><b>gray</b> — modem is not connected to the system;<br><b>blue</b> — modem is connected to the system;<br><b>cyan</b> — modem is registered in the cellular network;<br><b>orange</b> — modem is connected to the internet;<br><b>green</b> — modem is connected to the MQTT broker (cloud service available).</span>"],
     [206,37,240,69,"DHW","Domestic hot water status indicator."],
     [0,65,106,114,"Day setpoint","Selects the field; the drum changes the value."],
     [107,65,213,114,"Night setpoint","Selects the field; the drum changes the value."],
     [214,65,320,114,"Zone fan","Manual % or AUTO. <span class=\"sub\">A long press toggles auto/manual mode.</span>"],
-    [0,120,320,185,"Drum field","The physical drum turns here when one of the fields above is selected; otherwise it shows the clock, outdoor temperature, and the three buttons below."],
+    [0,120,320,185,"Drum field","A touch field for changing the selected setting: when one of the fields above is selected, swipe your finger across it to change the value; otherwise it shows the clock, outdoor temperature, and the three buttons below."],
     [90,130,126,166,"Engine preheat","Available only with the module connected."],
     [130,130,166,166,"Floor heating","Available only when connected."],
     [170,130,206,166,"ECO mode","Toggles economy mode."],
@@ -781,7 +406,7 @@ const SECTIONS = { ru: [
     <figure class="thumb"><div class="frame"><div class="screen-inner"><img src="${IMG}00a_timberline_home_1zone.png"></div></div><figcaption>1 zone</figcaption></figure>
     <figure class="thumb"><div class="frame"><div class="screen-inner"><img src="${IMG}00b_timberline_home_2zone.png"></div></div><figcaption>2 zones</figcaption></figure>
   </div>
-  <div class="note"><b>The drum</b> is not an on-screen icon but a physical rotary dial on the panel housing. The screen only shows its current position (a graduated scale) and which field it currently controls.</div>`
+  <div class="note"><b>The drum</b> is not a physical knob but a touch field on the screen (a graduated scale) for changing the selected setting. Swipe your finger left or right across it to change the value of the field that is currently selected.</div>`
 },
 {
   id:"menu", tag:"Screen 2 · navigation", title:"Main menu",
@@ -840,7 +465,7 @@ const SECTIONS = { ru: [
     [245,12,280,50,"Drum style 2","Bars of varying height."],
     [280,12,315,50,"Drum style 3","Solid segments."],
     [6,54,310,114,"Theme grid","14 preset tile colors. A short tap applies the color immediately; the active tile's border turns white."],
-    [55,190,260,235,"Hue strip","Tapping anywhere on the strip sets a custom hue; the same can be done by turning the drum."],
+    [55,190,260,235,"Hue strip","Tapping anywhere on the strip sets a custom hue; the same can be done by swiping across the drum."],
     [275,195,315,235,"Preview","The currently selected color — a square the same size as the “Back” button."],
     [0,190,50,240,"Back","Returns to the menu — the theme and style are already saved."],
   ],
@@ -1096,12 +721,12 @@ const SECTIONS = { ru: [
     [65,0,250,66,"Logo","Ein langer Druck (&gt;0,4 s) öffnet das <b>Hauptmenü</b>."],
     [74,37,108,69,"Fehleranzeige","Antippen öffnet die Liste der aktiven Fehler."],
     [118,37,152,69,"Bluetooth","Blau — eine mobile App ist mit dem Panel verbunden."],
-    [162,37,196,69,"Modem","Antippen öffnet den Modemstatus (falls angeschlossen). <span class=\"sub\">Grau → Blau → Cyan → Orange → Grün mit steigender Verbindungsqualität, bis hin zum Cloud-Dienst.</span>"],
+    [162,37,196,69,"Modem","Antippen öffnet den Modemstatus (falls angeschlossen). Die Farbe des Symbols zeigt, wie weit die Verbindung gekommen ist: <span class=\"sub\"><br><b>grau</b> — Modem ist nicht mit dem System verbunden;<br><b>blau</b> — Modem ist mit dem System verbunden;<br><b>cyan</b> — Modem ist im Mobilfunknetz registriert;<br><b>orange</b> — Modem hat Internetverbindung;<br><b>grün</b> — Modem ist mit dem MQTT-Broker verbunden (Cloud-Dienst verfügbar).</span>"],
     [206,37,240,69,"Warmwasser","Statusanzeige der Warmwasserbereitung."],
     [0,65,106,114,"Tag-Sollwert","Wählt das Feld aus; die Trommel ändert den Wert."],
     [107,65,213,114,"Nacht-Sollwert","Wählt das Feld aus; die Trommel ändert den Wert."],
     [214,65,320,114,"Zonenlüfter","Manuell % oder AUTO. <span class=\"sub\">Ein langer Druck schaltet zwischen Auto/Manuell um.</span>"],
-    [0,120,320,185,"Trommelfeld","Hier dreht sich die physische Trommel, wenn eines der obigen Felder ausgewählt ist; andernfalls werden Uhrzeit, Außentemperatur und die drei Tasten darunter angezeigt."],
+    [0,120,320,185,"Trommelfeld","Ein Touch-Feld zum Ändern der ausgewählten Einstellung: Ist eines der obigen Felder ausgewählt, wischen Sie mit dem Finger darüber, um den Wert zu ändern; andernfalls werden Uhrzeit, Außentemperatur und die drei Tasten darunter angezeigt."],
     [90,130,126,166,"Motorvorwärmung","Nur verfügbar bei angeschlossenem Modul."],
     [130,130,166,166,"Fußbodenheizung","Nur verfügbar bei Anschluss."],
     [170,130,206,166,"ECO-Modus","Schaltet den Sparmodus um."],
@@ -1111,7 +736,7 @@ const SECTIONS = { ru: [
     <figure class="thumb"><div class="frame"><div class="screen-inner"><img src="${IMG}00a_timberline_home_1zone.png"></div></div><figcaption>1 Zone</figcaption></figure>
     <figure class="thumb"><div class="frame"><div class="screen-inner"><img src="${IMG}00b_timberline_home_2zone.png"></div></div><figcaption>2 Zonen</figcaption></figure>
   </div>
-  <div class="note"><b>Die Trommel</b> ist kein Symbol auf dem Bildschirm, sondern ein physisches Drehrad am Gehäuse des Panels. Der Bildschirm zeigt nur ihre aktuelle Position (eine Skala mit Markierungen) und welches Feld sie gerade steuert.</div>`
+  <div class="note"><b>Die Trommel</b> ist kein physischer Drehknopf, sondern ein Touch-Feld auf dem Bildschirm (eine Skala mit Markierungen) zum Ändern der ausgewählten Einstellung. Wischen Sie mit dem Finger nach links oder rechts darüber, um den Wert des aktuell ausgewählten Feldes zu ändern.</div>`
 },
 {
   id:"menu", tag:"Bildschirm 2 · Navigation", title:"Hauptmenü",
@@ -1170,7 +795,7 @@ const SECTIONS = { ru: [
     [245,12,280,50,"Trommelstil 2","Balken unterschiedlicher Höhe."],
     [280,12,315,50,"Trommelstil 3","Durchgehende Segmente."],
     [6,54,310,114,"Themenraster","14 vorgegebene Kachelfarben. Kurzes Antippen wendet die Farbe sofort an; der Rahmen der aktiven Kachel wird weiß."],
-    [55,190,260,235,"Farbtonleiste","Antippen an beliebiger Stelle der Leiste legt einen benutzerdefinierten Farbton fest; dasselbe kann durch Drehen der Trommel erreicht werden."],
+    [55,190,260,235,"Farbtonleiste","Antippen an beliebiger Stelle der Leiste legt einen benutzerdefinierten Farbton fest; dasselbe kann durch Wischen über die Trommel erreicht werden."],
     [275,195,315,235,"Vorschau","Die aktuell gewählte Farbe — ein Quadrat in derselben Größe wie die Taste „Zurück“."],
     [0,190,50,240,"Zurück","Kehrt zum Menü zurück — Thema und Stil sind bereits gespeichert."],
   ],
@@ -1418,33 +1043,33 @@ const SECTIONS = { ru: [
 
 const STRINGS = {
   ru:{
-    docTitle:"Пульт Timberline",
+    docTitle:"Пульт MultiHot", crumb:"Руководства",
     eyebrow:"Изделие · панель управления отопителем",
-    h1:"Пульт Timberline",
+    h1:"Пульт MultiHot",
     lede:"Сенсорная панель управления, монтируется в кабине/салоне. Ниже — экран за экраном: что на нём показано и что произойдёт при касании каждой области. Скриншоты — точный программный рендер прошивки, не фотографии.",
-    npControl:"Управление", npControlV:"сенсор + поворотный барабан",
+    npControl:"Управление", npControlV:"сенсорный экран",
     npLink:"Связь", npLinkV:"CAN-шина, опц. модем/BLE", npDoc:"Документ",
     tocLabel:"Начало",
     footer:"Руководство сгенерировано из исходников прошивки PU28-Timberline (рендер экранов — <code>tools/ui_render</code>). Отражает текущую раскладку меню и экранов «Оформление», «Версии прошивки», «Текущие показания».",
     dateLocale:"ru-RU",
   },
   en:{
-    docTitle:"Timberline Control Panel",
+    docTitle:"MultiHot Control Panel", crumb:"Manuals",
     eyebrow:"Product · heater control panel",
-    h1:"Timberline Control Panel",
+    h1:"MultiHot Control Panel",
     lede:"A touchscreen control panel, mounted in the cab/cabin. Below is a screen-by-screen walkthrough: what's shown and what happens when you touch each area. Screenshots are exact software renders of the firmware, not photos.",
-    npControl:"Control", npControlV:"touch + rotary drum",
+    npControl:"Control", npControlV:"touchscreen",
     npLink:"Connectivity", npLinkV:"CAN bus, opt. modem/BLE", npDoc:"Document",
     tocLabel:"Contents",
     footer:"This guide is generated from the PU28-Timberline firmware source (screen rendering via <code>tools/ui_render</code>). It reflects the current menu layout and the “Appearance”, “Firmware Versions”, and “Live Readings” screens.",
     dateLocale:"en-US",
   },
   de:{
-    docTitle:"Timberline-Bedienpanel",
+    docTitle:"MultiHot-Bedienpanel", crumb:"Anleitungen",
     eyebrow:"Produkt · Heizungs-Bedienpanel",
-    h1:"Timberline-Bedienpanel",
+    h1:"MultiHot-Bedienpanel",
     lede:"Ein Touchscreen-Bedienpanel, montiert in der Kabine. Im Folgenden finden Sie einen Bildschirm-für-Bildschirm-Überblick: was angezeigt wird und was beim Berühren der jeweiligen Fläche passiert. Die Screenshots sind exakte Software-Renderings der Firmware, keine Fotos.",
-    npControl:"Bedienung", npControlV:"Touch + Drehtrommel",
+    npControl:"Bedienung", npControlV:"Touchscreen",
     npLink:"Anbindung", npLinkV:"CAN-Bus, opt. Modem/BLE", npDoc:"Dokument",
     tocLabel:"Inhalt",
     footer:"Diese Anleitung wurde aus dem Quellcode der PU28-Timberline-Firmware generiert (Bildschirm-Rendering über <code>tools/ui_render</code>). Sie spiegelt das aktuelle Menülayout sowie die Bildschirme „Erscheinungsbild“, „Firmware-Versionen“ und „Live-Messwerte“ wider.",
@@ -1507,11 +1132,8 @@ function renderSectionFull(s, lang){
 // so adding a language is just one more entry here plus one more key in each of
 // those two objects, nothing else to wire up.
 // Order here IS the combo-box order, and it's also the whitelist of what's
-// actually shown - "ru" stays fully translated in STRINGS/SECTIONS above
-// (kept, not deleted) but is deliberately left out of this map so it's
-// hidden from the picker for now, per explicit request; add it back here
-// (in whatever position) to bring it back, no data changes needed.
-const LANG_NAMES = { en:"English", de:"Deutsch" };
+// actually shown.
+const LANG_NAMES = { ru:"Русский", en:"English", de:"Deutsch" };
 
 function render(lang){
   const t = STRINGS[lang];
@@ -1519,6 +1141,7 @@ function render(lang){
 
   document.getElementById("html-root").lang = lang;
   document.getElementById("doc-title").textContent = t.docTitle;
+  document.getElementById("crumb").innerHTML = '<a href="/">MultiHot</a> / <a href="/manuals.html">' + t.crumb + '</a>';
   document.getElementById("cv-eyebrow").textContent = t.eyebrow;
   document.getElementById("cv-h1").textContent = t.h1;
   document.getElementById("cv-lede").textContent = t.lede;
@@ -1532,8 +1155,11 @@ function render(lang){
   document.getElementById("doc-date").textContent =
     new Date().toLocaleDateString(t.dateLocale,{year:"numeric",month:"long",day:"numeric"});
 
+  // Screenshots are rendered per panel UI language: img/ holds the English
+  // set (also used for de), img/ru/ the Russian-UI set.
+  const imgDir = lang === "ru" ? "img/ru/" : "img/";
   document.getElementById("main").innerHTML =
-    sections.map(s=>renderSectionFull(s, lang)).join("");
+    sections.map(s=>renderSectionFull(s, lang)).join("").replaceAll('src="img/', 'src="' + imgDir);
   document.getElementById("toc-main").innerHTML =
     sections.map(s=>`<li><a href="#${s.id}">${s.title}</a></li>`).join("");
 
@@ -1547,7 +1173,7 @@ langSelect.innerHTML = Object.keys(LANG_NAMES)
   .join("");
 langSelect.addEventListener("change", ()=>render(langSelect.value));
 
-let initialLang = "en";
+let initialLang = /^ru\b/i.test(navigator.language || "") ? "ru" : "en";
 try {
   const saved = localStorage.getItem("timberline_manual_lang");
   if (Object.prototype.hasOwnProperty.call(LANG_NAMES, saved)) initialLang = saved;

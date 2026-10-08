@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru" id="html-root">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title id="doc-title">Руководства MultiHot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+
+<div class="langswitch"><select id="lang-select"></select></div>
+
+<div class="wrap" style="grid-template-columns:minmax(0,1fr)">
+  <div class="cover">
+    <p class="crumb"><a href="/" id="crumb-home">MultiHot</a></p>
+    <span class="eyebrow" id="cv-eyebrow"></span>
+    <h1 id="cv-h1"></h1>
+    <p class="lede" id="cv-lede"></p>
+  </div>
+  <main style="padding-top:8px">
+    <div class="cards" id="cards"></div>
+  </main>
+</div>
+
+<script>
+const CARDS = [
+  { href:"/manual-system.html", ru:["Система","Система отопления «Мультихот»","Руководство по эксплуатации и монтажу: устройство, органы управления, гидравлика, электрические подключения, CAN-шина, проверка и рекомендации.","Открыть руководство →","Только на русском"],
+    en:["System","“Multihot” heating system","Operation and installation manual: design, controls, hydraulics, wiring, CAN bus, checks and recommendations.","Open the manual →","Russian only"],
+    de:["System","Heizsystem „Multihot“","Betriebs- und Montageanleitung: Aufbau, Bedienung, Hydraulik, Elektroanschluss, CAN-Bus, Prüfung und Empfehlungen.","Anleitung öffnen →","Nur auf Russisch"] },
+  { href:"/pu28manual.html", ru:["Пульт","Пульт ПУ-28","Экран за экраном: что показано и что происходит при нажатии. Включая экраны модема и QR-код привязки.","Открыть руководство →","Русский · English · Deutsch"],
+    en:["Panel","PU-28 control panel","Screen by screen: what is shown and what happens on a tap, including the modem screens and the pairing QR code.","Open the manual →","Русский · English · Deutsch"],
+    de:["Panel","Bedienpanel PU-28","Bildschirm für Bildschirm: was angezeigt wird und was beim Antippen passiert, einschließlich Modem-Bildschirmen und Kopplungs-QR-Code.","Anleitung öffnen →","Русский · English · Deutsch"] },
+  { href:"/manual-modem.html", ru:["Модем","Модем MultiHot","Управление по SMS и через интернет: команды, веб-приложение, индикация, подключение и диагностика.","Открыть руководство →","Русский · English · Deutsch"],
+    en:["Modem","MultiHot modem","Control by SMS and over the internet: commands, the web app, indication, connection and troubleshooting.","Open the manual →","Русский · English · Deutsch"],
+    de:["Modem","MultiHot-Modem","Steuerung per SMS und über das Internet: Befehle, Web-App, Anzeige, Anschluss und Fehlersuche.","Anleitung öffnen →","Русский · English · Deutsch"] }
+];
+const T = {
+  ru:{title:"Руководства MultiHot", eyebrow:"Документация", h1:"Руководства", lede:"Всё, что нужно для монтажа, настройки и эксплуатации системы отопления MultiHot."},
+  en:{title:"MultiHot manuals", eyebrow:"Documentation", h1:"Manuals", lede:"Everything you need to install, set up and operate the MultiHot heating system."},
+  de:{title:"MultiHot-Anleitungen", eyebrow:"Dokumentation", h1:"Anleitungen", lede:"Alles für Montage, Einrichtung und Betrieb des MultiHot-Heizsystems."}
+};
+const LANG_NAMES = { ru:"Русский", en:"English", de:"Deutsch" };
+
+function render(lang){
+  const t = T[lang];
+  document.getElementById("html-root").lang = lang;
+  document.getElementById("doc-title").textContent = t.title;
+  document.getElementById("cv-eyebrow").textContent = t.eyebrow;
+  document.getElementById("cv-h1").textContent = t.h1;
+  document.getElementById("cv-lede").textContent = t.lede;
+  document.getElementById("cards").innerHTML = CARDS.map(c=>{
+    const x = c[lang];
+    return `<a class="card" href="${c.href}"><span class="k">${x[0]}</span><h2>${x[1]}</h2><p>${x[2]}</p><p style="margin-top:10px;font-family:var(--mono);font-size:11.5px">${x[4]}</p><span class="go">${x[3]}</span></a>`;
+  }).join("");
+  document.getElementById("lang-select").value = lang;
+  try { localStorage.setItem("timberline_manual_lang", lang); } catch(e){}
+}
+const sel = document.getElementById("lang-select");
+sel.innerHTML = Object.keys(LANG_NAMES).map(c=>`<option value="${c}">${LANG_NAMES[c]}</option>`).join("");
+sel.addEventListener("change", ()=>render(sel.value));
+let lang = /^ru\b/i.test(navigator.language || "") ? "ru" : (/^de\b/i.test(navigator.language || "") ? "de" : "en");
+try { const s = localStorage.getItem("timberline_manual_lang"); if (LANG_NAMES[s]) lang = s; } catch(e){}
+render(lang);
+</script>
+</body>
+</html>

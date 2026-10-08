@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="ru" id="html-root">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title id="doc-title">Модем MultiHot — руководство</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+
+<div class="langswitch"><select id="lang-select"></select></div>
+
+<div class="wrap">
+  <div class="cover">
+    <p class="crumb" id="crumb"></p>
+    <span class="eyebrow" id="cv-eyebrow"></span>
+    <h1 id="cv-h1"></h1>
+    <p class="lede" id="cv-lede"></p>
+  </div>
+
+  <nav class="toc manual">
+    <div class="group-label" id="toc-label"></div>
+    <ol id="toc-main"></ol>
+  </nav>
+
+  <main class="doc" id="main"></main>
+  <footer id="doc-footer"></footer>
+</div>
+
+<script>
+/* Command table: [en keyword, de keyword, arg ru, arg en, arg de, desc ru, desc en, desc de] */
+const CMDS = [
+ ["admin","admin","номер телефона*","phone number*","Telefonnummer*",
+  "Задаёт номер администратора. Команды с этого номера не требуют PIN. На этот номер приходят аварийные сообщения при неисправности системы. Пустой аргумент назначает администратором номер отправителя.",
+  "Sets the admin phone number. Commands from this phone do not require a PIN. This phone will receive alarm messages in case of a system fault. An empty argument designates the sender's phone number as admin.",
+  "Legt die Admin-Telefonnummer fest. Befehle von dieser Nummer benötigen keine PIN. Diese Nummer erhält Alarmmeldungen bei einer Störung. Ein leeres Argument setzt die Nummer des Absenders als Admin."],
+ ["phone#","telefon#","номер телефона*","phone number*","Telefonnummer*",
+  "Задаёт доверенный номер № (1–4). Команды с него не требуют PIN. Аварийные сообщения на этот номер не приходят. Пустой аргумент назначает доверенным номер отправителя.",
+  "Sets trusted phone number #N (1-4). Commands from this phone do not require a PIN. This phone will not receive alarm messages in case of a system fault. An empty argument designates the sender's phone number as trusted.",
+  "Legt die vertrauenswürdige Telefonnummer #N (1-4) fest. Befehle von dieser Nummer benötigen keine PIN. Diese Nummer erhält keine Alarmmeldungen. Ein leeres Argument setzt die Nummer des Absenders als vertrauenswürdig."],
+ ["faultreport","fehlermeldung","on, off или 0, 1","on, off or 0, 1","ein, aus (auch on/off/0/1)",
+  "Включает или выключает оповещение о неисправностях. При появлении нового кода ошибки модем отправляет SMS с кодом на номер администратора.",
+  "Enables or disables the fault alarm function. When a new fault code appears, the modem will send an SMS with the error code to the admin number.",
+  "Aktiviert oder deaktiviert die Störungsalarmfunktion. Bei einem neuen Fehlercode sendet das Modem eine SMS mit dem Fehlercode an die Admin-Nummer."],
+ ["ack","bestaetigung","on, off или 0, 1","on, off or 0, 1","ein, aus (auch on/off/0/1)",
+  "Отправлять подтверждение после получения команды.",
+  "Sends an acknowledgement after receiving a command.",
+  "Sendet eine Bestätigung nach Erhalt eines Befehls."],
+ ["setpin","pin","новый PIN (4 цифры)","new PIN code (4 digits)","neuer PIN-Code (4 Ziffern)",
+  "Меняет PIN-код.","Changes the PIN code.","Ändert den PIN-Code."],
+ ["unit","einheit","C, F","C, F","c, f",
+  "Единицы температуры модема: градусы Цельсия или Фаренгейта.",
+  "Sets the modem's temperature unit: Celsius or Fahrenheit.",
+  "Legt die Temperatureinheit des Modems fest: Celsius oder Fahrenheit."],
+ ["lang","sprache","en, de","en, de","en, de",
+  "Язык ответов по умолчанию. Применяется, только если в самой SMS нет признака языка (нераспознанная команда или одиночный запрос «?»). Распознанное немецкое ключевое слово всегда даёт ответ по-немецки, независимо от этой настройки.",
+  "Sets the default reply language. Used only when the SMS itself carries no language cue of its own (an unrecognised-command error, or a bare ? status request) — a recognised German keyword always triggers a German reply regardless of this setting.",
+  "Legt die Standard-Antwortsprache fest. Wird nur verwendet, wenn die SMS selbst keinen Sprachhinweis enthält (ein nicht erkannter Befehl oder eine alleinstehende ?-Statusabfrage) — ein erkanntes deutsches Schlüsselwort löst unabhängig von dieser Einstellung immer eine deutsche Antwort aus."],
+ ["burner","brenner","on/off или 0/1","on/off or 0/1","ein/aus (auch on/off/0/1)",
+  "Управление жидкостным подогревателем (горелкой).","Burner control.","Steuerung des Brenners."],
+ ["element","heizstab","on/off или 0/1","on/off or 0/1","ein/aus (auch on/off/0/1)",
+  "Управление ТЭНом.","Element control.","Steuerung des Heizstabs."],
+ ["z# 0 / z# off","z# 0 / z# aus","—","—","—",
+  "Выключает зону №.","Disables the zone.","Deaktiviert die Zone."],
+ ["z# heat / z# on","z# heizen / z# ein","—","—","—",
+  "Включает отопление зоны.","Enables zone heating.","Aktiviert die Zonenheizung."],
+ ["z# vent","z# lueften","—","—","—",
+  "Включает вентиляцию зоны (без нагрева).","Enables zone ventilation.","Aktiviert die Zonenlüftung."],
+ ["z# auto","z# auto","—","—","—",
+  "Автоматический режим вентилятора зоны.","Sets the zone fan to auto mode.","Stellt den Zonenlüfter auf Automatikbetrieb."],
+ ["z# manual","z# manuell","—","—","—",
+  "Ручной режим вентилятора зоны.","Sets the zone fan to manual mode.","Stellt den Zonenlüfter auf manuellen Betrieb."],
+ ["z# 10..100","z# 10..100","—","—","—",
+  "Задаёт скорость вентилятора зоны в ручном режиме, %.","Sets the manual fan percentage.","Legt die manuelle Lüfterstufe in Prozent fest."],
+ ["systimer","systemzeit","1..100","1..100","1..100",
+  "Ограничение времени работы системы, ч; 96 и больше — без ограничения.",
+  "Sets the system working time limit; 96+ means unlimited time.",
+  "Legt die Systemlaufzeitbegrenzung fest; 96+ bedeutet unbegrenzt."],
+ ["z#day","z#tag","10..32 (50..90 F)","10..32 (50..90 F)","10..32 (50..90 F)",
+  "Дневная уставка температуры зоны.","Sets the daytime setpoint.","Legt den Tag-Sollwert fest."],
+ ["z#night","z#nacht","10..32 (50..90 F)","10..32 (50..90 F)","10..32 (50..90 F)",
+  "Ночная уставка температуры зоны.","Sets the nighttime setpoint.","Legt den Nacht-Sollwert fest."],
+ ["floor","fussboden","on/off или 0/1; 2..32 (36..90 F)","on/off or 0/1; 2..32 (36..90 F)","ein/aus; 2..32 (36..90 F)",
+  "Включение тёплого пола или его уставка температуры.","Underfloor heating on/off, or its setpoint.","Fußbodenheizung ein/aus oder ihr Sollwert."],
+ ["engine","motor","on/off или 0/1; 1..80 (32..176 F)","on/off or 0/1; 1..80 (32..176 F)","ein/aus; 1..80 (32..176 F)",
+  "Включение предпускового подогрева двигателя или его уставка температуры.","Engine preheat on/off, or its setpoint.","Motorvorwärmung ein/aus oder ihr Sollwert."],
+ ["status  /  ?","status  /  ?","—","—","—",
+  "Запрашивает состояние системы. Ответ содержит состояние горелки и ТЭНа, текущую и заданную температуру зон, таймер, температуру бака, напряжение, состояние интернета и MQTT, а также температуру модема, если подключён датчик.",
+  "Requests the system status. The reply contains burner and element state, current and target temperature of each zone, timer, tank temperature, supply voltage, internet and MQTT state, and the modem temperature if the sensor is connected.",
+  "Fragt den Systemstatus ab. Die Antwort enthält Brenner- und Heizstab-Zustand, Ist- und Soll-Temperatur der Zonen, Timer, Tanktemperatur, Spannung, Internet- und MQTT-Status sowie die Modemtemperatur, falls der Sensor angeschlossen ist."],
+ ["warmup","aufwaermen","burner / element / both (по умолчанию burner)","burner / element / both (burner is default)","brenner / heizstab / beide (brenner ist Standard)",
+  "Включает горелку и/или ТЭН и переводит все зоны в режим отопления.",
+  "Enables the burner and/or element and sets all zones to heat mode.",
+  "Aktiviert den Brenner und/oder Heizstab und stellt alle Zonen auf Heizen."],
+ ["off","aus","—","—","—",
+  "Выключает систему: горелку, ТЭН, зоны, тёплый пол и подогрев двигателя.",
+  "Disables the system (heater, element, zones, floor, and engine).",
+  "Deaktiviert das System (Brenner, Heizstab, Zonen, Fußbodenheizung und Motorvorwärmung)."],
+ ["server","server","хост или IP","host or IP","Host oder IP",
+  "Адрес MQTT-брокера (хост или IP) для работы через интернет.",
+  "Sets the MQTT broker address (host or IP) used for internet/remote control.",
+  "Legt die MQTT-Serveradresse (Host oder IP) für Internet-/Fernsteuerung fest."],
+ ["login","login","имя (1–15 симв.)","username (1-15 chars)","Benutzername (1-15 Zeichen)",
+  "Имя пользователя MQTT — оно же логин для входа в веб-приложение.",
+  "Sets the MQTT username — also used to log in to the web control panel.",
+  "Legt den MQTT-Benutzernamen fest — wird auch für die Anmeldung im Web-Bedienfeld verwendet."],
+ ["password","password / passwort","пароль (1–23 симв.)*","password (1-23 chars)*","Passwort (1-23 Zeichen)*",
+  "Пароль MQTT — он же пароль для входа в веб-приложение. *Регистр сохраняется, в отличие от остальных команд.",
+  "Sets the MQTT password — also used to log in to the web control panel. *Case is preserved, unlike other commands.",
+  "Legt das MQTT-Passwort fest — wird auch für die Anmeldung im Web-Bedienfeld verwendet. *Groß-/Kleinschreibung bleibt erhalten."],
+ ["internet","internet","on/off или 0/1","on/off or 0/1","ein/aus (auch on/off/0/1)",
+  "Включает или выключает мобильный интернет и удалённое управление (MQTT). При off модем работает только по SMS.",
+  "Enables or disables mobile internet / remote (MQTT) control. When off, the modem works by SMS only.",
+  "Aktiviert oder deaktiviert mobiles Internet / Fernsteuerung (MQTT). Bei „aus“ funktioniert das Modem nur per SMS."],
+ ["roaming","roaming","on/off или 0/1","on/off or 0/1","ein/aus (auch on/off/0/1)",
+  "Разрешает (1) или запрещает (0, по умолчанию) интернет и удалённое управление в роуминге. Если роуминг обнаружен при запрете, соединение сразу разрывается.",
+  "Allows (1) or forbids (0, default) internet/remote control while roaming on a foreign network. If roaming is detected while this is off, the connection is torn down immediately.",
+  "Erlaubt (1) oder verbietet (0, Standard) Internet/Fernsteuerung im Roaming. Wird Roaming erkannt, während dies deaktiviert ist, wird die Verbindung sofort getrennt."],
+ ["getlink","getlink","—","—","—",
+  "Присылает ссылку для входа в веб-приложение. Предварительно нужно включить интернет. Новый getlink делает предыдущую ссылку недействительной.",
+  "Replies with a bookmarkable link to the web control page. Requires internet to be enabled first. A new getlink invalidates the old link.",
+  "Antwortet mit einem Link zur Web-Bedienoberfläche. Erfordert zuvor aktiviertes Internet. Ein neues getlink macht den alten Link ungültig."],
+ ["ping","ping","—","—","—",
+  "Проверка связи: модем отвечает «pong».","Connectivity check: the modem replies “pong”.","Verbindungstest: das Modem antwortet „pong“."],
+ ["reset","neustart","—","—","—",
+  "Перезагружает модем.","Reboots the modem.","Startet das Modem neu."],
+ ["2g","2g","on/off или 0/1","on/off or 0/1","ein/aus (auch on/off/0/1)",
+  "on — принудительно использовать только сеть 2G (GSM), off — автоматический выбор 2G/4G. Применяется сразу, если интернет включён.",
+  "on forces the GSM-only radio (no 4G), off selects automatic 2G/4G. Takes effect immediately if internet is enabled.",
+  "ein erzwingt nur GSM (kein 4G), aus wählt automatisch 2G/4G. Wirkt sofort, wenn Internet aktiviert ist."],
+ ["apn","apn","имя точки доступа (до 31 симв.)","access point name (up to 31 chars)","Zugangspunktname (bis 31 Zeichen)",
+  "Задаёт APN вручную. Пустой аргумент возвращает автоматический выбор. Применяется при следующей попытке подключения (в течение минуты, если интернет не работает).",
+  "Sets the APN explicitly. An empty argument returns to automatic. Takes effect on the next connect attempt (within a minute if internet is currently down).",
+  "Legt den APN explizit fest. Ein leeres Argument stellt die Automatik wieder her. Wirkt beim nächsten Verbindungsversuch (innerhalb einer Minute, wenn das Internet gerade nicht funktioniert)."],
+ ["apnuser / apnpass","apnuser / apnpass","значение (до 31 симв.)","value (up to 31 chars)","Wert (bis 31 Zeichen)",
+  "Логин и пароль точки доступа, если оператор их требует. Пустой аргумент очищает значение.",
+  "APN username and password, if the operator requires them. An empty argument clears the value.",
+  "APN-Benutzer und -Passwort, falls der Anbieter sie verlangt. Ein leeres Argument löscht den Wert."],
+ ["checkurl","checkurl","адрес (до 63 симв.)","URL (up to 63 chars)","URL (bis 63 Zeichen)",
+  "Адрес, по которому модем проверяет реальный доступ в интернет (помимо самого подключения). Пустой аргумент отключает проверку.",
+  "The address the modem uses to verify real internet connectivity (beyond just the data connection coming up). An empty argument disables the check.",
+  "Adresse, mit der das Modem den tatsächlichen Internetzugang prüft (über den bloßen Verbindungsaufbau hinaus). Ein leeres Argument deaktiviert die Prüfung."]
+];
+
+function cmdTable(lang){
+  const i = {ru:0,en:1,de:2}[lang];
+  const head = {ru:["Команда","Аргумент","Описание"], en:["Command","Argument","Description"], de:["Befehl","Argument","Beschreibung"]}[lang];
+  const key = (r) => (lang === "de" ? r[1] : r[0]);
+  const rows = CMDS.map(r => `<tr><td class="cmd">${key(r)}</td><td>${r[2+i]}</td><td>${r[5+i]}</td></tr>`).join("");
+  return `<div class="tblwrap"><table class="tbl"><thead><tr><th>${head[0]}</th><th>${head[1]}</th><th>${head[2]}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function deKeywordTable(lang){
+  const head = {ru:["Английская команда","Немецкая команда"], en:["English command","German command"], de:["Englischer Befehl","Deutscher Befehl"]}[lang];
+  const rows = CMDS.filter(r => r[0] !== r[1]).map(r => `<tr><td class="cmd">${r[0]}</td><td class="cmd">${r[1]}</td></tr>`).join("");
+  return `<div class="tblwrap"><table class="tbl" style="max-width:480px"><thead><tr><th>${head[0]}</th><th>${head[1]}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+const DOC = {
+ru: {
+  docTitle:"Модем MultiHot — руководство",
+  crumb:"Руководства",
+  eyebrow:"Руководство пользователя",
+  h1:"Модем MultiHot",
+  lede:"Управление отоплительной системой по SMS и через интернет: команды, веб-приложение, индикация, настройка и диагностика.",
+  tocLabel:"Содержание",
+  footer:"Руководство относится к модему системы MultiHot (тип устройства 121). Экраны модема на пульте ПУ-28 описаны в <a href=\"/pu28manual.html\">руководстве на пульт</a>.",
+  sections:[
+   {id:"overview", title:"Назначение", html:()=>`
+    <p>Модем подключается к CAN-шине отоплительной системы как ещё одно устройство и позволяет управлять системой и следить за её состоянием на расстоянии:</p>
+    <ul>
+      <li><b>по SMS</b> — включать и выключать горелку, ТЭН, зоны, менять уставки, запрашивать состояние; при неисправности модем сам присылает SMS с кодом ошибки;</li>
+      <li><b>через интернет</b> — из веб-приложения на телефоне или компьютере, с живым состоянием системы;</li>
+      <li><b>USSD</b> — модем может переслать USSD-запрос (например, проверку баланса) и вернуть ответ по SMS.</li>
+    </ul>
+    <p>SMS-управление работает всегда. Интернет-управление включается отдельно (раздел «Интернет и веб-управление»); при выключенном интернете модем работает только по SMS.</p>`},
+   {id:"connect", title:"Подключение", html:()=>`
+    <p>Модем подключается к CAN-шине отоплительной системы так же, как остальные устройства (см. <a href="/manual-system.html#can">раздел 7.5 руководства по системе</a>).</p>
+    <div class="warn"><b class="t">Внимание</b>Подключайте устройства к CAN-шине только после подачи питания. CAN-шину системы нельзя объединять с CAN-шиной транспортного средства.</div>
+    <p>Для работы нужна SIM-карта с включёнными SMS и мобильным интернетом (если планируется интернет-управление) и антенна модема. После включения модем сам регистрируется в сотовой сети; ход подключения виден на пульте (цвет значка модема, экраны «Статус модема» и «Статус интернета») и по светодиоду.</p>`},
+   {id:"indication", title:"Светодиод и кнопка", html:()=>`
+    <h3>Светодиод</h3>
+    <p>Для индикации используется только жёлтый канал светодиода; зелёный не горит.</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Состояние</th><th>Значение</th></tr></thead><tbody>
+      <tr><td>Не горит</td><td>Горелка и ТЭН выключены, активных неисправностей нет.</td></tr>
+      <tr><td>Плавное «дыхание»</td><td>Включена только горелка (жидкостный подогреватель).</td></tr>
+      <tr><td>Медленное мигание (2 с горит / 2 с нет)</td><td>Включён только ТЭН.</td></tr>
+      <tr><td>Горит постоянно</td><td>Одновременно включены горелка и ТЭН.</td></tr>
+      <tr><td>Мигает кодом ошибки</td><td>Есть хотя бы одна активная неисправность — это состояние приоритетнее всех остальных. Светодиод показывает код первой активной неисправности по цифрам (сотни, десятки, единицы; нулевая цифра даёт только паузу без вспышек). Цифры разделяет короткая пауза, перед повтором последовательности — длинная. Точный код можно также прочитать из SMS о неисправности или из статуса системы.</td></tr>
+    </tbody></table></div>
+    <p>Состояние тёплого пола и подогрева двигателя на светодиод не влияет.</p>
+    <h3>Кнопка</h3>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Нажатие</th><th>Действие</th></tr></thead><tbody>
+      <tr><td>Короткое</td><td>Переключает комбинацию горелка/ТЭН на шаг вперёд: горелка → ТЭН → горелка + ТЭН → горелка → … Одновременно включает все зоны отопления (режим «отопление»).</td></tr>
+      <tr><td>Длинное</td><td>Выключает всё: горелку, ТЭН, все зоны, тёплый пол, подогрев двигателя. Следующее короткое нажатие снова начнёт цикл с «горелки».</td></tr>
+      <tr><td>Очень длинное (10 с)</td><td>Сброс к заводским настройкам: все настройки стираются, модем перезагружается. К этому моменту нагреватель уже выключен (длинное нажатие срабатывает раньше, примерно на 1,5 с). Зелёный светодиод не горит всё время удержания и начинает мигать только после того, как сброс уже выполнен.</td></tr>
+    </tbody></table></div>`},
+   {id:"security", title:"Первое включение и безопасность", html:()=>`
+    <ul>
+      <li>С завода установлен PIN-код <b>1234</b>. Рекомендуем сменить его как можно скорее командой <span class="cmd">setpin</span>.</li>
+      <li>Задайте номер администратора командой <span class="cmd">admin</span> с вашего телефона (пустой аргумент назначает администратором номер отправителя). С этого номера команды выполняются без PIN, и именно на него приходят сообщения о неисправностях.</li>
+      <li>Дополнительные доверенные номера (до четырёх) задаются командами <span class="cmd">phone1</span>…<span class="cmd">phone4</span>. Они тоже работают без PIN, но аварийных сообщений не получают.</li>
+      <li>Включите оповещение о неисправностях командой <span class="cmd">faultreport on</span>.</li>
+    </ul>`},
+   {id:"sms", title:"Управление по SMS", html:()=>`
+    <p>Команда с незарегистрированного телефона должна выглядеть так: <span class="cmd">PIN команда аргумент</span>, например <span class="cmd">1234 burner on</span> или <span class="cmd">1234 admin +79608123398</span>.</p>
+    <p>Команда с номера администратора (или доверенного номера) PIN не требует: <span class="cmd">z1 vent</span>, <span class="cmd">systimer 100</span>.</p>
+    <ul>
+      <li>«#» после «z» заменяется номером зоны.</li>
+      <li>Регистр не важен: <span class="cmd">Burner on</span> и <span class="cmd">bUrNeR oN</span> — одно и то же.</li>
+      <li>В одной SMS можно передать несколько команд через запятую: <span class="cmd">burner on,element on, z1 heat</span>.</li>
+      <li>Команды можно подавать и по-немецки (<span class="cmd">brenner ein</span>); тогда и ответ придёт по-немецки. Не смешивайте английские и немецкие слова в одном сообщении.</li>
+    </ul>
+    ${cmdTable('ru')}
+    <h3>Немецкие команды</h3>
+    <p>Немецкие слова записаны без умлаутов (ae/oe/ue/ss вместо ä/ö/ü/ß), потому что SMS отправляется в 7-битной кодировке модема. Аргументы и значения, которых нет в таблице (номера телефонов, цифры PIN, режим «auto», числовые уставки и проценты, буквы c/f), пишутся одинаково на обоих языках.</p>
+    ${deKeywordTable('ru')}`},
+   {id:"internet", title:"Интернет и веб-управление", html:()=>`
+    <p>По умолчанию модем управляется только по SMS. Включение интернета добавляет к этому управление и наблюдение из браузера.</p>
+    <h3>Включение интернета</h3>
+    <p>Отправьте <span class="cmd">internet 1</span>, чтобы перевести модем на мобильный интернет (MQTT). <span class="cmd">internet 0</span> возвращает работу только по SMS.</p>
+    <h3>Настройка одной SMS</h3>
+    <ol>
+      <li>Откройте <a href="https://multihot.online">multihot.online</a> и зарегистрируйте учётную запись (логин и пароль на ваш выбор).</li>
+      <li>Сайт покажет готовую SMS-команду, например <span class="cmd">server multihot.online,login myname,password mypass,getlink</span>. Отправьте её на номер SIM-карты модема в точности как показано.</li>
+      <li>Модем применит все четыре настройки сразу и ответит ссылкой на страницу управления.</li>
+      <li>Откройте ссылку и добавьте в закладки: её можно открывать в любое время, она всегда показывает живое состояние. Новая команда <span class="cmd">getlink</span> делает старую ссылку недействительной.</li>
+    </ol>
+    <h3>Автоматическая привязка с пульта</h3>
+    <p>Привязать модем можно и без SMS: на экране «Статус интернета» пульта ПУ-28 кнопка <b>REG</b> запускает автоматическую регистрацию, после чего на пульте появляется QR-код со ссылкой для входа (кнопка <b>QR</b>). Отсканируйте его телефоном. Подробнее — в <a href="/pu28manual.html#modeminternet">руководстве на пульт</a>.</p>
+    <h3>Роуминг</h3>
+    <p>По умолчанию (<span class="cmd">roaming 0</span>) модем не использует мобильный интернет в роуминге, чтобы не создавать неожиданных расходов: при обнаружении роуминга соединение сразу разрывается, а SMS продолжают работать. Чтобы разрешить интернет в роуминге, отправьте <span class="cmd">roaming 1</span>.</p>
+    <h3>Страница управления</h3>
+    <p>Кнопки с иконками для горелки, ТЭНа, тёплого пола и подогрева двигателя (тёплый пол и двигатель появляются, только если это оборудование установлено). Переключатель ECO. Выбор зоны показывает только реально подключённые зоны; каждую зону можно переключить Выкл/Нагрев/Вентиляция (или только Выкл/Нагрев для радиатора без вентилятора) через меню из трёх точек в её углу, а цвет показывает текущее состояние. Дневная и ночная уставка и скорость вентилятора выбранной зоны меняются стрелками, колесом мыши или перетаскиванием вверх-вниз; долгое нажатие на вентилятор переключает автоматический и ручной режим. Таблица состояния показывает температуры бака, подогревателя и улицы, напряжение питания, состояние помп и активные коды неисправностей. Страница сама подстраивается под светлую или тёмную тему телефона или браузера.</p>`},
+   {id:"panel", title:"Модем на пульте", html:()=>`
+    <p>Если модем подключён, на главном экране пульта ПУ-28 появляется значок модема. Его цвет показывает, как далеко продвинулось подключение:</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Цвет</th><th>Значение</th></tr></thead><tbody>
+      <tr><td>Серый</td><td>Модем не подключён к системе.</td></tr>
+      <tr><td>Синий</td><td>Модем подключён к системе.</td></tr>
+      <tr><td>Голубой</td><td>Модем зарегистрирован в сотовой сети.</td></tr>
+      <tr><td>Оранжевый</td><td>Модем подключён к интернету.</td></tr>
+      <tr><td>Зелёный</td><td>Модем подключён к MQTT-брокеру (облачный сервис доступен).</td></tr>
+    </tbody></table></div>
+    <p>Нажатие на значок открывает экраны модема. Подробно они описаны в руководстве на пульт:</p>
+    <ul>
+      <li><a href="/pu28manual.html#modeminfo">Статус модема</a> — регистрация, роуминг, уровень сигнала, оператор, IMEI, последняя SMS;</li>
+      <li><a href="/pu28manual.html#modemsettings">Настройки модема</a> — «Только SMS», «Только 2G», «Роуминг», «SMS неиспр.», «Подтв. команд»;</li>
+      <li><a href="/pu28manual.html#modeminternet">Статус интернета</a> — интернет, MQTT, режим сети, адрес проверки, брокер, логин, пароль, кнопки REG и QR;</li>
+      <li><a href="/pu28manual.html#modemqr">QR-код привязки</a>.</li>
+    </ul>`},
+   {id:"ussd", title:"USSD-запросы", html:()=>`
+    <p>Модем работает как USSD-мост. Чтобы выполнить USSD-запрос, отправьте с номера администратора SMS <span class="cmd">USSD &lt;запрос&gt;</span>. Результат запроса придёт ответным SMS.</p>`},
+   {id:"trouble", title:"Если что-то не работает", html:()=>`
+    <p>Сначала посмотрите цвет значка модема на главном экране пульта и экран «Статус интернета».</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Что видно</th><th>Что проверить</th></tr></thead><tbody>
+      <tr><td>Значок серый</td><td>Модем не отвечает по CAN. Проверьте питание модема, провода CAN и общую массу; помните, что устройства соединяют по CAN только после подачи питания.</td></tr>
+      <tr><td>Значок синий (нет регистрации в сети)</td><td>SIM-карта вставлена и активна, антенна подключена, есть покрытие оператора (уровень сигнала на экране «Статус модема»).</td></tr>
+      <tr><td>Значок голубой (регистрация есть, интернета нет)</td><td>Не включён ли режим «Только SMS» и включён ли интернет (<span class="cmd">internet 1</span>). Если вы в роуминге — разрешите его (<span class="cmd">roaming 1</span>): по умолчанию в роуминге интернет запрещён, а SMS при этом работают. Проверьте тариф и баланс для передачи данных. При необходимости задайте APN оператора командами <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span>. Если сети 2G в вашей стране нет, убедитесь, что режим «Только 2G» выключен (<span class="cmd">2g off</span>).</td></tr>
+      <tr><td>Значок оранжевый (интернет есть, брокера нет)</td><td>Проверьте адрес сервера, логин и пароль на экране «Статус интернета» (<span class="cmd">server</span>, <span class="cmd">login</span>, <span class="cmd">password</span>), при необходимости повторите привязку (<span class="cmd">getlink</span> или кнопка REG).</td></tr>
+      <tr><td>Модем не отвечает на SMS</td><td>Правильность PIN или отправка с номера администратора, баланс SIM-карты, команда набрана верно (регистр не важен). Для проверки связи отправьте <span class="cmd">ping</span> — в ответ придёт «pong».</td></tr>
+      <tr><td>Сам собой перестал работать интернет</td><td>Отправьте <span class="cmd">reset</span>, чтобы перезагрузить модем. Если не помогает — обратитесь в сервис.</td></tr>
+    </tbody></table></div>`},
+   {id:"update", title:"Обновление программы", html:()=>`
+    <p>Версию программы модема можно посмотреть на экране «Версии прошивки» пульта (строка «Модем») и в веб-приложении. Обновление выполняется по сети из веб-приложения либо с помощью программы CAN Tool; обновлять устройства следует только версиями, предназначенными для их типа.</p>`}
+  ]
+},
+en: {
+  docTitle:"MultiHot modem — manual",
+  crumb:"Manuals",
+  eyebrow:"User guide",
+  h1:"MultiHot modem",
+  lede:"Control the heating system by SMS and over the internet: commands, the web app, indication, setup and troubleshooting.",
+  tocLabel:"Contents",
+  footer:"This guide covers the MultiHot system modem (device type 121). The modem screens on the PU-28 panel are described in the <a href=\"/pu28manual.html\">panel manual</a>.",
+  sections:[
+   {id:"overview", title:"Purpose", html:()=>`
+    <p>The modem connects to the heating system's CAN bus as one more device and lets you control the system and monitor its state remotely:</p>
+    <ul>
+      <li><b>by SMS</b> — switch the burner, element and zones on and off, change setpoints, request the status; on a fault the modem sends an SMS with the error code by itself;</li>
+      <li><b>over the internet</b> — from a web app on a phone or computer, with live system status;</li>
+      <li><b>USSD</b> — the modem can forward a USSD request (for example a balance check) and return the answer by SMS.</li>
+    </ul>
+    <p>SMS control always works. Internet control is enabled separately (see “Internet &amp; web control”); with internet off the modem works by SMS only.</p>`},
+   {id:"connect", title:"Connection", html:()=>`
+    <p>The modem is connected to the heating system's CAN bus like the other devices (see <a href="/manual-system.html#can">section 7.5 of the system manual</a>, Russian).</p>
+    <div class="warn"><b class="t">Attention</b>Connect devices to the CAN bus only after power is applied. The system's CAN bus must not be joined to the vehicle's CAN bus.</div>
+    <p>You need a SIM card with SMS and mobile data enabled (if you plan to use internet control) and the modem antenna. After power-up the modem registers in the cellular network by itself; progress is visible on the panel (modem icon colour, the “Modem status” and “Internet status” screens) and on the LED.</p>`},
+   {id:"indication", title:"LED and button", html:()=>`
+    <h3>LED</h3>
+    <p>Only the yellow channel is used for this; the green channel is unlit.</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>LED state</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td>Off</td><td>Neither the burner nor the electric element is on, and there is no active fault.</td></tr>
+      <tr><td>Smooth breathing pulse</td><td>The burner (liquid heater) is on, alone.</td></tr>
+      <tr><td>Slow blink (2 s on / 2 s off)</td><td>The electric heating element is on, alone.</td></tr>
+      <tr><td>Steady on</td><td>Both the burner and the electric element are on together.</td></tr>
+      <tr><td>Blinks out the fault code</td><td>At least one fault is active — takes priority over every state above. The LED blinks the code of the first active fault digit by digit (hundreds, then tens, then units; a leading zero digit contributes only its pause, no flashes). A short pause separates digits, a long pause precedes the sequence repeating. The exact code can also be read from the fault SMS or the system status.</td></tr>
+    </tbody></table></div>
+    <p>The state of the floor zones and the engine does not affect the LED.</p>
+    <h3>Button</h3>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Press</th><th>Action</th></tr></thead><tbody>
+      <tr><td>Short press</td><td>Cycles the burner/electric-element combination one step forward: burner → element → burner+element → burner → … Also turns on all heating zones (heat mode).</td></tr>
+      <tr><td>Long press</td><td>Turns everything off (burner, element, all zones, underfloor heating, engine preheat). The next short press restarts the cycle from “burner”.</td></tr>
+      <tr><td>Very long press (10 s)</td><td>Factory reset: erases all settings back to defaults and reboots. The heater is already off by this point (the long press fires first, at about 1.5 s). The green LED stays off for the whole hold and only starts blinking once the reset has already happened.</td></tr>
+    </tbody></table></div>`},
+   {id:"security", title:"First start and security", html:()=>`
+    <ul>
+      <li>The device ships with the default PIN <b>1234</b>. We strongly recommend changing it as soon as possible with <span class="cmd">setpin</span>.</li>
+      <li>Set the admin number by sending <span class="cmd">admin</span> from your phone (an empty argument designates the sender's phone as admin). Commands from this number need no PIN, and fault messages are sent to it.</li>
+      <li>Up to four additional trusted numbers are set with <span class="cmd">phone1</span>…<span class="cmd">phone4</span>. They also work without a PIN but do not receive fault messages.</li>
+      <li>Enable fault notifications with <span class="cmd">faultreport on</span>.</li>
+    </ul>`},
+   {id:"sms", title:"SMS control", html:()=>`
+    <p>A command from an unregistered phone must look like <span class="cmd">PIN command argument</span>, for example <span class="cmd">1234 burner on</span> or <span class="cmd">1234 admin +79608123398</span>.</p>
+    <p>A command from the admin number (or a trusted number) does not need the PIN: <span class="cmd">z1 vent</span>, <span class="cmd">systimer 100</span>.</p>
+    <ul>
+      <li>“#” after “z” must be replaced with a zone number.</li>
+      <li>Commands are case-insensitive: <span class="cmd">Burner on</span> and <span class="cmd">bUrNeR oN</span> mean the same thing.</li>
+      <li>A single SMS may contain several commands separated by commas: <span class="cmd">burner on,element on, z1 heat</span>.</li>
+      <li>Commands may also be given in German (<span class="cmd">brenner ein</span>); the reply is then German as well. Do not mix English and German words in one message.</li>
+    </ul>
+    ${cmdTable('en')}
+    <h3>German keywords</h3>
+    <p>German keywords intentionally avoid umlauts (ae/oe/ue/ss instead of ä/ö/ü/ß), since SMS is sent using the modem's 7-bit character set. Arguments and values not listed here (phone numbers, PIN digits, the “auto” fan mode, numeric setpoints and percentages, “c”/“f” unit letters) are written the same way in both languages.</p>
+    ${deKeywordTable('en')}`},
+   {id:"internet", title:"Internet & web control", html:()=>`
+    <p>By default the modem is controlled by SMS only. Enabling internet lets you also monitor and control it from a web browser, on top of everything SMS already does.</p>
+    <h3>Enabling internet</h3>
+    <p>Send <span class="cmd">internet 1</span> to switch the modem onto mobile internet (MQTT). Send <span class="cmd">internet 0</span> to go back to SMS-only.</p>
+    <h3>One-SMS setup</h3>
+    <ol>
+      <li>Open <a href="https://multihot.online">multihot.online</a> and register an account (choose a login and password).</li>
+      <li>The site shows a ready-made SMS command, for example <span class="cmd">server multihot.online,login myname,password mypass,getlink</span> — send it to the modem's SIM phone number exactly as shown.</li>
+      <li>The modem applies all four settings at once and replies with a link to the control page.</li>
+      <li>Open the link and bookmark it — it can be reopened at any time and always shows live status. Sending a new <span class="cmd">getlink</span> invalidates the old link.</li>
+    </ol>
+    <h3>Automatic pairing from the panel</h3>
+    <p>The modem can also be paired without SMS: on the PU-28's “Internet status” screen the <b>REG</b> button starts automatic registration, after which a QR code with the login link appears on the panel (the <b>QR</b> button). Scan it with your phone. More in the <a href="/pu28manual.html#modeminternet">panel manual</a>.</p>
+    <h3>Roaming</h3>
+    <p>By default (<span class="cmd">roaming 0</span>) the modem will not use mobile internet while roaming on a foreign network, to avoid unexpected data charges — the connection is torn down immediately if roaming is detected, while SMS keeps working. Send <span class="cmd">roaming 1</span> to allow it anyway.</p>
+    <h3>The web control page</h3>
+    <p>Icon buttons for Heater, Element, Floor and Engine — Floor/Engine only appear if that hardware is actually installed. An Eco switch. A zone selector showing only the zones actually connected; each zone can be switched Off/Heat/Vent (or just Off/Heat for a radiator zone with no fan) via the three-dot menu button in its corner, and is colour-coded by its current state. Day/night setpoint and fan-speed controls for the selected zone — use the arrows, scroll, or drag up/down to adjust; long-press the fan control to switch it between automatic and manual. A live status table with tank/heater/outdoor temperature, supply voltage, pump states, and any active fault codes. The page automatically matches your phone or browser's light/dark theme.</p>`},
+   {id:"panel", title:"The modem on the panel", html:()=>`
+    <p>When a modem is connected, a modem icon appears on the PU-28's home screen. Its colour shows how far the connection has got:</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Colour</th><th>Meaning</th></tr></thead><tbody>
+      <tr><td>Gray</td><td>Modem is not connected to the system.</td></tr>
+      <tr><td>Blue</td><td>Modem is connected to the system.</td></tr>
+      <tr><td>Cyan</td><td>Modem is registered in the cellular network.</td></tr>
+      <tr><td>Orange</td><td>Modem is connected to the internet.</td></tr>
+      <tr><td>Green</td><td>Modem is connected to the MQTT broker (cloud service available).</td></tr>
+    </tbody></table></div>
+    <p>Tapping the icon opens the modem screens, described in detail in the panel manual:</p>
+    <ul>
+      <li><a href="/pu28manual.html#modeminfo">Modem status</a> — registration, roaming, signal, operator, IMEI, last SMS;</li>
+      <li><a href="/pu28manual.html#modemsettings">Modem settings</a> — “Only SMS”, “Only 2G”, “Roaming”, “Fault SMS”, “Cmd ack.”;</li>
+      <li><a href="/pu28manual.html#modeminternet">Internet status</a> — internet, MQTT, network mode, check URL, broker, login, password, REG and QR buttons;</li>
+      <li><a href="/pu28manual.html#modemqr">Pairing QR code</a>.</li>
+    </ul>`},
+   {id:"ussd", title:"USSD requests", html:()=>`
+    <p>The modem also works as a USSD bridge. To make a USSD request, send <span class="cmd">USSD &lt;request&gt;</span> from the admin number. The result of the request will be returned as an SMS message.</p>`},
+   {id:"trouble", title:"Troubleshooting", html:()=>`
+    <p>Start with the colour of the modem icon on the panel's home screen and the “Internet status” screen.</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>What you see</th><th>What to check</th></tr></thead><tbody>
+      <tr><td>Icon is gray</td><td>The modem does not answer on CAN. Check the modem's power, the CAN wires and the common ground; remember that devices are joined on CAN only after power is applied.</td></tr>
+      <tr><td>Icon is blue (not registered)</td><td>The SIM card is inserted and active, the antenna is connected, and there is operator coverage (signal level on the “Modem status” screen).</td></tr>
+      <tr><td>Icon is cyan (registered, no internet)</td><td>Whether “Only SMS” is off and internet is enabled (<span class="cmd">internet 1</span>). If you are roaming, allow it (<span class="cmd">roaming 1</span>): by default internet is forbidden in roaming while SMS keeps working. Check the data plan and balance. If needed, set the operator's APN with <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span>. If there is no 2G network in your country, make sure “Only 2G” is off (<span class="cmd">2g off</span>).</td></tr>
+      <tr><td>Icon is orange (internet, no broker)</td><td>Check the server address, login and password on the “Internet status” screen (<span class="cmd">server</span>, <span class="cmd">login</span>, <span class="cmd">password</span>); repeat the pairing if needed (<span class="cmd">getlink</span> or the REG button).</td></tr>
+      <tr><td>No reply to SMS</td><td>Correct PIN or sending from the admin number, SIM balance, command typed correctly (case does not matter). To test the link, send <span class="cmd">ping</span> — the reply is “pong”.</td></tr>
+      <tr><td>Internet stopped working by itself</td><td>Send <span class="cmd">reset</span> to reboot the modem. If that does not help, contact service.</td></tr>
+    </tbody></table></div>`},
+   {id:"update", title:"Software update", html:()=>`
+    <p>The modem's software version is shown on the panel's “Firmware versions” screen (the “Modem” line) and in the web app. Updates are done over the network from the web app or with the CAN Tool program; always update devices only with versions built for their type.</p>`}
+  ]
+},
+de: {
+  docTitle:"MultiHot-Modem — Anleitung",
+  crumb:"Anleitungen",
+  eyebrow:"Benutzerhandbuch",
+  h1:"MultiHot-Modem",
+  lede:"Steuerung des Heizsystems per SMS und über das Internet: Befehle, Web-App, Anzeige, Einrichtung und Fehlersuche.",
+  tocLabel:"Inhalt",
+  footer:"Diese Anleitung gilt für das Modem des MultiHot-Systems (Gerätetyp 121). Die Modem-Bildschirme am PU-28-Panel sind in der <a href=\"/pu28manual.html\">Panel-Anleitung</a> beschrieben.",
+  sections:[
+   {id:"overview", title:"Zweck", html:()=>`
+    <p>Das Modem wird als weiteres Gerät an den CAN-Bus des Heizsystems angeschlossen und ermöglicht es, das System aus der Ferne zu steuern und zu überwachen:</p>
+    <ul>
+      <li><b>per SMS</b> — Brenner, Heizstab und Zonen ein- und ausschalten, Sollwerte ändern, Status abfragen; bei einer Störung sendet das Modem selbst eine SMS mit dem Fehlercode;</li>
+      <li><b>über das Internet</b> — mit einer Web-App auf Telefon oder Computer, mit Live-Status des Systems;</li>
+      <li><b>USSD</b> — das Modem kann eine USSD-Anfrage (z. B. Guthabenabfrage) weiterleiten und die Antwort per SMS zurückschicken.</li>
+    </ul>
+    <p>Die SMS-Steuerung funktioniert immer. Die Internet-Steuerung wird separat aktiviert (siehe „Internet &amp; Web-Steuerung“); bei ausgeschaltetem Internet arbeitet das Modem nur per SMS.</p>`},
+   {id:"connect", title:"Anschluss", html:()=>`
+    <p>Das Modem wird wie die übrigen Geräte an den CAN-Bus des Heizsystems angeschlossen (siehe <a href="/manual-system.html#can">Abschnitt 7.5 der Systemanleitung</a>, auf Russisch).</p>
+    <div class="warn"><b class="t">Achtung</b>Geräte erst nach dem Einschalten der Stromversorgung am CAN-Bus verbinden. Der CAN-Bus des Systems darf nicht mit dem CAN-Bus des Fahrzeugs verbunden werden.</div>
+    <p>Erforderlich sind eine SIM-Karte mit aktivierten SMS und mobilen Daten (bei Internet-Steuerung) sowie die Modem-Antenne. Nach dem Einschalten meldet sich das Modem selbständig im Mobilfunknetz an; der Fortschritt ist am Panel (Farbe des Modem-Symbols, Bildschirme „Modemstatus“ und „Internetstatus“) und an der LED erkennbar.</p>`},
+   {id:"indication", title:"LED und Taste", html:()=>`
+    <h3>LED</h3>
+    <p>Verwendet wird nur der gelbe Kanal; der grüne Kanal leuchtet nicht.</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>LED-Zustand</th><th>Bedeutung</th></tr></thead><tbody>
+      <tr><td>Aus</td><td>Weder Brenner noch Heizstab sind an, und es liegt keine Störung vor.</td></tr>
+      <tr><td>Weiches „Atmen“</td><td>Nur der Brenner (Flüssigkeitsheizung) ist an.</td></tr>
+      <tr><td>Langsames Blinken (2 s an / 2 s aus)</td><td>Nur der elektrische Heizstab ist an.</td></tr>
+      <tr><td>Dauerleuchten</td><td>Brenner und Heizstab sind gleichzeitig an.</td></tr>
+      <tr><td>Blinkt den Fehlercode</td><td>Mindestens eine Störung ist aktiv — hat Vorrang vor allen anderen Zuständen. Die LED blinkt den Code der ersten aktiven Störung Ziffer für Ziffer (Hunderter, Zehner, Einer; eine Null ergibt nur eine Pause ohne Blitze). Eine kurze Pause trennt die Ziffern, eine lange Pause geht der Wiederholung voraus. Der genaue Code ist auch der Stör-SMS oder dem Systemstatus zu entnehmen.</td></tr>
+    </tbody></table></div>
+    <p>Der Zustand der Fußbodenzonen und des Motors beeinflusst die LED nicht.</p>
+    <h3>Taste</h3>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Betätigung</th><th>Aktion</th></tr></thead><tbody>
+      <tr><td>Kurz</td><td>Schaltet die Kombination Brenner/Heizstab einen Schritt weiter: Brenner → Heizstab → Brenner+Heizstab → Brenner → … Schaltet außerdem alle Heizzonen ein (Heizmodus).</td></tr>
+      <tr><td>Lang</td><td>Schaltet alles aus (Brenner, Heizstab, alle Zonen, Fußbodenheizung, Motorvorwärmung). Der nächste kurze Druck beginnt den Zyklus wieder bei „Brenner“.</td></tr>
+      <tr><td>Sehr lang (10 s)</td><td>Werksreset: setzt alle Einstellungen auf Standardwerte zurück und startet neu. Die Heizung ist zu diesem Zeitpunkt bereits aus (der lange Druck wirkt zuerst, bei etwa 1,5 s). Die grüne LED bleibt während des gesamten Haltens aus und beginnt erst zu blinken, wenn der Reset bereits erfolgt ist.</td></tr>
+    </tbody></table></div>`},
+   {id:"security", title:"Erste Inbetriebnahme und Sicherheit", html:()=>`
+    <ul>
+      <li>Das Gerät wird mit der Standard-PIN <b>1234</b> ausgeliefert. Wir empfehlen dringend, sie so bald wie möglich mit <span class="cmd">pin</span> zu ändern.</li>
+      <li>Legen Sie die Admin-Nummer fest, indem Sie von Ihrem Telefon <span class="cmd">admin</span> senden (ein leeres Argument setzt die Nummer des Absenders als Admin). Befehle von dieser Nummer benötigen keine PIN, und Störungsmeldungen werden an sie gesendet.</li>
+      <li>Bis zu vier weitere vertrauenswürdige Nummern werden mit <span class="cmd">telefon1</span>…<span class="cmd">telefon4</span> festgelegt. Sie funktionieren ebenfalls ohne PIN, erhalten aber keine Störungsmeldungen.</li>
+      <li>Aktivieren Sie die Störungsmeldung mit <span class="cmd">fehlermeldung ein</span>.</li>
+    </ul>`},
+   {id:"sms", title:"SMS-Steuerung", html:()=>`
+    <p>Ein Befehl von einem nicht registrierten Telefon muss so aussehen: <span class="cmd">PIN Befehl Argument</span>, zum Beispiel <span class="cmd">1234 brenner ein</span> oder <span class="cmd">1234 admin +49...</span>.</p>
+    <p>Ein Befehl von der Admin-Nummer (oder einer vertrauenswürdigen Nummer) benötigt keine PIN: <span class="cmd">z1 lueften</span>, <span class="cmd">systemzeit 100</span>.</p>
+    <ul>
+      <li>„#“ nach „z“ ist durch die Zonennummer zu ersetzen.</li>
+      <li>Groß-/Kleinschreibung spielt keine Rolle.</li>
+      <li>Eine SMS kann mehrere Befehle enthalten, durch Kommas getrennt: <span class="cmd">brenner ein,heizstab ein, z1 heizen</span>.</li>
+      <li>Befehle können auch auf Englisch gegeben werden; die Antwort kommt dann auf Englisch. Englische und deutsche Schlüsselwörter sollten in einer Nachricht nicht gemischt werden.</li>
+    </ul>
+    <p>Deutsche Schlüsselwörter verzichten absichtlich auf Umlaute (ae/oe/ue/ss statt ä/ö/ü/ß), da SMS im 7-Bit-Zeichensatz des Modems gesendet werden. Nicht aufgeführte Argumente und Werte (Telefonnummern, PIN-Ziffern, der Lüftermodus „auto“, numerische Sollwerte und Prozentwerte, die Einheitenbuchstaben „c“/„f“) werden in beiden Sprachen gleich geschrieben.</p>
+    ${cmdTable('de')}`},
+   {id:"internet", title:"Internet & Web-Steuerung", html:()=>`
+    <p>Standardmäßig wird das Modem nur per SMS gesteuert. Mit aktiviertem Internet kann es zusätzlich im Webbrowser überwacht und gesteuert werden.</p>
+    <h3>Internet aktivieren</h3>
+    <p>Senden Sie <span class="cmd">internet ein</span>, um das Modem auf mobiles Internet (MQTT) umzuschalten. <span class="cmd">internet aus</span> kehrt zum reinen SMS-Betrieb zurück.</p>
+    <h3>Einrichtung mit einer SMS</h3>
+    <ol>
+      <li>Öffnen Sie <a href="https://multihot.online">multihot.online</a> und registrieren Sie ein Konto (Login und Passwort frei wählbar).</li>
+      <li>Die Seite zeigt eine fertige SMS, z. B. <span class="cmd">server multihot.online,login myname,password mypass,getlink</span> — senden Sie sie genau so an die Rufnummer der SIM-Karte des Modems.</li>
+      <li>Das Modem übernimmt alle vier Einstellungen auf einmal und antwortet mit einem Link zur Steuerungsseite.</li>
+      <li>Öffnen Sie den Link und speichern Sie ihn als Lesezeichen — er kann jederzeit erneut geöffnet werden und zeigt immer den Live-Status. Ein neues <span class="cmd">getlink</span> macht den alten Link ungültig.</li>
+    </ol>
+    <h3>Automatische Kopplung am Panel</h3>
+    <p>Das Modem kann auch ohne SMS gekoppelt werden: Auf dem Bildschirm „Internetstatus“ des PU-28 startet die Taste <b>REG</b> die automatische Registrierung; danach erscheint am Panel ein QR-Code mit dem Anmelde-Link (Taste <b>QR</b>). Scannen Sie ihn mit dem Telefon. Mehr in der <a href="/pu28manual.html#modeminternet">Panel-Anleitung</a>.</p>
+    <h3>Roaming</h3>
+    <p>Standardmäßig (<span class="cmd">roaming aus</span>) nutzt das Modem im Roaming kein mobiles Internet, um unerwartete Datenkosten zu vermeiden — die Verbindung wird sofort getrennt, wenn Roaming erkannt wird; SMS funktionieren weiter. Mit <span class="cmd">roaming ein</span> erlauben Sie es trotzdem.</p>
+    <h3>Die Web-Steuerungsseite</h3>
+    <p>Symbol-Tasten für Brenner, Heizstab, Fußboden und Motor — Fußboden/Motor erscheinen nur, wenn die Hardware tatsächlich vorhanden ist. Ein Eco-Schalter. Eine Zonenauswahl zeigt nur die tatsächlich angeschlossenen Zonen; jede Zone kann über die Drei-Punkte-Schaltfläche in ihrer Ecke auf Aus/Heizen/Lüften (oder nur Aus/Heizen bei einer Heizkörperzone ohne Lüfter) geschaltet werden und ist je nach Zustand farbig markiert. Tag-/Nacht-Sollwert und Lüfterdrehzahl der gewählten Zone werden mit Pfeilen, Mausrad oder Ziehen nach oben/unten eingestellt; ein langer Druck auf den Lüfter schaltet zwischen automatisch und manuell um. Eine Live-Statustabelle zeigt Tank-/Heizungs-/Außentemperatur, Versorgungsspannung, Pumpenzustände und aktive Fehlercodes. Die Seite passt sich automatisch dem hellen/dunklen Design von Telefon oder Browser an.</p>`},
+   {id:"panel", title:"Das Modem am Panel", html:()=>`
+    <p>Ist ein Modem angeschlossen, erscheint auf dem Startbildschirm des PU-28 ein Modem-Symbol. Seine Farbe zeigt, wie weit die Verbindung gekommen ist:</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Farbe</th><th>Bedeutung</th></tr></thead><tbody>
+      <tr><td>Grau</td><td>Modem ist nicht mit dem System verbunden.</td></tr>
+      <tr><td>Blau</td><td>Modem ist mit dem System verbunden.</td></tr>
+      <tr><td>Cyan</td><td>Modem ist im Mobilfunknetz registriert.</td></tr>
+      <tr><td>Orange</td><td>Modem hat Internetverbindung.</td></tr>
+      <tr><td>Grün</td><td>Modem ist mit dem MQTT-Broker verbunden (Cloud-Dienst verfügbar).</td></tr>
+    </tbody></table></div>
+    <p>Ein Tipp auf das Symbol öffnet die Modem-Bildschirme, die in der Panel-Anleitung ausführlich beschrieben sind:</p>
+    <ul>
+      <li><a href="/pu28manual.html#modeminfo">Modemstatus</a> — Registrierung, Roaming, Signal, Anbieter, IMEI, letzte SMS;</li>
+      <li><a href="/pu28manual.html#modemsettings">Modem-Einstellungen</a> — „Nur SMS“, „Nur 2G“, „Roaming“, „Störungs-SMS“, „Befehlsbestätigung“;</li>
+      <li><a href="/pu28manual.html#modeminternet">Internetstatus</a> — Internet, MQTT, Netzmodus, Prüf-URL, Broker, Login, Passwort, Tasten REG und QR;</li>
+      <li><a href="/pu28manual.html#modemqr">QR-Code zur Kopplung</a>.</li>
+    </ul>`},
+   {id:"ussd", title:"USSD-Anfragen", html:()=>`
+    <p>Das Modem arbeitet auch als USSD-Brücke. Für eine USSD-Anfrage senden Sie von der Admin-Nummer <span class="cmd">USSD &lt;Anfrage&gt;</span>. Das Ergebnis kommt als SMS zurück.</p>`},
+   {id:"trouble", title:"Fehlersuche", html:()=>`
+    <p>Beginnen Sie mit der Farbe des Modem-Symbols auf dem Startbildschirm des Panels und dem Bildschirm „Internetstatus“.</p>
+    <div class="tblwrap"><table class="tbl"><thead><tr><th>Was zu sehen ist</th><th>Was zu prüfen ist</th></tr></thead><tbody>
+      <tr><td>Symbol grau</td><td>Das Modem antwortet nicht am CAN. Stromversorgung des Modems, CAN-Leitungen und gemeinsame Masse prüfen; Geräte werden erst nach dem Einschalten am CAN verbunden.</td></tr>
+      <tr><td>Symbol blau (nicht registriert)</td><td>SIM-Karte eingesetzt und aktiv, Antenne angeschlossen, Netzabdeckung vorhanden (Signalstärke auf dem Bildschirm „Modemstatus“).</td></tr>
+      <tr><td>Symbol cyan (registriert, kein Internet)</td><td>Ist „Nur SMS“ aus und das Internet aktiviert (<span class="cmd">internet ein</span>)? Im Roaming erlauben Sie es mit <span class="cmd">roaming ein</span>: standardmäßig ist Internet im Roaming gesperrt, während SMS weiter funktionieren. Datentarif und Guthaben prüfen. Bei Bedarf den APN des Anbieters mit <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span> setzen. Gibt es in Ihrem Land kein 2G-Netz, muss „Nur 2G“ aus sein (<span class="cmd">2g aus</span>).</td></tr>
+      <tr><td>Symbol orange (Internet, kein Broker)</td><td>Serveradresse, Login und Passwort auf dem Bildschirm „Internetstatus“ prüfen (<span class="cmd">server</span>, <span class="cmd">login</span>, <span class="cmd">password</span>); bei Bedarf Kopplung wiederholen (<span class="cmd">getlink</span> oder Taste REG).</td></tr>
+      <tr><td>Keine Antwort auf SMS</td><td>Richtige PIN oder Absenden von der Admin-Nummer, SIM-Guthaben, Befehl korrekt geschrieben. Zum Testen <span class="cmd">ping</span> senden — Antwort: „pong“.</td></tr>
+      <tr><td>Internet funktioniert plötzlich nicht mehr</td><td>Mit <span class="cmd">neustart</span> das Modem neu starten. Hilft das nicht, den Service kontaktieren.</td></tr>
+    </tbody></table></div>`},
+   {id:"update", title:"Software-Update", html:()=>`
+    <p>Die Softwareversion des Modems wird auf dem Bildschirm „Firmware-Versionen“ des Panels (Zeile „Modem“) und in der Web-App angezeigt. Updates erfolgen über das Netzwerk aus der Web-App oder mit dem Programm CAN Tool; Geräte dürfen nur mit Versionen aktualisiert werden, die für ihren Typ gebaut sind.</p>`}
+  ]
+}
+};
+
+const LANG_NAMES = { ru:"Русский", en:"English", de:"Deutsch" };
+
+function render(lang){
+  const d = DOC[lang];
+  document.getElementById("html-root").lang = lang;
+  document.getElementById("doc-title").textContent = d.docTitle;
+  document.getElementById("crumb").innerHTML = '<a href="/">MultiHot</a> / <a href="/manuals.html">' + d.crumb + '</a>';
+  document.getElementById("cv-eyebrow").textContent = d.eyebrow;
+  document.getElementById("cv-h1").textContent = d.h1;
+  document.getElementById("cv-lede").textContent = d.lede;
+  document.getElementById("toc-label").textContent = d.tocLabel;
+  document.getElementById("doc-footer").innerHTML = d.footer;
+  document.getElementById("toc-main").innerHTML = d.sections.map((s,i)=>
+    `<li><a href="#${s.id}" data-n="${String(i+1).padStart(2,"0")}">${s.title}</a></li>`).join("");
+  document.getElementById("main").innerHTML = d.sections.map((s,i)=>
+    `<section class="screen" id="${s.id}"><h2><span class="num">${String(i+1).padStart(2,"0")}</span>${s.title}</h2>${s.html()}</section>`).join("");
+  document.getElementById("lang-select").value = lang;
+  try { localStorage.setItem("timberline_manual_lang", lang); } catch(e){}
+}
+
+const sel = document.getElementById("lang-select");
+sel.innerHTML = Object.keys(LANG_NAMES).map(c=>`<option value="${c}">${LANG_NAMES[c]}</option>`).join("");
+sel.addEventListener("change", ()=>render(sel.value));
+let lang = /^ru\b/i.test(navigator.language || "") ? "ru" : (/^de\b/i.test(navigator.language || "") ? "de" : "en");
+try { const s = localStorage.getItem("timberline_manual_lang"); if (LANG_NAMES[s]) lang = s; } catch(e){}
+render(lang);
+</script>
+</body>
+</html>

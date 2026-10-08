@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 17
+#define VERSION_4 19
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,7 +21,9 @@
 //TODO
 //Датчик температуры добавить в телеметрию
 //Добавить управление нагрузками
-//Добавить синхронизацию времени
+
+121.0.0.19
+Time synchronization from the internet added (retained cmd/desired/timeSync + timeZone, NTP every 10 min, PGN=40 broadcast)
 
 121.0.0.18
 USSD-SMS bridge added

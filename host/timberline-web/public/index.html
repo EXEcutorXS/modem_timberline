@@ -136,6 +136,10 @@
      desiredValues in app.js. */
   .setting-row input[type=range] { width: 100%; accent-color: var(--accent); }
   .setting-row input[type=range].pending { accent-color: var(--vent); }
+  .setting-row select.pending { border-color: var(--vent); }
+  /* "Time from internet" and other on/off rows: label on the left, switch on the right. */
+  .setting-row.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .setting-row.switch-row label { flex: 1 1 auto; margin: 0; gap: 8px; }
   .setting-row select {
     width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--card); color: var(--text); font-size: 14px; font-family: inherit;

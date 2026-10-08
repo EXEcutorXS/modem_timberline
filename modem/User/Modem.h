@@ -292,6 +292,23 @@ public:
                                        language cue (parse errors, bare "?")       */
     } config;
 
+    /* "Time from internet" — configured over MQTT only (retained
+       cmd/desired/timeSync + cmd/desired/timeZone, so the broker itself is
+       where the setting lives and nothing here is persisted to flash; with no
+       internet there is nothing to sync from anyway). doIdle() runs
+       ST_TIME_SYNC every 10 minutes while enabled and the internet is up;
+       Timberline::timeSyncHandler() turns each fresh reading into local time
+       and broadcasts it on CAN (PGN=40). */
+    struct TimeSync {
+        bool     enabled;
+        int16_t  offsetMin;   /* standard-time UTC offset, minutes */
+        uint8_t  dstRule;     /* TZ_DST_* (see TimeZone.h) */
+        uint32_t nextAt;      /* core tick of the next attempt; 0 = as soon as possible */
+        bool     resultReady; /* set by doTimeSync(), consumed by Timberline::timeSyncHandler() */
+        bool     lastOk;      /* outcome of the latest attempt */
+        uint32_t utc;         /* unix seconds (UTC) from the latest successful reading */
+    } timeSync;
+
     /* Called on every received SMS (phone and text are temporary buffers) */
     void (*onSmsReceived)(const char* phone, const char* text);
 
@@ -345,7 +362,12 @@ private:
                                        RawCapture's comment in Modem.h and doOta() */
         ANS_CEREG   = 1<<20,  /* +CEREG: — epsRegistered/epsRoaming updated (EPS/LTE
                                   registration; see the comment above csRegistered) */
+        ANS_CNTP    = 1<<21,  /* +CNTP: — NTP sync finished (result code in cntpCode) */
+        ANS_CCLK    = 1<<22,  /* +CCLK: — clock reading parsed into cclkUtc/cclkValid */
     };
+    int32_t  cntpCode;   /* last "+CNTP: <code>" value */
+    bool     cclkValid;  /* last "+CCLK:" line held a plausible date */
+    uint32_t cclkUtc;    /* ...and this is it, as unix seconds in UTC */
     uint32_t answer;
 
     /* +CREG (CS domain: GSM/UTRAN) and +CEREG (PS/EPS domain: E-UTRAN/LTE) are
@@ -384,6 +406,7 @@ private:
         ST_FETCH_PROFILE,
         ST_OTA,
         ST_AUTO_REGISTER,
+        ST_TIME_SYNC,
     };
     ModemState state;
     int8_t     step;
@@ -655,6 +678,7 @@ private:
     void  doPollCreg(void);
     void  doPollSmsUnread(void);
     void  doUssd(void);
+    void  doTimeSync(void);
     void  doInitNet(void);
     void  doCheckInternet(void);
     void  doNetTeardown(void);

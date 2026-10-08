@@ -237,6 +237,16 @@ ru: {
     <p>По умолчанию (<span class="cmd">roaming 0</span>) модем не использует мобильный интернет в роуминге, чтобы не создавать неожиданных расходов: при обнаружении роуминга соединение сразу разрывается, а SMS продолжают работать. Чтобы разрешить интернет в роуминге, отправьте <span class="cmd">roaming 1</span>.</p>
     <h3>Страница управления</h3>
     <p>Кнопки с иконками для горелки, ТЭНа, тёплого пола и подогрева двигателя (тёплый пол и двигатель появляются, только если это оборудование установлено). Переключатель ECO. Выбор зоны показывает только реально подключённые зоны; каждую зону можно переключить Выкл/Нагрев/Вентиляция (или только Выкл/Нагрев для радиатора без вентилятора) через меню из трёх точек в её углу, а цвет показывает текущее состояние. Дневная и ночная уставка и скорость вентилятора выбранной зоны меняются стрелками, колесом мыши или перетаскиванием вверх-вниз; долгое нажатие на вентилятор переключает автоматический и ручной режим. Таблица состояния показывает температуры бака, подогревателя и улицы, напряжение питания, состояние помп и активные коды неисправностей. Страница сама подстраивается под светлую или тёмную тему телефона или браузера.</p>`},
+   {id:"timesync", title:"Синхронизация времени", html:()=>`
+    <p>Модем может сам устанавливать время во всей системе по интернету. В веб-приложении откройте «Разное», включите <b>«Время из интернета»</b> и выберите <b>часовой пояс</b>. Обе настройки хранятся на сервере (брокере), поэтому модем получает их при каждом подключении, а в самом модеме ничего сохранять не нужно.</p>
+    <ul>
+      <li>Раз в 10 минут модем запрашивает точное время у NTP-сервера (pool.ntp.org) по мобильному интернету. Если интернета нет, время не меняется, а повторная попытка делается через минуту.</li>
+      <li>Из выбранного пояса модем вычисляет местное время, в том числе автоматически переходит на летнее и обратно (правила ЕС и США; для остальных поясов перехода нет).</li>
+      <li>Если системное время расходится с точным больше чем на 2 секунды, модем устанавливает его и рассылает по CAN всем устройствам системы — так же, как при ручной установке времени на пульте. Если время верное, ничего не отправляется.</li>
+      <li>Рядом с переключателем видно результат последней проверки: «синхронизировано 08.10.26 14:32» или «ошибка синхронизации».</li>
+      <li>Если при включённой синхронизации задать время вручную на пульте, то при ближайшей проверке (до 10 минут) модем вернёт точное время.</li>
+    </ul>
+    <p>Включив переключатель впервые, вы получите пояс, определённый по часам вашего браузера; при необходимости выберите другой. Функция доступна начиная с версии программы модема 121.0.0.19.</p>`},
    {id:"panel", title:"Модем на пульте", html:()=>`
     <p>Если модем подключён, на главном экране пульта ПУ-28 появляется значок модема. Его цвет показывает, как далеко продвинулось подключение:</p>
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Цвет</th><th>Значение</th></tr></thead><tbody>
@@ -254,7 +264,7 @@ ru: {
       <li><a href="/pu28manual.html#modemqr">QR-код привязки</a>.</li>
     </ul>`},
    {id:"ussd", title:"USSD-запросы", html:()=>`
-    <p>Модем работает как USSD-мост. Чтобы выполнить USSD-запрос, отправьте <b>с номера администратора</b> SMS вида <span class="cmd">ussd *100#</span>. Код состоит только из цифр и символов <span class="cmd">* # +</span>. Модем перешлёт запрос оператору, а ответ придёт ответной SMS.</p>
+    <p>Модем работает как USSD-мост. Чтобы выполнить USSD-запрос, отправьте <b>с номера администратора</b> SMS вида <span class="cmd">ussd *100#</span>. Код состоит только из цифр и символов <span class="cmd">* # +</span>. Модем перешлёт запрос оператору, а ответ придёт ответной SMS. Функция доступна начиная с версии программы модема 121.0.0.18.</p>
     <ul>
       <li>Команда принимается только от номера администратора: USSD-запрос может быть платным (пополнение, услуги), поэтому доверенные номера и сообщения с PIN-кодом не подходят.</li>
       <li>Ответ приходит одной SMS (до 140 символов). Русский текст передаётся транслитом, немецкие умляуты — как ae/oe/ue/ss, так как SMS модема отправляются в 7-битной кодировке.</li>
@@ -351,6 +361,16 @@ en: {
     <p>By default (<span class="cmd">roaming 0</span>) the modem will not use mobile internet while roaming on a foreign network, to avoid unexpected data charges — the connection is torn down immediately if roaming is detected, while SMS keeps working. Send <span class="cmd">roaming 1</span> to allow it anyway.</p>
     <h3>The web control page</h3>
     <p>Icon buttons for Heater, Element, Floor and Engine — Floor/Engine only appear if that hardware is actually installed. An Eco switch. A zone selector showing only the zones actually connected; each zone can be switched Off/Heat/Vent (or just Off/Heat for a radiator zone with no fan) via the three-dot menu button in its corner, and is colour-coded by its current state. Day/night setpoint and fan-speed controls for the selected zone — use the arrows, scroll, or drag up/down to adjust; long-press the fan control to switch it between automatic and manual. A live status table with tank/heater/outdoor temperature, supply voltage, pump states, and any active fault codes. The page automatically matches your phone or browser's light/dark theme.</p>`},
+   {id:"timesync", title:"Time synchronization", html:()=>`
+    <p>The modem can set the time across the whole system from the internet. In the web app open “Misc”, turn on <b>“Time from internet”</b> and choose the <b>time zone</b>. Both settings are stored on the server (the broker), so the modem receives them on every connection and nothing has to be saved in the modem itself.</p>
+    <ul>
+      <li>Every 10 minutes the modem asks an NTP server (pool.ntp.org) for the exact time over the mobile internet. With no internet the time is left alone and the attempt is repeated after a minute.</li>
+      <li>From the chosen zone the modem works out local time, including automatic switching to summer time and back (EU and US rules; other zones have no switching).</li>
+      <li>If the system time differs from the exact time by more than 2 seconds, the modem sets it and broadcasts it on the CAN bus to every device in the system — the same way a manual time setup on the panel does. If the time is right, nothing is sent.</li>
+      <li>Next to the switch you can see the result of the last check: “synced 08.10.26 14:32” or “sync error”.</li>
+      <li>If you set the time by hand on the panel while synchronization is on, the modem puts the exact time back at the next check (within 10 minutes).</li>
+    </ul>
+    <p>The first time you turn the switch on you get the zone detected from your browser's clock; pick another one if needed. Available from modem software version 121.0.0.19.</p>`},
    {id:"panel", title:"The modem on the panel", html:()=>`
     <p>When a modem is connected, a modem icon appears on the PU-28's home screen. Its colour shows how far the connection has got:</p>
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Colour</th><th>Meaning</th></tr></thead><tbody>
@@ -368,7 +388,7 @@ en: {
       <li><a href="/pu28manual.html#modemqr">Pairing QR code</a>.</li>
     </ul>`},
    {id:"ussd", title:"USSD requests", html:()=>`
-    <p>The modem works as a USSD bridge. To make a USSD request, send an SMS such as <span class="cmd">ussd *100#</span> <b>from the admin number</b>. The code may contain only digits and <span class="cmd">* # +</span>. The modem forwards the request to the operator and the answer comes back as a reply SMS.</p>
+    <p>The modem works as a USSD bridge. To make a USSD request, send an SMS such as <span class="cmd">ussd *100#</span> <b>from the admin number</b>. The code may contain only digits and <span class="cmd">* # +</span>. The modem forwards the request to the operator and the answer comes back as a reply SMS. Available from modem software version 121.0.0.18.</p>
     <ul>
       <li>The command is accepted only from the admin number: a USSD request can cost money (top-ups, paid services), so trusted numbers and PIN-prefixed messages are not enough.</li>
       <li>The answer arrives as a single SMS (up to 140 characters). Cyrillic text is transliterated and German umlauts become ae/oe/ue/ss, because the modem sends SMS in a 7-bit charset.</li>
@@ -463,6 +483,16 @@ de: {
     <p>Standardmäßig (<span class="cmd">roaming aus</span>) nutzt das Modem im Roaming kein mobiles Internet, um unerwartete Datenkosten zu vermeiden — die Verbindung wird sofort getrennt, wenn Roaming erkannt wird; SMS funktionieren weiter. Mit <span class="cmd">roaming ein</span> erlauben Sie es trotzdem.</p>
     <h3>Die Web-Steuerungsseite</h3>
     <p>Symbol-Tasten für Brenner, Heizstab, Fußboden und Motor — Fußboden/Motor erscheinen nur, wenn die Hardware tatsächlich vorhanden ist. Ein Eco-Schalter. Eine Zonenauswahl zeigt nur die tatsächlich angeschlossenen Zonen; jede Zone kann über die Drei-Punkte-Schaltfläche in ihrer Ecke auf Aus/Heizen/Lüften (oder nur Aus/Heizen bei einer Heizkörperzone ohne Lüfter) geschaltet werden und ist je nach Zustand farbig markiert. Tag-/Nacht-Sollwert und Lüfterdrehzahl der gewählten Zone werden mit Pfeilen, Mausrad oder Ziehen nach oben/unten eingestellt; ein langer Druck auf den Lüfter schaltet zwischen automatisch und manuell um. Eine Live-Statustabelle zeigt Tank-/Heizungs-/Außentemperatur, Versorgungsspannung, Pumpenzustände und aktive Fehlercodes. Die Seite passt sich automatisch dem hellen/dunklen Design von Telefon oder Browser an.</p>`},
+   {id:"timesync", title:"Zeitsynchronisation", html:()=>`
+    <p>Das Modem kann die Uhrzeit im gesamten System aus dem Internet einstellen. Öffnen Sie in der Web-App „Sonstiges“, schalten Sie <b>„Zeit aus dem Internet“</b> ein und wählen Sie die <b>Zeitzone</b>. Beide Einstellungen werden auf dem Server (Broker) gespeichert; das Modem erhält sie bei jeder Verbindung, im Modem selbst muss nichts gespeichert werden.</p>
+    <ul>
+      <li>Alle 10 Minuten fragt das Modem über das mobile Internet die genaue Zeit bei einem NTP-Server (pool.ntp.org) ab. Ohne Internet bleibt die Uhrzeit unverändert, nach einer Minute wird es erneut versucht.</li>
+      <li>Aus der gewählten Zone berechnet das Modem die Ortszeit, einschließlich automatischer Umstellung auf Sommerzeit und zurück (EU- und US-Regeln; andere Zonen haben keine Umstellung).</li>
+      <li>Weicht die Systemzeit um mehr als 2 Sekunden von der genauen Zeit ab, stellt das Modem sie ein und sendet sie per CAN an alle Geräte des Systems — genauso wie die manuelle Zeiteinstellung am Panel. Stimmt die Zeit, wird nichts gesendet.</li>
+      <li>Neben dem Schalter sehen Sie das Ergebnis der letzten Prüfung: „synchronisiert 08.10.26 14:32“ oder „Synchronisierung fehlgeschlagen“.</li>
+      <li>Wird die Zeit bei eingeschalteter Synchronisation am Panel von Hand gestellt, setzt das Modem bei der nächsten Prüfung (innerhalb von 10 Minuten) die genaue Zeit wieder.</li>
+    </ul>
+    <p>Beim ersten Einschalten erhalten Sie die aus der Browseruhr ermittelte Zeitzone; wählen Sie bei Bedarf eine andere. Verfügbar ab Modem-Softwareversion 121.0.0.19.</p>`},
    {id:"panel", title:"Das Modem am Panel", html:()=>`
     <p>Ist ein Modem angeschlossen, erscheint auf dem Startbildschirm des PU-28 ein Modem-Symbol. Seine Farbe zeigt, wie weit die Verbindung gekommen ist:</p>
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Farbe</th><th>Bedeutung</th></tr></thead><tbody>
@@ -480,7 +510,7 @@ de: {
       <li><a href="/pu28manual.html#modemqr">QR-Code zur Kopplung</a>.</li>
     </ul>`},
    {id:"ussd", title:"USSD-Anfragen", html:()=>`
-    <p>Das Modem arbeitet als USSD-Brücke. Für eine USSD-Anfrage senden Sie <b>von der Admin-Nummer</b> eine SMS wie <span class="cmd">ussd *100#</span>. Der Code darf nur Ziffern und <span class="cmd">* # +</span> enthalten. Das Modem leitet die Anfrage an den Anbieter weiter, und die Antwort kommt als SMS zurück.</p>
+    <p>Das Modem arbeitet als USSD-Brücke. Für eine USSD-Anfrage senden Sie <b>von der Admin-Nummer</b> eine SMS wie <span class="cmd">ussd *100#</span>. Der Code darf nur Ziffern und <span class="cmd">* # +</span> enthalten. Das Modem leitet die Anfrage an den Anbieter weiter, und die Antwort kommt als SMS zurück. Verfügbar ab Modem-Softwareversion 121.0.0.18.</p>
     <ul>
       <li>Der Befehl wird nur von der Admin-Nummer akzeptiert: Eine USSD-Anfrage kann Geld kosten (Aufladungen, kostenpflichtige Dienste); vertrauenswürdige Nummern und Nachrichten mit PIN genügen nicht.</li>
       <li>Die Antwort kommt als eine einzelne SMS (bis zu 140 Zeichen). Kyrillischer Text wird transliteriert, Umlaute werden zu ae/oe/ue/ss, da das Modem SMS im 7-Bit-Zeichensatz sendet.</li>

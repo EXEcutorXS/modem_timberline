@@ -56,6 +56,7 @@ const I18N = {
     setpoint: 'Setpoint', hysteresis: 'Hysteresis', runTime: 'Run time', unlimited: 'Unlimited',
     telemetryInterval: 'Telemetry interval', language: 'Language',
     theme: 'Theme', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark',
+    timeFromInternet: 'Time from internet', timeZone: 'Time zone', timeSynced: 'synced', timeSyncError: 'sync error',
     off: 'Off', heat: 'Heat', vent: 'Vent', auto: 'auto',
     logIn: 'Log in', register: 'Register', createAccount: 'Create account', backToLogin: 'Back to login',
     logOut: 'Log out', copy: 'Copy', copied: 'Copied!', continueToLogin: 'Continue to login',
@@ -100,6 +101,7 @@ const I18N = {
     setpoint: 'Уставка', hysteresis: 'Гистерезис', runTime: 'Время работы', unlimited: 'Без ограничения',
     telemetryInterval: 'Интервал телеметрии', language: 'Язык',
     theme: 'Тема', themeSystem: 'Системная', themeLight: 'Светлая', themeDark: 'Тёмная',
+    timeFromInternet: 'Время из интернета', timeZone: 'Часовой пояс', timeSynced: 'синхронизировано', timeSyncError: 'ошибка синхронизации',
     off: 'Выкл', heat: 'Нагрев', vent: 'Вентиляция', auto: 'авто',
     logIn: 'Войти', register: 'Регистрация', createAccount: 'Создать аккаунт', backToLogin: 'Назад ко входу',
     logOut: 'Выйти', copy: 'Копировать', copied: 'Скопировано!', continueToLogin: 'Перейти ко входу',
@@ -144,6 +146,7 @@ const I18N = {
     setpoint: 'Sollwert', hysteresis: 'Hysterese', runTime: 'Laufzeit', unlimited: 'Unbegrenzt',
     telemetryInterval: 'Telemetrie-Intervall', language: 'Sprache',
     theme: 'Design', themeSystem: 'System', themeLight: 'Hell', themeDark: 'Dunkel',
+    timeFromInternet: 'Zeit aus dem Internet', timeZone: 'Zeitzone', timeSynced: 'synchronisiert', timeSyncError: 'Synchronisierung fehlgeschlagen',
     off: 'Aus', heat: 'Heizen', vent: 'Lüften', auto: 'auto',
     logIn: 'Anmelden', register: 'Registrieren', createAccount: 'Konto erstellen', backToLogin: 'Zurück zur Anmeldung',
     logOut: 'Abmelden', copy: 'Kopieren', copied: 'Kopiert!', continueToLogin: 'Weiter zur Anmeldung',
@@ -307,11 +310,64 @@ const ENGINE_SETTINGS = [
    shown, unlike FLOOR_SETTINGS/ENGINE_SETTINGS above (see
    updateSettingsGroup()'s connectedKey === null case). Range mirrors the
    firmware's own clamp in onMqttCommandReceived() (Timberline.cpp). */
+/* Value is "<standard UTC offset in minutes>,<DST rule>" — the exact payload
+   the modem parses (rule 0 = none, 1 = EU, 2 = US; see modem/User/TimeZone.h).
+   Southern-hemisphere DST is not covered. */
+const TIMEZONES = [
+  { value: '-600,0', label: 'UTC-10 Hawaii' },
+  { value: '-540,2', label: 'UTC-9 Alaska (US DST)' },
+  { value: '-480,2', label: 'UTC-8 Los Angeles, Vancouver (US DST)' },
+  { value: '-420,2', label: 'UTC-7 Denver, Calgary (US DST)' },
+  { value: '-420,0', label: 'UTC-7 Phoenix' },
+  { value: '-360,2', label: 'UTC-6 Chicago, Winnipeg (US DST)' },
+  { value: '-300,2', label: 'UTC-5 New York, Toronto (US DST)' },
+  { value: '-240,2', label: 'UTC-4 Halifax (US DST)' },
+  { value: '-180,0', label: 'UTC-3 Buenos Aires, Sao Paulo' },
+  { value: '0,0',    label: 'UTC+0 UTC, Reykjavik' },
+  { value: '0,1',    label: 'UTC+0 London, Dublin, Lisbon (EU DST)' },
+  { value: '60,1',   label: 'UTC+1 Berlin, Paris, Rome, Madrid (EU DST)' },
+  { value: '120,1',  label: 'UTC+2 Helsinki, Kyiv, Athens (EU DST)' },
+  { value: '120,0',  label: 'UTC+2 Kaliningrad' },
+  { value: '180,0',  label: 'UTC+3 Moscow, Minsk, Istanbul' },
+  { value: '240,0',  label: 'UTC+4 Samara, Baku, Dubai' },
+  { value: '300,0',  label: 'UTC+5 Yekaterinburg, Almaty, Tashkent' },
+  { value: '330,0',  label: 'UTC+5:30 India' },
+  { value: '360,0',  label: 'UTC+6 Omsk' },
+  { value: '420,0',  label: 'UTC+7 Novosibirsk, Krasnoyarsk, Bangkok' },
+  { value: '480,0',  label: 'UTC+8 Irkutsk, Beijing, Singapore' },
+  { value: '540,0',  label: 'UTC+9 Yakutsk, Tokyo, Seoul' },
+  { value: '600,0',  label: 'UTC+10 Vladivostok' },
+  { value: '660,0',  label: 'UTC+11 Magadan' },
+  { value: '720,0',  label: 'UTC+12 Kamchatka' },
+];
+
+/* Browser's own zone as a "<offsetMin>,<rule>" value, used as the default the
+   first time the switch is turned on with no zone stored yet. Standard offset
+   = the smaller of the January/July offsets (true in both hemispheres); a zone
+   that observes DST gets the US rule across the Americas and the EU rule
+   everywhere else. */
+function detectTimeZone() {
+  const y = new Date().getFullYear();
+  const jan = -new Date(y, 0, 1).getTimezoneOffset();
+  const jul = -new Date(y, 6, 1).getTimezoneOffset();
+  const std = Math.min(jan, jul);
+  const rule = jan === jul ? 0 : (std <= -180 && std >= -600 ? 2 : 1);
+  return `${std},${rule}`;
+}
+
 const MISC_SETTINGS = [
   /* Key is "telemetryInt", not the more obvious "telemetryInterval" — the
      modem's MQTT-desired-topic-name buffer (Modem::mqttRxName) is only 16
      bytes, and the longer name silently truncated and never matched. */
   { key: 'telemetryInt', label: 'telemetryInterval', min: 5, max: 60, step: 1, unit: ' s' },
+  /* "Time from internet": both settings live on the broker as retained
+     cmd/desired topics (publishDesiredRetained()) — the modem re-reads them
+     on every connect — and are mirrored back by the modem in cmd/actual, so
+     they go through the usual desired -> actual round trip (type 'switch' /
+     device: true below). timeSyncAt is the modem's own report of the latest
+     attempt. */
+  { key: 'timeSync', label: 'timeFromInternet', type: 'switch', statusKey: 'timeSyncAt' },
+  { key: 'timeZone', label: 'timeZone', type: 'select', options: TIMEZONES, device: true },
   /* UI language — web-app-only, no modem/firmware involvement at all (see
      publishLang()/the 'lang' branch in buildSettingsRow's select handler).
      Persisted as its own retained MQTT message under a "web/" topic instead
@@ -502,6 +558,12 @@ function renderButtons() {
   renderDrums();
   renderSettings();
   renderOtherButtons();
+}
+
+/* Settings that live on the broker itself: retained, so the modem gets them
+   again after every reconnect. */
+function publishDesiredRetained(name, value) {
+  mqttClient.publish(`${mqttUsername}/cmd/desired/${name}`, String(value), { retain: true });
 }
 
 function publishValue(name, value) {
@@ -727,7 +789,25 @@ function buildSettingsRow(groupId, s) {
   label.appendChild(value);
 
   let input;
-  if (s.type === 'select') {
+  if (s.type === 'switch') {
+    row.classList.add('switch-row');
+    input = document.createElement('button');
+    input.className = 'switch';
+    input.id = `${groupId}-${s.key}`;
+    input.innerHTML = '<span class="switch-thumb"></span>';
+    input.addEventListener('click', () => {
+      const pending = desiredValues[s.key];
+      const current = pending !== undefined ? pending : rawStatus[s.key];
+      const next = current === '1' ? '0' : '1';
+      desiredValues[s.key] = next;
+      if (s.key === 'timeSync' && next === '1' && rawStatus.timeZone === undefined && desiredValues.timeZone === undefined) {
+        desiredValues.timeZone = detectTimeZone();
+        publishDesiredRetained('timeZone', desiredValues.timeZone);
+      }
+      publishDesiredRetained(s.key, next);
+      renderSettings();
+    });
+  } else if (s.type === 'select') {
     input = document.createElement('select');
     s.options.forEach((o) => {
       const opt = document.createElement('option');
@@ -750,6 +830,10 @@ function buildSettingsRow(groupId, s) {
         renderButtons();
       } else if (s.key === 'theme') {
         applyTheme(input.value);
+        renderSettings();
+      } else if (s.device) {
+        desiredValues[s.key] = input.value;
+        publishDesiredRetained(s.key, input.value);
         renderSettings();
       }
     });
@@ -811,7 +895,25 @@ function updateSettingsGroup(groupId, connectedKey, settings) {
     }
 
     const display = pending !== undefined ? pending : raw;
+
+    if (s.type === 'switch') {
+      input.classList.toggle('on', display === '1');
+      input.classList.toggle('pending', pending !== undefined);
+      const at = s.statusKey ? rawStatus[s.statusKey] : undefined;
+      valueEl.textContent = at === undefined ? '' : (at === 'error' ? t('timeSyncError') : `${t('timeSynced')} ${at}`);
+      return;
+    }
+
     if (display === undefined) return;
+
+    /* A device-confirmed value the list doesn't know (e.g. a zone set from
+       another client): add it so the select can show it. */
+    if (s.device && !Array.from(input.options).some((o) => o.value === display)) {
+      const extra = document.createElement('option');
+      extra.value = display;
+      extra.textContent = display;
+      input.appendChild(extra);
+    }
 
     if (document.activeElement !== input) {
       if (input.value !== display) input.value = display;

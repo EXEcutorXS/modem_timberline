@@ -30,6 +30,7 @@ class Timberline
 	void sendStatus(const char* phone, bool german = false);
 	void mqttActualizerHandler(void);
 	void mqttTelemetryHandler(void);
+	void timeSyncHandler(void);
 
 	/* Generic device discovery — every PGN=18 announcement (any device
 	   type, not just the MBC-2/heater-family special cases handled

@@ -30,6 +30,7 @@ void Work_C::handler(void) {
     dataActualizator.handler();
     timberline.mqttActualizerHandler();
     timberline.mqttTelemetryHandler();
+    timberline.timeSyncHandler();
     timberline.expireStaleDevices();
     canRelay.handler();
 

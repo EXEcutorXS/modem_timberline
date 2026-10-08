@@ -9,6 +9,8 @@
 #include "log.h"
 #include "core.h"
 #include "ntc.h"
+#include "TimeZone.h"
+#include "unix_time.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -647,6 +649,16 @@ static bool zonePrefix(const char* name, uint8_t& zoneNum, const char*& prop) {
     return true;
 }
 
+/* "Time from internet" (see Modem::TimeSync, Timberline::timeSyncHandler()).
+   The two settings live on the broker as retained cmd/desired topics, so they
+   come back by themselves after every reconnect; nothing is stored in flash.
+   *Known = at least one value has been received since boot, which is what
+   lets the cmd/actual mirrors below stay unpublished until then (instead of
+   announcing the zero defaults and flickering the web UI). */
+static bool tsEnabledKnown = false;
+static bool tsZoneKnown    = false;
+static char tsAtText[24]   = "";   /* "dd.mm.yy hh:mm" of the last good sync, or "error" */
+
 /* MQTT "cmd/desired/<name>" dispatch — reuses the exact sendToHcu()/bit-packing
    already used by the SMS command handler below, just triggered per-message
    instead of per comma-separated SMS segment (so D[] is reset fresh every call,
@@ -701,6 +713,23 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
         if (ival < 1 || ival > 100) return;
         D[0] = 3; D[6] = (uint8_t)ival;
         sendToHcu(19, D);
+    }
+    else if (!strcmp(name, "timeSync")) {
+        modem.timeSync.enabled = bval;
+        modem.timeSync.nextAt  = 0;      /* sync right away, then every 10 min */
+        tsEnabledKnown = true;
+    }
+    else if (!strcmp(name, "timeZone")) {
+        /* "<standard UTC offset in minutes>,<DST rule>" — e.g. "60,1" (Berlin,
+           EU rule), "-300,2" (New York, US rule), "180,0" (Moscow, no DST). */
+        const char* comma = strchr(payload, ',');
+        int off = atoi(payload);
+        int dst = comma ? atoi(comma + 1) : 0;
+        if (off < -720 || off > 840 || dst < 0 || dst > 2) return;
+        modem.timeSync.offsetMin = (int16_t)off;
+        modem.timeSync.dstRule   = (uint8_t)dst;
+        modem.timeSync.nextAt    = 0;
+        tsZoneKnown = true;
     }
     else if (!strcmp(name, "floorHyst")) {
         /* Same PGN19/D[0]=3 sub-packet as floorSp/engineSp/sysTimeLimit —
@@ -1406,6 +1435,28 @@ void Timberline::mqttActualizerHandler(void) {
         modem.mqttPublish("sysTimeLimit", buf);
     }
 
+    /* "Time from internet" mirrors — see tsEnabledKnown above. timeSyncAt is
+       the outcome of the latest attempt (local time of the last good one, or
+       "error"), set by timeSyncHandler(). */
+    static bool    prevTsEnabled;
+    static int16_t prevTsOffset;
+    static uint8_t prevTsDst;
+    static char    prevTsAt[24];
+    if (tsEnabledKnown && (modem.timeSync.enabled != prevTsEnabled || justConnected)) {
+        prevTsEnabled = modem.timeSync.enabled;
+        modem.mqttPublish("timeSync", modem.timeSync.enabled ? "1" : "0");
+    }
+    if (tsZoneKnown && (modem.timeSync.offsetMin != prevTsOffset || modem.timeSync.dstRule != prevTsDst || justConnected)) {
+        prevTsOffset = modem.timeSync.offsetMin;
+        prevTsDst    = modem.timeSync.dstRule;
+        sprintf(buf, "%d,%d", (int)modem.timeSync.offsetMin, (int)modem.timeSync.dstRule);
+        modem.mqttPublish("timeZone", buf);
+    }
+    if (tsAtText[0] && (strcmp(tsAtText, prevTsAt) || justConnected)) {
+        strcpy(prevTsAt, tsAtText);
+        modem.mqttPublish("timeSyncAt", tsAtText);
+    }
+
     static const char* zoneTopic[] = {"zn1","zn2","zn3","zn4","zn5"};
 
     /* One "cmd/actual/zn<N>" per zone: "<connected>_<state>_<daySp>_
@@ -1715,6 +1766,40 @@ void Timberline::mqttActualizerHandler(void) {
         csv[cn] = '\0';
         modem.mqttPublish("errors", csv);
     }
+}
+
+/* ── timeSyncHandler ─────────────────────────────────────────────────────
+   Consumes a reading left by Modem::doTimeSync() (modem.timeSync.resultReady):
+   UTC -> local time using the configured offset + DST rule, then, if the
+   system clock (unixTime, itself kept current from the PGN=40 broadcasts on
+   the bus) is off by more than 2 s or not set at all, adopts it and
+   broadcasts it as PGN=40 — the same message the panel sends after a manual
+   time setup (year-2000, month, day, hour, minute, second; 255 = unchanged),
+   so every device on the bus follows. Called every tick from Work_C::handler(). */
+void Timberline::timeSyncHandler(void) {
+    Modem::TimeSync& ts = modem.timeSync;
+    if (!ts.resultReady) return;
+    ts.resultReady = false;
+
+    if (!ts.lastOk) {
+        strcpy(tsAtText, "error");
+        return;
+    }
+
+    uint32_t local = tz_localFromUtc(ts.utc, ts.offsetMin, ts.dstRule);
+    int y, mo, d, h, mi, s;
+    tz_fromUnix(local, y, mo, d, h, mi, s);
+
+    int64_t diff = (int64_t)local - (int64_t)unixTime.UnixTime;
+    if (!unixTime.isTimeOk() || diff > 2 || diff < -2) {
+        unixTime.year = y; unixTime.mon = (char)mo; unixTime.mday = (char)d;
+        unixTime.hour = (char)h; unixTime.min = (char)mi; unixTime.sec = (char)s;
+        unixTime.UnixTime = unixTime.calToTimer();
+        uint32_t id = (40u << 20) | ((uint32_t)Can::BROADCAST_TYPE << 13) | ((uint32_t)Can::BROADCAST_ADDRESS << 10)
+                    | ((uint32_t)can.idType << 3) | can.idAddress;
+        can.SendMessage(id, (uint8_t)(y - 2000), (uint8_t)mo, (uint8_t)d, (uint8_t)h, (uint8_t)mi, (uint8_t)s, 0xFF, 0xFF);
+    }
+    sprintf(tsAtText, "%02d.%02d.%02d %02d:%02d", d, mo, y % 100, h, mi);
 }
 
 /* ── mqttTelemetryHandler ────────────────────────────────────────────────

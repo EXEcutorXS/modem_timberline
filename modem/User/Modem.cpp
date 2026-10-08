@@ -5,6 +5,7 @@
 #include "operator_names.h"
 #include "flash.h"
 #include "Version.h"
+#include "TimeZone.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -73,6 +74,9 @@ Modem::Modem()
     network.imei[0] = network.iccid[0] = network.ownNumber[0] = network.operatorCode[0] = network.operatorName[0] = 0;
     network.smsPhone[0] = network.smsText[0] = network.cmgrPhone[0] = network.cmgrBody[0] = ussdReq[0] = 0;
     ussdReplyPhone[0] = 0; ussdAwaiting = false; ussdAwaitStart = 0; ussdAccLen = 0; ussdLast[0] = 0;
+    timeSync.enabled = false; timeSync.offsetMin = 0; timeSync.dstRule = 0;
+    timeSync.nextAt = 0; timeSync.resultReady = false; timeSync.lastOk = false; timeSync.utc = 0;
+    cntpCode = -1; cclkValid = false; cclkUtc = 0;
     internet.ipAddress[0] = 0;
     /* example.com (IANA/ICANN-run, reserved for documentation/testing) —
        globally reachable including from behind the Great Firewall, unlike
@@ -225,6 +229,7 @@ void Modem::handler(void) {
         case ST_FETCH_PROFILE: doFetchProfile(); break;
         case ST_OTA:           doOta();          break;
         case ST_AUTO_REGISTER: doAutoRegister(); break;
+        case ST_TIME_SYNC:     doTimeSync();     break;
     }
 }
 
@@ -792,6 +797,38 @@ void Modem::parseLine(void) {
         decodeUssdText(raw, decoded, sizeof(decoded));
         ussdDeliver(decoded);
     }
+    else if (starts(s,"+CNTP:")) {
+        cntpCode = atoi(s + 6);
+        answer |= ANS_CNTP;
+    }
+    else if (starts(s,"+CCLK:")) {
+        /* +CCLK: "yy/MM/dd,hh:mm:ss±zz" — time of the module's own zone, zz in
+           quarter hours (doTimeSync() sets the zone to 0 via AT+CNTP, but a
+           network-supplied zone is subtracted here too, so either way
+           cclkUtc is real UTC). Anything that isn't a plausible recent date
+           (a never-synced RTC reads 2004 or 1980) stays cclkValid = false. */
+        char t[24];
+        nthQuoted(s, 0, t, sizeof(t));
+        cclkValid = false;
+        bool shape = strlen(t) >= 17 && t[2]=='/' && t[5]=='/' && t[8]==',' && t[11]==':' && t[14]==':';
+        for (int i = 0; shape && i < 17; i++)
+            if (i != 2 && i != 5 && i != 8 && i != 11 && i != 14 && (t[i] < '0' || t[i] > '9')) shape = false;
+        if (shape) {
+            #define D2(p) ((t[p]-'0')*10 + (t[(p)+1]-'0'))
+            int yy = D2(0), mo = D2(3), dd = D2(6), hh = D2(9), mi = D2(12), ss = D2(15);
+            int zoneQ = 0;
+            if ((t[17] == '+' || t[17] == '-') && t[18] >= '0' && t[18] <= '9' && t[19] >= '0' && t[19] <= '9') {
+                zoneQ = D2(18);
+                if (t[17] == '-') zoneQ = -zoneQ;
+            }
+            #undef D2
+            if (yy >= 25 && mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31 && hh < 24 && mi < 60 && ss < 61) {
+                cclkUtc = tz_toUnix(2000 + yy, mo, dd, hh, mi, ss) - (uint32_t)(zoneQ * 900);
+                cclkValid = true;
+            }
+        }
+        answer |= ANS_CCLK;
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1010,6 +1047,12 @@ void Modem::doIdle(void) {
     }
     if (sms.pending)                  { setState(ST_SEND_SMS);  return; }
     if (ussdPending)                 { setState(ST_USSD);       return; }
+    /* "Time from internet": every 10 minutes while enabled and the data
+       connection is up (nextAt == 0 means "as soon as possible", which is
+       what enabling the setting or a fresh boot leaves it at). */
+    if (timeSync.enabled && internet.isInternetConnected && (timeSync.nextAt == 0 || (int32_t)(now - timeSync.nextAt) >= 0)) {
+        setState(ST_TIME_SYNC); return;
+    }
     if ((now - timers.csq)  >= 30000) { setState(ST_POLL_CSQ);   return; }
     /* Retry faster while not yet registered (e.g. right after a SIM swap or
        a coverage gap) so a missed first attempt doesn't cost a full minute —
@@ -1142,6 +1185,64 @@ void Modem::doUssd(void) {
         }
         break;
     }
+    }
+}
+
+/* ── doTimeSync ──────────────────────────────────────────────────────────
+   Gets real UTC from the module's built-in NTP client: AT+CNTP="<server>",0
+   (zone 0, so the module's RTC ends up holding UTC), AT+CNTP to run the sync
+   (the outcome arrives as +CNTP: <code> a moment after OK; 0 or 1 means
+   success depending on the module family), then AT+CCLK? to read it back.
+   Never talks CAN or MQTT itself — it just leaves timeSync.utc +
+   resultReady for Timberline::timeSyncHandler(). Success is retried in 10
+   minutes, failure in one. */
+void Modem::doTimeSync(void) {
+    static uint32_t t = 0;
+
+    switch (step) {
+    case 0:
+        if (atCmd("AT+CNTP=\"pool.ntp.org\",0\r\n", 1000)) {
+            if (answer & (ANS_ERROR | ANS_TIMEOUT)) step = 10; else step++;
+        }
+        break;
+    case 1:
+        if (atCmd("AT+CNTP\r\n", 3000)) {
+            if (answer & (ANS_ERROR | ANS_TIMEOUT)) step = 10;
+            else { answer &= ~ANS_CNTP; t = core.getTick(); step++; }
+        }
+        break;
+    case 2:
+        if (answer & ANS_CNTP) {
+            if (cntpCode == 0 || cntpCode == 1) { cclkValid = false; step++; }
+            else {
+                log_info("[TIME] NTP failed\r\n");
+                step = 10;
+            }
+        } else if ((core.getTick() - t) >= 30000) {
+            log_info("[TIME] NTP timeout\r\n");
+            step = 10;
+        }
+        break;
+    case 3:
+        if (atCmd("AT+CCLK?\r\n", 1000)) {
+            if (cclkValid && !(answer & (ANS_ERROR | ANS_TIMEOUT))) {
+                timeSync.utc = cclkUtc;
+                timeSync.lastOk = true;
+                timeSync.resultReady = true;
+                timeSync.nextAt = core.getTick() + 600000UL;
+                log_info("[TIME] synced\r\n");
+                setState(ST_IDLE);
+            } else {
+                step = 10;
+            }
+        }
+        break;
+    default:   /* failure */
+        timeSync.lastOk = false;
+        timeSync.resultReady = true;
+        timeSync.nextAt = core.getTick() + 60000UL;
+        setState(ST_IDLE);
+        break;
     }
 }
 

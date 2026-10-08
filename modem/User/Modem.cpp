@@ -72,6 +72,7 @@ Modem::Modem()
 
     network.imei[0] = network.iccid[0] = network.ownNumber[0] = network.operatorCode[0] = network.operatorName[0] = 0;
     network.smsPhone[0] = network.smsText[0] = network.cmgrPhone[0] = network.cmgrBody[0] = ussdReq[0] = 0;
+    ussdReplyPhone[0] = 0; ussdAwaiting = false; ussdAwaitStart = 0; ussdAccLen = 0; ussdLast[0] = 0;
     internet.ipAddress[0] = 0;
     /* example.com (IANA/ICANN-run, reserved for documentation/testing) —
        globally reachable including from behind the Great Firewall, unlike
@@ -438,10 +439,99 @@ static bool decodeUcs2Hex(const char* raw, char* out, int outCap) {
     return true;
 }
 
+/* +CUSD: text arrives in one of three shapes depending on the data coding
+   scheme the network used: plain text, UCS2 hex (4 digits per character), or
+   8-bit hex (2 digits per character, e.g. "556E6B6E..." for "Unkn..."). The
+   last two look identical to decodeUcs2Hex()'s all-hex test, and reading
+   8-bit hex as UCS2 turns plain ASCII into CJK garbage — so first check
+   whether pairing the digits into bytes gives printable ASCII only. A reply
+   made of decimal digits alone is kept literally (e.g. "5000"). */
+static void decodeUssdText(const char* raw, char* out, int outCap) {
+    int rlen = (int)strlen(raw);
+    bool allHex = (rlen >= 2), allDec = (rlen >= 1);
+    for (int i = 0; i < rlen; i++) {
+        char c = raw[i];
+        bool dec = (c >= '0' && c <= '9');
+        if (!dec) allDec = false;
+        if (!(dec || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) allHex = false;
+    }
+    if (allDec) { strncpy(out, raw, outCap - 1); out[outCap - 1] = 0; return; }
+    if (allHex && (rlen % 2) == 0) {
+        #define HV8(c) ((uint8_t)((c)>='a'?(c)-'a'+10:(c)>='A'?(c)-'A'+10:(c)-'0'))
+        bool printable = true;
+        for (int i = 0; i < rlen && printable; i += 2) {
+            uint8_t b = (uint8_t)((HV8(raw[i]) << 4) | HV8(raw[i+1]));
+            if (b < 0x20 || b > 0x7E) printable = false;
+        }
+        if (printable) {
+            int o = 0;
+            for (int i = 0; i < rlen && o < outCap - 1; i += 2)
+                out[o++] = (char)((HV8(raw[i]) << 4) | HV8(raw[i+1]));
+            out[o] = 0;
+            return;
+        }
+        #undef HV8
+    }
+    decodeUcs2Hex(raw, out, outCap);
+}
+
+/* UTF-8 -> plain 7-bit ASCII for an outgoing SMS body (sendSms() talks to the
+   network in the IRA charset, which cannot carry Cyrillic or umlauts):
+   Cyrillic is transliterated, German umlauts become ae/oe/ue/ss, line breaks
+   become spaces, anything else non-ASCII becomes '?'. */
+static void utf8ToSmsAscii(const char* in, char* out, int outCap) {
+    static const char* const CYR_UP[32] = {"A","B","V","G","D","E","Zh","Z","I","Y","K","L","M","N","O","P",
+                                           "R","S","T","U","F","Kh","Ts","Ch","Sh","Sch","'","Y","'","E","Yu","Ya"};
+    static const char* const CYR_LO[32] = {"a","b","v","g","d","e","zh","z","i","y","k","l","m","n","o","p",
+                                           "r","s","t","u","f","kh","ts","ch","sh","sch","'","y","'","e","yu","ya"};
+    int o = 0;
+    for (int i = 0; in[i] && o < outCap - 4; ) {
+        uint8_t c = (uint8_t)in[i];
+        const char* rep = 0;
+        char one[2] = {0, 0};
+        if (c < 0x80) {
+            one[0] = (c == '\r' || c == '\n' || c < 0x20) ? ' ' : (char)c;
+            rep = one; i++;
+        } else if ((c & 0xE0) == 0xC0 && ((uint8_t)in[i+1] & 0xC0) == 0x80) {
+            uint16_t cp = (uint16_t)(((c & 0x1F) << 6) | ((uint8_t)in[i+1] & 0x3F));
+            i += 2;
+            if      (cp >= 0x410 && cp <= 0x42F) rep = CYR_UP[cp - 0x410];
+            else if (cp >= 0x430 && cp <= 0x44F) rep = CYR_LO[cp - 0x430];
+            else if (cp == 0x401) rep = "Yo";
+            else if (cp == 0x451) rep = "yo";
+            else if (cp == 0xE4)  rep = "ae";
+            else if (cp == 0xF6)  rep = "oe";
+            else if (cp == 0xFC)  rep = "ue";
+            else if (cp == 0xC4)  rep = "Ae";
+            else if (cp == 0xD6)  rep = "Oe";
+            else if (cp == 0xDC)  rep = "Ue";
+            else if (cp == 0xDF)  rep = "ss";
+            else rep = "?";
+        } else {
+            i++;
+            while (((uint8_t)in[i] & 0xC0) == 0x80) i++;
+            rep = "?";
+        }
+        for (; *rep && o < outCap - 1; rep++) out[o++] = *rep;
+    }
+    out[o] = 0;
+}
+
 void Modem::parseLine(void) {
     const char* s = rx.buf;
 
     /* Multi-line capture takes priority */
+    if (capture == CAP_USSD) {
+        /* Continuation of a +CUSD: reply whose text contains line breaks:
+           keep appending until the line carrying the closing quote. */
+        const char* q = strchr(s, '"');
+        int take = q ? (int)(q - s) : (int)strlen(s);
+        if (ussdAccLen + 1 < sizeof(ussdAcc)) ussdAcc[ussdAccLen++] = ' ';
+        for (int i = 0; i < take && ussdAccLen < sizeof(ussdAcc) - 1; i++) ussdAcc[ussdAccLen++] = s[i];
+        ussdAcc[ussdAccLen] = 0;
+        if (q) { capture = CAP_NONE; ussdDeliver(ussdAcc); }
+        return;
+    }
     if (capture == CAP_IMEI) {
         /* IMEI is plain digits (15 of them). An unsolicited notification
            (e.g. "+CGEV: EPS PDN ACT ...") can land in this same window —
@@ -681,14 +771,26 @@ void Modem::parseLine(void) {
         answer |= ANS_CNUM;
     }
     else if (starts(s,"+CUSD:")) {
-        char raw[128];
+        int quotes = 0;
+        for (const char* p = s; *p; p++) if (*p == '"') quotes++;
+
+        if (quotes == 1) {
+            /* Reply text with line breaks: only the opening quote is on this
+               line, the rest follows on the next lines (see CAP_USSD above). */
+            const char* q = strchr(s, '"') + 1;
+            ussdAccLen = 0;
+            while (*q && ussdAccLen < sizeof(ussdAcc) - 1) ussdAcc[ussdAccLen++] = *q++;
+            ussdAcc[ussdAccLen] = 0;
+            capture = CAP_USSD;
+            return;
+        }
+
+        static char raw[LINE_SIZE];
         nthQuoted(s + 7, 0, raw, sizeof(raw));
 
-        static char decoded[128];
-        decodeUcs2Hex(raw, decoded, sizeof(decoded));
-
-        log_info("[USSD] "); log_info(decoded); log_info("\r\n");
-        answer |= ANS_CUSD;
+        static char decoded[LINE_SIZE];
+        decodeUssdText(raw, decoded, sizeof(decoded));
+        ussdDeliver(decoded);
     }
 }
 
@@ -902,6 +1004,10 @@ void Modem::doIdle(void) {
             }
         }
     }
+    if (ussdAwaiting && (now - ussdAwaitStart) >= 40000) {
+        ussdAwaiting = false;
+        if (ussdReplyPhone[0]) { sendSms(ussdReplyPhone, "USSD: no reply"); ussdReplyPhone[0] = 0; }
+    }
     if (sms.pending)                  { setState(ST_SEND_SMS);  return; }
     if (ussdPending)                 { setState(ST_USSD);       return; }
     if ((now - timers.csq)  >= 30000) { setState(ST_POLL_CSQ);   return; }
@@ -956,36 +1062,82 @@ void Modem::doIdle(void) {
 }
 
 /* ── sendUssd ────────────────────────────────────────────────────────── */
-void Modem::sendUssd(const char* req) {
-    if (!req || !req[0] || ussdPending) return;
+bool Modem::sendUssd(const char* req, const char* replyPhone) {
+    if (!req || !req[0] || ussdPending || ussdAwaiting) return false;
     strncpy(ussdReq, req, sizeof(ussdReq) - 1);
     ussdReq[sizeof(ussdReq) - 1] = 0;
     /* USSD codes always end with '#'; drop any junk the terminal appended */
     char* last_hash = strrchr(ussdReq, '#');
     if (last_hash) *(last_hash + 1) = '\0';
-    if (!ussdReq[0]) return;
+    if (!ussdReq[0]) return false;
+    ussdReplyPhone[0] = 0;
+    if (replyPhone && replyPhone[0]) {
+        strncpy(ussdReplyPhone, replyPhone, sizeof(ussdReplyPhone) - 1);
+        ussdReplyPhone[sizeof(ussdReplyPhone) - 1] = 0;
+    }
     ussdPending = true;
+    return true;
+}
+
+/* A finished +CUSD: reply (UTF-8): always logged; also texted back to whoever
+   asked via the SMS "ussd" command, if anyone. Never calls setState() — safe
+   from parseLine(), same as sendSms() itself. */
+void Modem::ussdDeliver(const char* utf8) {
+    log_info("[USSD] "); log_info(utf8); log_info("\r\n");
+    strncpy(ussdLast, utf8, sizeof(ussdLast) - 1); ussdLast[sizeof(ussdLast) - 1] = 0;
+    answer |= ANS_CUSD;
+    ussdAwaiting = false;
+    if (ussdReplyPhone[0]) {
+        char sms[141];
+        utf8ToSmsAscii(utf8[0] ? utf8 : "USSD: no text", sms, sizeof(sms));
+        sendSms(ussdReplyPhone, sms);
+        ussdReplyPhone[0] = 0;
+    }
 }
 
 /* ── doUssd ──────────────────────────────────────────────────────────── */
 void Modem::doUssd(void) {
-    static char cmd[48];
+    static char cmd[56];
+    static bool noHash = false;
 
     switch (step) {
     case 0: {
-        /* A7682 firmware rejects '#' in USSD strings (CME ERROR).
-           Send without the trailing '#' — tested: network still responds. */
+        /* Standard form per the SIMCom manual: AT+CUSD=1,"*102#",15 — the
+           full code including '#' (without it a network answers "Unexpected
+           Data Value" / "Unknown Alphabet" instead of the real reply) and
+           <dcs>=15, the GSM 7-bit default alphabet. An older note here said
+           the A7682 rejects '#' with CME ERROR, so if the first attempt is
+           answered with ERROR it is retried once without '#' (noHash). */
         int n = 0;
         const char* pre = "AT+CUSD=1,\"";
         while (*pre) cmd[n++] = *pre++;
-        for (int i = 0; ussdReq[i] && ussdReq[i] != '#' && n < 44; i++)
+        for (int i = 0; ussdReq[i] && n < 44; i++) {
+            if (noHash && ussdReq[i] == '#') continue;
             cmd[n++] = ussdReq[i];
-        cmd[n++] = '"'; cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
+        }
+        cmd[n++] = '"'; cmd[n++] = ','; cmd[n++] = '1'; cmd[n++] = '5';
+        cmd[n++] = '\r'; cmd[n++] = '\n'; cmd[n] = 0;
 
         if (atCmd(cmd, 15000)) {
-            if (answer & ANS_TIMEOUT) log_info("[USSD] timeout\r\n");
-            if (answer & ANS_ERROR)   log_info("[USSD] error\r\n");
+            if ((answer & ANS_ERROR) && !noHash && strchr(ussdReq, '#')) {
+                noHash = true;
+                log_info("[USSD] '#' rejected, retrying without\r\n");
+                break;   /* stay in step 0 — the changed string goes out on the next call */
+            }
+            noHash = false;
+            const char* fail = 0;
+            if (answer & ANS_TIMEOUT) { log_info("[USSD] timeout\r\n"); fail = "USSD: timeout"; }
+            if (answer & ANS_ERROR)   { log_info("[USSD] error\r\n");   fail = "USSD: error"; }
             ussdPending = false;
+            if (fail && ussdReplyPhone[0]) {
+                sendSms(ussdReplyPhone, fail);
+                ussdReplyPhone[0] = 0;
+            } else if (!fail && ussdReplyPhone[0]) {
+                /* Accepted — the network's answer arrives later as +CUSD:
+                   (see parseLine()); doIdle() gives up waiting after 40 s. */
+                ussdAwaiting = true;
+                ussdAwaitStart = core.getTick();
+            }
             setState(ST_IDLE);
         }
         break;

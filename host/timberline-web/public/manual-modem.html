@@ -122,6 +122,10 @@ const CMDS = [
   "Присылает ссылку для входа в веб-приложение. Предварительно нужно включить интернет. Новый getlink делает предыдущую ссылку недействительной.",
   "Replies with a bookmarkable link to the web control page. Requires internet to be enabled first. A new getlink invalidates the old link.",
   "Antwortet mit einem Link zur Web-Bedienoberfläche. Erfordert zuvor aktiviertes Internet. Ein neues getlink macht den alten Link ungültig."],
+ ["ussd","ussd","код (цифры и * # +)","code (digits and * # +)","Code (Ziffern und * # +)",
+  "Отправляет USSD-запрос оператору (например, *100# — баланс); ответ приходит ответной SMS. Только с номера администратора. Подробнее — в разделе «USSD-запросы».",
+  "Sends a USSD request to the operator (for example *100# for the balance); the answer comes back as an SMS. Admin number only. See “USSD requests”.",
+  "Sendet eine USSD-Anfrage an den Anbieter (z. B. *100# für das Guthaben); die Antwort kommt als SMS zurück. Nur von der Admin-Nummer. Siehe „USSD-Anfragen“."],
  ["ping","ping","—","—","—",
   "Проверка связи: модем отвечает «pong».","Connectivity check: the modem replies “pong”.","Verbindungstest: das Modem antwortet „pong“."],
  ["reset","neustart","—","—","—",
@@ -250,7 +254,14 @@ ru: {
       <li><a href="/pu28manual.html#modemqr">QR-код привязки</a>.</li>
     </ul>`},
    {id:"ussd", title:"USSD-запросы", html:()=>`
-    <p>Модем работает как USSD-мост. Чтобы выполнить USSD-запрос, отправьте с номера администратора SMS <span class="cmd">USSD &lt;запрос&gt;</span>. Результат запроса придёт ответным SMS.</p>`},
+    <p>Модем работает как USSD-мост. Чтобы выполнить USSD-запрос, отправьте <b>с номера администратора</b> SMS вида <span class="cmd">ussd *100#</span>. Код состоит только из цифр и символов <span class="cmd">* # +</span>. Модем перешлёт запрос оператору, а ответ придёт ответной SMS.</p>
+    <ul>
+      <li>Команда принимается только от номера администратора: USSD-запрос может быть платным (пополнение, услуги), поэтому доверенные номера и сообщения с PIN-кодом не подходят.</li>
+      <li>Ответ приходит одной SMS (до 140 символов). Русский текст передаётся транслитом, немецкие умляуты — как ae/oe/ue/ss, так как SMS модема отправляются в 7-битной кодировке.</li>
+      <li>Если оператор не ответил за 40 секунд, придёт «USSD: no reply»; если запрос отклонён — «USSD: error».</li>
+      <li>Пока предыдущий запрос не завершён, новый не принимается («USSD: busy»).</li>
+      <li>Интерактивные меню (когда оператор ждёт выбора пункта) не поддерживаются — возвращается только первый ответ.</li>
+    </ul>`},
    {id:"trouble", title:"Если что-то не работает", html:()=>`
     <p>Сначала посмотрите цвет значка модема на главном экране пульта и экран «Статус интернета».</p>
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Что видно</th><th>Что проверить</th></tr></thead><tbody>
@@ -357,7 +368,14 @@ en: {
       <li><a href="/pu28manual.html#modemqr">Pairing QR code</a>.</li>
     </ul>`},
    {id:"ussd", title:"USSD requests", html:()=>`
-    <p>The modem also works as a USSD bridge. To make a USSD request, send <span class="cmd">USSD &lt;request&gt;</span> from the admin number. The result of the request will be returned as an SMS message.</p>`},
+    <p>The modem works as a USSD bridge. To make a USSD request, send an SMS such as <span class="cmd">ussd *100#</span> <b>from the admin number</b>. The code may contain only digits and <span class="cmd">* # +</span>. The modem forwards the request to the operator and the answer comes back as a reply SMS.</p>
+    <ul>
+      <li>The command is accepted only from the admin number: a USSD request can cost money (top-ups, paid services), so trusted numbers and PIN-prefixed messages are not enough.</li>
+      <li>The answer arrives as a single SMS (up to 140 characters). Cyrillic text is transliterated and German umlauts become ae/oe/ue/ss, because the modem sends SMS in a 7-bit charset.</li>
+      <li>If the operator does not answer within 40 seconds you get “USSD: no reply”; if the request is rejected, “USSD: error”.</li>
+      <li>While a previous request is still in progress a new one is refused (“USSD: busy”).</li>
+      <li>Interactive menus (where the operator waits for a choice) are not supported — only the first answer is returned.</li>
+    </ul>`},
    {id:"trouble", title:"Troubleshooting", html:()=>`
     <p>Start with the colour of the modem icon on the panel's home screen and the “Internet status” screen.</p>
     <div class="tblwrap"><table class="tbl"><thead><tr><th>What you see</th><th>What to check</th></tr></thead><tbody>
@@ -462,7 +480,14 @@ de: {
       <li><a href="/pu28manual.html#modemqr">QR-Code zur Kopplung</a>.</li>
     </ul>`},
    {id:"ussd", title:"USSD-Anfragen", html:()=>`
-    <p>Das Modem arbeitet auch als USSD-Brücke. Für eine USSD-Anfrage senden Sie von der Admin-Nummer <span class="cmd">USSD &lt;Anfrage&gt;</span>. Das Ergebnis kommt als SMS zurück.</p>`},
+    <p>Das Modem arbeitet als USSD-Brücke. Für eine USSD-Anfrage senden Sie <b>von der Admin-Nummer</b> eine SMS wie <span class="cmd">ussd *100#</span>. Der Code darf nur Ziffern und <span class="cmd">* # +</span> enthalten. Das Modem leitet die Anfrage an den Anbieter weiter, und die Antwort kommt als SMS zurück.</p>
+    <ul>
+      <li>Der Befehl wird nur von der Admin-Nummer akzeptiert: Eine USSD-Anfrage kann Geld kosten (Aufladungen, kostenpflichtige Dienste); vertrauenswürdige Nummern und Nachrichten mit PIN genügen nicht.</li>
+      <li>Die Antwort kommt als eine einzelne SMS (bis zu 140 Zeichen). Kyrillischer Text wird transliteriert, Umlaute werden zu ae/oe/ue/ss, da das Modem SMS im 7-Bit-Zeichensatz sendet.</li>
+      <li>Antwortet der Anbieter nicht innerhalb von 40 Sekunden, kommt „USSD: no reply“; wird die Anfrage abgelehnt, „USSD: error“.</li>
+      <li>Solange eine vorherige Anfrage läuft, wird keine neue angenommen („USSD: busy“).</li>
+      <li>Interaktive Menüs (der Anbieter wartet auf eine Auswahl) werden nicht unterstützt — nur die erste Antwort wird zurückgegeben.</li>
+    </ul>`},
    {id:"trouble", title:"Fehlersuche", html:()=>`
     <p>Beginnen Sie mit der Farbe des Modem-Symbols auf dem Startbildschirm des Panels und dem Bildschirm „Internetstatus“.</p>
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Was zu sehen ist</th><th>Was zu prüfen ist</th></tr></thead><tbody>

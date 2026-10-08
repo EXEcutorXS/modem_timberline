@@ -343,6 +343,25 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         c.type = TL_CMD_INTERNET; c.boolVal = bval; add_cmd(res, c); return;
     }
 
+    /* ── ussd <code> — forward a USSD request, reply by SMS ───────────────────
+       Only 0-9 * # + are accepted: the code ends up inside AT+CUSD="...", so
+       anything else (quotes, control chars) must never get that far. */
+    if (!strcmp(cmd, "ussd")) {
+        int len = (int)strlen(origArg);
+        if (len < 1 || len > 31) { add_error(res, "ussd: 1-31 chars"); return; }
+        for (int i = 0; i < len; i++) {
+            char ch = origArg[i];
+            if (!((ch >= '0' && ch <= '9') || ch == '*' || ch == '#' || ch == '+')) {
+                add_error(res, "ussd: digits * # + only");
+                return;
+            }
+        }
+        c.type = TL_CMD_USSD;
+        strncpy(c.strArg, origArg, 31); c.strArg[31] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
     /* ── getlink — reply with a magic-link URL to the web control page ────── */
     if (!strcmp(cmd, "getlink")) {
         c.type = TL_CMD_GETLINK; add_cmd(res, c); return;

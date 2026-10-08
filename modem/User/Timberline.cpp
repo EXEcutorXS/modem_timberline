@@ -939,6 +939,16 @@ static void onSmsReceived(const char* phone, const char* text) {
             modem.sendSms(phone, "pong");
             break;
 
+        case TL_CMD_USSD:
+            /* Admin only: a USSD request can spend money (top-ups, paid
+               services), so a trusted number or a PIN-prefixed message is
+               not enough. The answer is texted back from Modem::ussdDeliver(). */
+            if (!result.isAdmin)
+                modem.sendSms(phone, de ? "USSD nur vom Admin" : "USSD: admin only");
+            else if (!modem.sendUssd(cmd.strArg, phone))
+                modem.sendSms(phone, de ? "USSD: beschaeftigt" : "USSD: busy");
+            break;
+
         case TL_CMD_RESET:
             modem.sendSms(phone, de ? "Neustart..." : "Resetting...");
             NVIC_SystemReset();

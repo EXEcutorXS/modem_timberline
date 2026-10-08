@@ -300,7 +300,10 @@ public:
     void initialize(void);
     void handler(void);
     void sendSms(const char* phone, const char* text);
-    void sendUssd(const char* req);  /* send USSD request, log reply to terminal */
+    /* Sends a USSD request. The reply is always logged to the terminal; if
+       replyPhone is given (SMS "ussd" command, admin only) it is also sent
+       there as an SMS. Returns false if a request is already in flight. */
+    bool sendUssd(const char* req, const char* replyPhone = 0);
     void mqttPublish(const char* name, const char* payload);  /* enqueue "cmd/actual/<name>" */
     void mqttForceReconnect(void);  /* call after mqttBroker/mqttPassword changes at runtime */
 
@@ -356,7 +359,7 @@ private:
     bool csRegistered, csRoaming, epsRegistered, epsRoaming;
 
     /* ── Capture mode for multi-line responses ───────────────────────── */
-    enum CaptureMode { CAP_NONE, CAP_IMEI, CAP_CMGR_BODY, CAP_MQTT_TOPIC, CAP_MQTT_PAYLOAD };
+    enum CaptureMode { CAP_NONE, CAP_IMEI, CAP_CMGR_BODY, CAP_MQTT_TOPIC, CAP_MQTT_PAYLOAD, CAP_USSD };
     CaptureMode capture;
 
     /* ── State machine ───────────────────────────────────────────────── */
@@ -435,6 +438,13 @@ private:
     /* ── USSD ────────────────────────────────────────────────────────── */
     bool     ussdPending;
     char     ussdReq[32];
+    char     ussdReplyPhone[16];  /* who gets the SMS reply; empty = terminal only */
+    bool     ussdAwaiting;        /* AT+CUSD accepted, waiting for the +CUSD: reply */
+    uint32_t ussdAwaitStart;
+    char     ussdAcc[200];        /* multi-line reply accumulator (CAP_USSD) */
+    char     ussdLast[200];       /* last finished reply, UTF-8 as decoded — for the debugger's Watch window */
+    uint16_t ussdAccLen;
+    void     ussdDeliver(const char* utf8);  /* log + SMS the finished reply */
 
     /* ── Polling timers ──────────────────────────────────────────────── */
     struct Timers {

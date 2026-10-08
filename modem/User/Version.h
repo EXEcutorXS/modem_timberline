@@ -23,6 +23,8 @@
 //Добавить управление нагрузками
 //Добавить синхронизацию времени
 
+121.0.0.18
+USSD-SMS bridge added
 121.0.0.17
 Old bootloader now returning to main program automatically
 Special message for old bootloader

@@ -56,6 +56,7 @@ enum TlCmdType {
     TL_CMD_APN_PASS,        /* strArg (0-31 chars)    — explicit PDP auth (AT+CGAUTH) password; empty = auto/none */
     TL_CMD_CHECKURL,        /* strArg (0-63 chars)    — HTTP GET target used to verify real internet connectivity;
                                                           empty = skip the check, PDP-up alone counts (see doCheckInternet()) */
+    TL_CMD_USSD,            /* strArg (1-31 chars of 0-9 * # +) — forward a USSD request; the reply comes back by SMS (admin only, enforced in Timberline.cpp) */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/

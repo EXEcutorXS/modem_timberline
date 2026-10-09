@@ -52,6 +52,7 @@ Modem::Modem()
     config.useInternet = false;
     config.tempUnit = 0;
     config.allowRoaming = false;
+    config.tempAlarm = false; config.tempMin = 0; config.tempMax = 40;
     config.faultReport = false;
     config.cmdAck = true;
     ota.status = OTA_IDLE; ota.page = 0; ota.pageTotal = 0;

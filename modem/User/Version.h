@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 21
+#define VERSION_4 22
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,9 @@
 //TODO
 //Датчик температуры добавить в телеметрию
 //Добавить управление нагрузками
+
+121.0.0.22
+Modem temperature alarm: SMS to the admin number when the external NTC leaves tempMin..tempMax (web app Misc -> cmd/desired/tempAlarm|tempMin|tempMax, persisted in flash)
 
 121.0.0.21
 "2G only" setting is now "2G autofallback": with it on, the modem starts on GSM-only and the internet-down watchdog (10 min) alternates the radio between GSM-only and automatic 2G/4G until the internet works (the mode switch itself is what clears a wedged data attach). Removed the separate radio-reset state.

@@ -57,6 +57,7 @@ const I18N = {
     telemetryInterval: 'Telemetry interval', language: 'Language',
     theme: 'Theme', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark',
     timeFromInternet: 'Time from internet', timeZone: 'Time zone', timeSynced: 'synced', timeSyncError: 'sync error',
+    tempAlarm: 'Modem temperature alarm (SMS)', tempMin: 'Lower limit', tempMax: 'Upper limit',
     off: 'Off', heat: 'Heat', vent: 'Vent', auto: 'auto',
     logIn: 'Log in', register: 'Register', createAccount: 'Create account', backToLogin: 'Back to login',
     logOut: 'Log out', copy: 'Copy', copied: 'Copied!', continueToLogin: 'Continue to login',
@@ -102,6 +103,7 @@ const I18N = {
     telemetryInterval: 'Интервал телеметрии', language: 'Язык',
     theme: 'Тема', themeSystem: 'Системная', themeLight: 'Светлая', themeDark: 'Тёмная',
     timeFromInternet: 'Время из интернета', timeZone: 'Часовой пояс', timeSynced: 'синхронизировано', timeSyncError: 'ошибка синхронизации',
+    tempAlarm: 'Тревога по температуре модема (SMS)', tempMin: 'Нижняя граница', tempMax: 'Верхняя граница',
     off: 'Выкл', heat: 'Нагрев', vent: 'Вентиляция', auto: 'авто',
     logIn: 'Войти', register: 'Регистрация', createAccount: 'Создать аккаунт', backToLogin: 'Назад ко входу',
     logOut: 'Выйти', copy: 'Копировать', copied: 'Скопировано!', continueToLogin: 'Перейти ко входу',
@@ -147,6 +149,7 @@ const I18N = {
     telemetryInterval: 'Telemetrie-Intervall', language: 'Sprache',
     theme: 'Design', themeSystem: 'System', themeLight: 'Hell', themeDark: 'Dunkel',
     timeFromInternet: 'Zeit aus dem Internet', timeZone: 'Zeitzone', timeSynced: 'synchronisiert', timeSyncError: 'Synchronisierung fehlgeschlagen',
+    tempAlarm: 'Temperaturalarm des Modems (SMS)', tempMin: 'Untere Grenze', tempMax: 'Obere Grenze',
     off: 'Aus', heat: 'Heizen', vent: 'Lüften', auto: 'auto',
     logIn: 'Anmelden', register: 'Registrieren', createAccount: 'Konto erstellen', backToLogin: 'Zurück zur Anmeldung',
     logOut: 'Abmelden', copy: 'Kopieren', copied: 'Kopiert!', continueToLogin: 'Weiter zur Anmeldung',
@@ -355,6 +358,9 @@ function detectTimeZone() {
   return `${std},${rule}`;
 }
 
+/* Is the modem's optional external NTC connected? (telemetry flag, see decodeTelemetry()) */
+function sensorFitted() { return !!(telemetry && telemetry.extTempConnected); }
+
 const MISC_SETTINGS = [
   /* Key is "telemetryInt", not the more obvious "telemetryInterval" — the
      modem's MQTT-desired-topic-name buffer (Modem::mqttRxName) is only 16
@@ -366,6 +372,13 @@ const MISC_SETTINGS = [
      they go through the usual desired -> actual round trip (type 'switch' /
      device: true below). timeSyncAt is the modem's own report of the latest
      attempt. */
+  /* Modem temperature alarm: the modem texts the admin number when its external
+     NTC leaves tempMin..tempMax. Persisted in the modem's own flash (works with
+     no internet), so these go through the ordinary desired -> actual round trip
+     (plain: true = not retained). Shown only when a sensor is actually fitted. */
+  { key: 'tempAlarm', label: 'tempAlarm', type: 'switch', plain: true, visibleWhen: sensorFitted },
+  { key: 'tempMin', label: 'tempMin', min: -40, max: 99, step: 1, unit: '°C', visibleWhen: sensorFitted },
+  { key: 'tempMax', label: 'tempMax', min: -39, max: 100, step: 1, unit: '°C', visibleWhen: sensorFitted },
   { key: 'timeSync', label: 'timeFromInternet', type: 'switch', statusKey: 'timeSyncAt' },
   { key: 'timeZone', label: 'timeZone', type: 'select', options: TIMEZONES, device: true },
   /* UI language — web-app-only, no modem/firmware involvement at all (see
@@ -804,7 +817,7 @@ function buildSettingsRow(groupId, s) {
         desiredValues.timeZone = detectTimeZone();
         publishDesiredRetained('timeZone', desiredValues.timeZone);
       }
-      publishDesiredRetained(s.key, next);
+      if (s.plain) publishValue(s.key, next); else publishDesiredRetained(s.key, next);
       renderSettings();
     });
   } else if (s.type === 'select') {
@@ -884,6 +897,11 @@ function updateSettingsGroup(groupId, connectedKey, settings) {
         if (def) opt.textContent = t(def.label);
       });
     }
+    if (s.visibleWhen) {
+      const visible = s.visibleWhen();
+      input.closest('.setting-row').style.display = visible ? '' : 'none';
+      if (!visible) return;
+    }
     let pending = desiredValues[s.key];
 
     /* Device caught up to what was requested — done, stop tracking it as
@@ -902,6 +920,16 @@ function updateSettingsGroup(groupId, connectedKey, settings) {
       const at = s.statusKey ? rawStatus[s.statusKey] : undefined;
       valueEl.textContent = at === undefined ? '' : (at === 'error' ? t('timeSyncError') : `${t('timeSynced')} ${at}`);
       return;
+    }
+
+    /* Keep the temperature limits from crossing (the modem rejects min >= max):
+       each slider's range stops one step short of the other's current value. */
+    if (s.key === 'tempMin') {
+      const mx = desiredValues.tempMax !== undefined ? desiredValues.tempMax : rawStatus.tempMax;
+      if (mx !== undefined) input.max = String(Number(mx) - 1);
+    } else if (s.key === 'tempMax') {
+      const mn = desiredValues.tempMin !== undefined ? desiredValues.tempMin : rawStatus.tempMin;
+      if (mn !== undefined) input.min = String(Number(mn) + 1);
     }
 
     if (display === undefined) return;

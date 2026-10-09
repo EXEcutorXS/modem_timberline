@@ -59,6 +59,9 @@ void DataActualizator::ActualizeInternalData(void) {
     __enable_irq();
 
     newState.language = modem.config.language; /* single byte — already atomic, no guard needed */
+    newState.tempAlarm = modem.config.tempAlarm;
+    newState.tempMin   = modem.config.tempMin;
+    newState.tempMax   = modem.config.tempMax;
 }
 
 /* Sub-packet 1: D[1] = 4 флага x 2 бита/bool (00=off,01=on,11=нет данных):
@@ -203,6 +206,13 @@ void DataActualizator::handler(void) {
     if (strcmp(oldState.apnPassword, newState.apnPassword) != 0) {
         anyChanged = true;
         strcpy(oldState.apnPassword, newState.apnPassword);
+    }
+
+    if (oldState.tempAlarm != newState.tempAlarm || oldState.tempMin != newState.tempMin || oldState.tempMax != newState.tempMax) {
+        anyChanged = true;
+        oldState.tempAlarm = newState.tempAlarm;
+        oldState.tempMin   = newState.tempMin;
+        oldState.tempMax   = newState.tempMax;
     }
 
     if (anyChanged) {

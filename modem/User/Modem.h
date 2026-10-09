@@ -290,6 +290,12 @@ public:
                                        alternates between GSM-only and automatic every 10 min —
                                        see gsmPhase / useGsm().
                                        Persisted in flash — see the "2g" SMS command. */
+        bool       tempAlarm;      /* SMS to the admin when the external NTC leaves
+                                       tempMin..tempMax — persisted in flash (so it works
+                                       without internet), set from the web app over MQTT
+                                       (cmd/desired/tempAlarm|tempMin|tempMax)           */
+        int8_t     tempMin;        /* deg C, -40..100, always < tempMax */
+        int8_t     tempMax;        /* deg C */
         bool       faultReport;    /* send SMS on fault — persisted in flash      */
         bool       cmdAck;         /* send confirmation on device commands        */
         uint8_t    language;       /* 0 = English, 1 = German — persisted in flash;

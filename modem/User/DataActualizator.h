@@ -42,6 +42,10 @@ private:
         char    apn[32];
         char    apnUsername[32];  /* "apnuser" SMS command */
         char    apnPassword[32];  /* "apnpass" SMS command */
+        /* Modem temperature alarm (web app -> MQTT): persisted only, not on CAN. */
+        bool    tempAlarm;
+        int8_t  tempMin;
+        int8_t  tempMax;
     };
 
     State oldState;

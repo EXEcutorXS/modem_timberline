@@ -203,6 +203,13 @@ static void logKVBool(const char* key, bool value) {
     logKV(key, value ? "1" : "0");
 }
 
+static void logKVInt(const char* key, int32_t value) {
+    char buf[13]; int n = 0;
+    if (value < 0) { buf[n++] = '-'; value = -value; }
+    n = appendUint(buf, n, (uint32_t)value); buf[n] = 0;
+    logKV(key, buf);
+}
+
 /* "a.b.c.d" — same quad convention as bootloader/firmware versions elsewhere */
 static void logKVVersion(const char* key, const uint8_t v[4]) {
     char buf[16]; int n = 0;
@@ -279,6 +286,9 @@ extern "C" void usb_print_config(void) {
     logKVBool("cfg.allowRoaming", modem.config.allowRoaming);
     logKVBool("cfg.force2gOnly", modem.config.force2gOnly);
     logKVBool("cfg.faultReport", modem.config.faultReport);
+    logKVBool("cfg.tempAlarm", modem.config.tempAlarm);
+    logKVInt ("cfg.tempMin", modem.config.tempMin);
+    logKVInt ("cfg.tempMax", modem.config.tempMax);
     logKVBool("cfg.cmdAck", modem.config.cmdAck);
     logKVUint("cfg.language", modem.config.language);
 

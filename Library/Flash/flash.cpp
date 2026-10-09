@@ -69,6 +69,9 @@ void Flash_C::writeSetup(void)
     for (x = 0; x < sizeof(modem.internet.apn);                x++) array[a++] = (uint8_t)modem.internet.apn[x];
     for (x = 0; x < sizeof(modem.internet.apnUsername);        x++) array[a++] = (uint8_t)modem.internet.apnUsername[x];
     for (x = 0; x < sizeof(modem.internet.apnPassword);        x++) array[a++] = (uint8_t)modem.internet.apnPassword[x];
+    array[a++] = modem.config.tempAlarm ? 1 : 0;
+    array[a++] = (uint8_t)modem.config.tempMin;
+    array[a++] = (uint8_t)modem.config.tempMax;
 
     x = 0;
     for (a = 0; a < 511; a++) x += array[a];
@@ -137,6 +140,10 @@ void Flash_C::readSetup(void)
         for (x = 0; x < sizeof(modem.internet.apn);                x++) modem.internet.apn[x]              = (char)array[a++];
         for (x = 0; x < sizeof(modem.internet.apnUsername);        x++) modem.internet.apnUsername[x]      = (char)array[a++];
         for (x = 0; x < sizeof(modem.internet.apnPassword);        x++) modem.internet.apnPassword[x]      = (char)array[a++];
+        uint8_t rawTempAlarm = array[a++];
+        modem.config.tempAlarm = (rawTempAlarm == 1);
+        modem.config.tempMin   = (int8_t)array[a++];
+        modem.config.tempMax   = (int8_t)array[a++];
 
         bool needRewrite = false;
         /* allowRoaming/force2gOnly didn't exist in older firmware images —
@@ -144,6 +151,13 @@ void Flash_C::readSetup(void)
            below, just for a bool instead of a string. */
         if (rawAllowRoaming > 1) { modem.config.allowRoaming = false; needRewrite = true; }
         if (rawForce2gOnly > 1) { modem.config.force2gOnly = false; needRewrite = true; }
+        /* tempAlarm/tempMin/tempMax were appended after apnPassword: an image
+           from before them reads back erased 0xFF here (and a checksum that
+           still validates), so anything but a clean 0/1 flag means "never set". */
+        if (rawTempAlarm > 1 || modem.config.tempMin < -40 || modem.config.tempMin > 100 ||
+            modem.config.tempMax < -40 || modem.config.tempMax > 100 || modem.config.tempMin >= modem.config.tempMax) {
+            modem.config.tempAlarm = false; modem.config.tempMin = 0; modem.config.tempMax = 40; needRewrite = true;
+        }
         if (strlen(modem.config.pin) != 4) {
             modem.config.pin[0]='1'; modem.config.pin[1]='2'; modem.config.pin[2]='3'; modem.config.pin[3]='4'; modem.config.pin[4]='\0';
             needRewrite = true;
@@ -179,6 +193,7 @@ void Flash_C::readSetup(void)
         modem.config.useInternet = true;
         modem.config.allowRoaming = false;
         modem.config.force2gOnly = false;
+        modem.config.tempAlarm = false; modem.config.tempMin = 0; modem.config.tempMax = 40;
         modem.config.tempUnit    = 0;
         modem.config.faultReport = false;
         modem.config.cmdAck      = true;

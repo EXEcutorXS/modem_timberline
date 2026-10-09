@@ -714,6 +714,21 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
         D[0] = 3; D[6] = (uint8_t)ival;
         sendToHcu(19, D);
     }
+    else if (!strcmp(name, "tempAlarm")) {
+        /* Modem temperature alarm (see Timberline::tempAlarmHandler()) — persisted
+           in flash by dataActualizator.handler(), mirrored back below. */
+        modem.config.tempAlarm = bval;
+    }
+    else if (!strcmp(name, "tempMin")) {
+        ival = atoi(payload);
+        if (ival < -40 || ival >= modem.config.tempMax) return;   /* keep min < max, inside the sensor range */
+        modem.config.tempMin = (int8_t)ival;
+    }
+    else if (!strcmp(name, "tempMax")) {
+        ival = atoi(payload);
+        if (ival > 100 || ival <= modem.config.tempMin) return;
+        modem.config.tempMax = (int8_t)ival;
+    }
     else if (!strcmp(name, "timeSync")) {
         modem.timeSync.enabled = bval;
         modem.timeSync.nextAt  = 0;      /* sync right away, then every 10 min */
@@ -1435,6 +1450,24 @@ void Timberline::mqttActualizerHandler(void) {
         modem.mqttPublish("sysTimeLimit", buf);
     }
 
+    /* Modem temperature alarm settings (persisted in flash, see Modem::Config). */
+    static bool   prevTempAlarm;
+    static int8_t prevTempMin, prevTempMax;
+    if (modem.config.tempAlarm != prevTempAlarm || justConnected) {
+        prevTempAlarm = modem.config.tempAlarm;
+        modem.mqttPublish("tempAlarm", modem.config.tempAlarm ? "1" : "0");
+    }
+    if (modem.config.tempMin != prevTempMin || justConnected) {
+        prevTempMin = modem.config.tempMin;
+        sprintf(buf, "%d", (int)modem.config.tempMin);
+        modem.mqttPublish("tempMin", buf);
+    }
+    if (modem.config.tempMax != prevTempMax || justConnected) {
+        prevTempMax = modem.config.tempMax;
+        sprintf(buf, "%d", (int)modem.config.tempMax);
+        modem.mqttPublish("tempMax", buf);
+    }
+
     /* "Time from internet" mirrors — see tsEnabledKnown above. timeSyncAt is
        the outcome of the latest attempt (local time of the last good one, or
        "error"), set by timeSyncHandler(). */
@@ -1765,6 +1798,47 @@ void Timberline::mqttActualizerHandler(void) {
         if (first) csv[cn++] = '0';  /* no active errors */
         csv[cn] = '\0';
         modem.mqttPublish("errors", csv);
+    }
+}
+
+/* ── tempAlarmHandler ────────────────────────────────────────────────────
+   Texts the admin number once when the modem's external NTC (see ntc.h)
+   leaves the configured tempMin..tempMax range. One SMS per excursion: it
+   re-arms only after the reading is back inside the range by 1 deg C, so a
+   value hovering on a limit doesn't send a message every second. Off when
+   the alarm is disabled or no sensor is connected. The thresholds live in
+   flash (Modem::Config), so this works with no internet — plain SMS. */
+void Timberline::tempAlarmHandler(void) {
+    enum { T_OK = 0, T_LOW, T_HIGH };
+    static uint8_t  state = T_OK;
+    static uint32_t last  = 0;
+    uint32_t now = core.getTick();
+    if ((now - last) < 1000) return;
+    last = now;
+
+    if (!modem.config.tempAlarm || !ntc.connected) { state = T_OK; return; }
+
+    const int HYST = 1;
+    int t  = ntc.temperature;
+    int mn = modem.config.tempMin;
+    int mx = modem.config.tempMax;
+    if (state == T_LOW  && t >= mn + HYST) state = T_OK;
+    if (state == T_HIGH && t <= mx - HYST) state = T_OK;
+    if (state != T_OK) return;
+
+    const char* phone = modem.config.phones[0];   /* admin */
+    if (phone[0] != '+') return;                  /* no admin number yet — stay armed */
+
+    bool de = (modem.config.language == TL_LANG_DE);
+    char msg[80];
+    if (t < mn) {
+        state = T_LOW;
+        sprintf(msg, de ? "Modem-Temperatur Alarm: %dC, unter Min %dC" : "Modem temp alarm: %dC, below min %dC", t, mn);
+        modem.sendSms(phone, msg);
+    } else if (t > mx) {
+        state = T_HIGH;
+        sprintf(msg, de ? "Modem-Temperatur Alarm: %dC, ueber Max %dC" : "Modem temp alarm: %dC, above max %dC", t, mx);
+        modem.sendSms(phone, msg);
     }
 }
 

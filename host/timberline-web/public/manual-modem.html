@@ -237,6 +237,20 @@ ru: {
     <p>По умолчанию (<span class="cmd">roaming 0</span>) модем не использует мобильный интернет в роуминге, чтобы не создавать неожиданных расходов: при обнаружении роуминга соединение сразу разрывается, а SMS продолжают работать. Чтобы разрешить интернет в роуминге, отправьте <span class="cmd">roaming 1</span>.</p>
     <h3>Страница управления</h3>
     <p>Кнопки с иконками для горелки, ТЭНа, тёплого пола и подогрева двигателя (тёплый пол и двигатель появляются, только если это оборудование установлено). Переключатель ECO. Выбор зоны показывает только реально подключённые зоны; каждую зону можно переключить Выкл/Нагрев/Вентиляция (или только Выкл/Нагрев для радиатора без вентилятора) через меню из трёх точек в её углу, а цвет показывает текущее состояние. Дневная и ночная уставка и скорость вентилятора выбранной зоны меняются стрелками, колесом мыши или перетаскиванием вверх-вниз; долгое нажатие на вентилятор переключает автоматический и ручной режим. Таблица состояния показывает температуры бака, подогревателя и улицы, напряжение питания, состояние помп и активные коды неисправностей. Страница сама подстраивается под светлую или тёмную тему телефона или браузера.</p>`},
+   {id:"tempalarm", title:"Тревога по температуре", html:()=>`
+    <p>К модему можно подключить внешний датчик температуры (NTC-термистор 10&nbsp;кОм, B&nbsp;=&nbsp;3950). Если датчик подключён, его показание видно в таблице состояния веб-приложения и в SMS-ответе на <span class="cmd">status</span> («Tmodem»), а также на пульте. Модем может прислать SMS, если температура выйдет за заданные границы.</p>
+    <ol>
+      <li>Откройте веб-приложение → «Разное». Строки тревоги появляются только при подключённом датчике.</li>
+      <li>Включите <b>«Тревога по температуре модема (SMS)»</b>.</li>
+      <li>Ползунками задайте <b>нижнюю</b> и <b>верхнюю границу</b> в градусах Цельсия (от −40 до 100 °C; нижняя всегда меньше верхней).</li>
+    </ol>
+    <ul>
+      <li>SMS приходит на <b>номер администратора</b>: «Modem temp alarm: 45C, above max 40C» (или «below min …»); если язык модема немецкий — по-немецки.</li>
+      <li>На одно выхождение за границу — одно сообщение. Следующее придёт только после того, как температура вернётся в диапазон (с запасом 1&nbsp;°C) и снова выйдет из него.</li>
+      <li>Границы хранятся в самом модеме, поэтому тревога работает и без интернета (по обычному SMS), в том числе после перезагрузки.</li>
+      <li>Если датчик отсоединён или номер администратора не задан, SMS не отправляется.</li>
+    </ul>
+    <p>Доступно начиная с версии программы модема 121.0.0.22.</p>`},
    {id:"timesync", title:"Синхронизация времени", html:()=>`
     <p>Модем может сам устанавливать время во всей системе по интернету. В веб-приложении откройте «Разное», включите <b>«Время из интернета»</b> и выберите <b>часовой пояс</b>. Обе настройки хранятся на сервере (брокере), поэтому модем получает их при каждом подключении, а в самом модеме ничего сохранять не нужно.</p>
     <ul>
@@ -361,6 +375,20 @@ en: {
     <p>By default (<span class="cmd">roaming 0</span>) the modem will not use mobile internet while roaming on a foreign network, to avoid unexpected data charges — the connection is torn down immediately if roaming is detected, while SMS keeps working. Send <span class="cmd">roaming 1</span> to allow it anyway.</p>
     <h3>The web control page</h3>
     <p>Icon buttons for Heater, Element, Floor and Engine — Floor/Engine only appear if that hardware is actually installed. An Eco switch. A zone selector showing only the zones actually connected; each zone can be switched Off/Heat/Vent (or just Off/Heat for a radiator zone with no fan) via the three-dot menu button in its corner, and is colour-coded by its current state. Day/night setpoint and fan-speed controls for the selected zone — use the arrows, scroll, or drag up/down to adjust; long-press the fan control to switch it between automatic and manual. A live status table with tank/heater/outdoor temperature, supply voltage, pump states, and any active fault codes. The page automatically matches your phone or browser's light/dark theme.</p>`},
+   {id:"tempalarm", title:"Temperature alarm", html:()=>`
+    <p>An external temperature sensor (NTC thermistor 10&nbsp;kΩ, B&nbsp;=&nbsp;3950) can be connected to the modem. When it is fitted, its reading is shown in the web app's status table, in the SMS reply to <span class="cmd">status</span> (“Tmodem”) and on the panel. The modem can text you when the temperature leaves a range you set.</p>
+    <ol>
+      <li>Open the web app → “Misc”. The alarm rows only appear when a sensor is connected.</li>
+      <li>Turn on <b>“Modem temperature alarm (SMS)”</b>.</li>
+      <li>Set the <b>lower</b> and <b>upper limit</b> with the sliders, in degrees Celsius (−40 to 100 °C; the lower one is always below the upper one).</li>
+    </ol>
+    <ul>
+      <li>The SMS goes to the <b>admin number</b>: “Modem temp alarm: 45C, above max 40C” (or “below min …”); in German if the modem's language is German.</li>
+      <li>One message per excursion. The next one is sent only after the temperature has come back into the range (by a 1&nbsp;°C margin) and left it again.</li>
+      <li>The limits are stored in the modem itself, so the alarm works without internet (by plain SMS), also after a reboot.</li>
+      <li>Nothing is sent if the sensor is disconnected or no admin number is set.</li>
+    </ul>
+    <p>Available from modem software version 121.0.0.22.</p>`},
    {id:"timesync", title:"Time synchronization", html:()=>`
     <p>The modem can set the time across the whole system from the internet. In the web app open “Misc”, turn on <b>“Time from internet”</b> and choose the <b>time zone</b>. Both settings are stored on the server (the broker), so the modem receives them on every connection and nothing has to be saved in the modem itself.</p>
     <ul>
@@ -483,6 +511,20 @@ de: {
     <p>Standardmäßig (<span class="cmd">roaming aus</span>) nutzt das Modem im Roaming kein mobiles Internet, um unerwartete Datenkosten zu vermeiden — die Verbindung wird sofort getrennt, wenn Roaming erkannt wird; SMS funktionieren weiter. Mit <span class="cmd">roaming ein</span> erlauben Sie es trotzdem.</p>
     <h3>Die Web-Steuerungsseite</h3>
     <p>Symbol-Tasten für Brenner, Heizstab, Fußboden und Motor — Fußboden/Motor erscheinen nur, wenn die Hardware tatsächlich vorhanden ist. Ein Eco-Schalter. Eine Zonenauswahl zeigt nur die tatsächlich angeschlossenen Zonen; jede Zone kann über die Drei-Punkte-Schaltfläche in ihrer Ecke auf Aus/Heizen/Lüften (oder nur Aus/Heizen bei einer Heizkörperzone ohne Lüfter) geschaltet werden und ist je nach Zustand farbig markiert. Tag-/Nacht-Sollwert und Lüfterdrehzahl der gewählten Zone werden mit Pfeilen, Mausrad oder Ziehen nach oben/unten eingestellt; ein langer Druck auf den Lüfter schaltet zwischen automatisch und manuell um. Eine Live-Statustabelle zeigt Tank-/Heizungs-/Außentemperatur, Versorgungsspannung, Pumpenzustände und aktive Fehlercodes. Die Seite passt sich automatisch dem hellen/dunklen Design von Telefon oder Browser an.</p>`},
+   {id:"tempalarm", title:"Temperaturalarm", html:()=>`
+    <p>An das Modem kann ein externer Temperatursensor (NTC-Thermistor 10&nbsp;kΩ, B&nbsp;=&nbsp;3950) angeschlossen werden. Ist er vorhanden, erscheint sein Wert in der Statustabelle der Web-App, in der SMS-Antwort auf <span class="cmd">status</span> („Tmodem“) und am Panel. Das Modem kann eine SMS senden, wenn die Temperatur den eingestellten Bereich verlässt.</p>
+    <ol>
+      <li>Öffnen Sie die Web-App → „Sonstiges“. Die Alarmzeilen erscheinen nur, wenn ein Sensor angeschlossen ist.</li>
+      <li>Schalten Sie <b>„Temperaturalarm des Modems (SMS)“</b> ein.</li>
+      <li>Stellen Sie mit den Reglern die <b>untere</b> und die <b>obere Grenze</b> in Grad Celsius ein (−40 bis 100 °C; die untere liegt immer unter der oberen).</li>
+    </ol>
+    <ul>
+      <li>Die SMS geht an die <b>Admin-Nummer</b>: „Modem-Temperatur Alarm: 45C, ueber Max 40C“ (oder „unter Min …“); auf Englisch, wenn die Modemsprache Englisch ist.</li>
+      <li>Pro Überschreitung eine Nachricht. Die nächste folgt erst, nachdem die Temperatur wieder im Bereich war (mit 1&nbsp;°C Abstand) und ihn erneut verlassen hat.</li>
+      <li>Die Grenzen sind im Modem selbst gespeichert, daher funktioniert der Alarm auch ohne Internet (per normaler SMS) und nach einem Neustart.</li>
+      <li>Ist der Sensor nicht angeschlossen oder keine Admin-Nummer gesetzt, wird nichts gesendet.</li>
+    </ul>
+    <p>Verfügbar ab Modem-Softwareversion 121.0.0.22.</p>`},
    {id:"timesync", title:"Zeitsynchronisation", html:()=>`
     <p>Das Modem kann die Uhrzeit im gesamten System aus dem Internet einstellen. Öffnen Sie in der Web-App „Sonstiges“, schalten Sie <b>„Zeit aus dem Internet“</b> ein und wählen Sie die <b>Zeitzone</b>. Beide Einstellungen werden auf dem Server (Broker) gespeichert; das Modem erhält sie bei jeder Verbindung, im Modem selbst muss nichts gespeichert werden.</p>
     <ul>

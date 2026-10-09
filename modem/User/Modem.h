@@ -282,8 +282,13 @@ public:
                                        Persisted in flash — see the "roaming" SMS command
                                        (Library/Sms/timberline_sms.cpp) and doIdle()'s
                                        internetAllowed gate below.                   */
-        bool       force2gOnly;    /* false (default) = AT+CNMP=2 (automatic 2G/4G);
-                                       true = AT+CNMP=13 (GSM-only) in doInitNet().
+        bool       force2gOnly;    /* "2G autofallback" (name kept for the stored flag, the
+                                       "2g" SMS command and the panel's PGN60 field).
+                                       false (default) = always AT+CNMP=2 (automatic 2G/4G).
+                                       true = start on GSM-only (AT+CNMP=13); while the
+                                       internet stays down, the watchdog in doIdle()
+                                       alternates between GSM-only and automatic every 10 min —
+                                       see gsmPhase / useGsm().
                                        Persisted in flash — see the "2g" SMS command. */
         bool       faultReport;    /* send SMS on fault — persisted in flash      */
         bool       cmdAck;         /* send confirmation on device commands        */
@@ -308,6 +313,14 @@ public:
         bool     lastOk;      /* outcome of the latest attempt */
         uint32_t utc;         /* unix seconds (UTC) from the latest successful reading */
     } timeSync;
+
+    /* Runtime-only (never persisted), meaningful only while config.force2gOnly
+       ("2G autofallback") is on: true = the watchdog has currently put the
+       module on GSM-only. Always starts true (GSM-only) after a boot
+       or a change of the setting, and is flipped by the internet-down
+       watchdog in doIdle(). */
+    bool gsmPhase;
+    bool useGsm(void) const { return config.force2gOnly && gsmPhase; }
 
     /* Called on every received SMS (phone and text are temporary buffers) */
     void (*onSmsReceived)(const char* phone, const char* text);

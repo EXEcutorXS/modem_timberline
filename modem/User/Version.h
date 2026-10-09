@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 19
+#define VERSION_4 21
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,12 @@
 //TODO
 //Датчик температуры добавить в телеметрию
 //Добавить управление нагрузками
+
+121.0.0.21
+"2G only" setting is now "2G autofallback": with it on, the modem starts on GSM-only and the internet-down watchdog (10 min) alternates the radio between GSM-only and automatic 2G/4G until the internet works (the mode switch itself is what clears a wedged data attach). Removed the separate radio-reset state.
+
+121.0.0.20
+Internet-down watchdog: "2g only" falls back to automatic 2G/4G after 10 min without internet; otherwise a separate radio reset state (superseded by 121.0.0.21)
 
 121.0.0.19
 Time synchronization from the internet added (retained cmd/desired/timeSync + timeZone, NTP every 10 min, PGN=40 broadcast)

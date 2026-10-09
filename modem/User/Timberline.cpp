@@ -1236,8 +1236,8 @@ static void onSmsReceived(const char* phone, const char* text) {
                This field takes effect live now too — see doIdle()'s
                force2gOnly-change reactive block — not just on next
                reconnect/boot. */
-            modem.sendSms(phone, de ? (cmd.boolVal ? "Nur 2G: EIN" : "Nur 2G: AUS")
-                                   : (cmd.boolVal ? "2G only: ON"  : "2G only: OFF"));
+            modem.sendSms(phone, de ? (cmd.boolVal ? "2G-Fallback: EIN" : "2G-Fallback: AUS")
+                                   : (cmd.boolVal ? "2G fallback: ON"  : "2G fallback: OFF"));
             break;
         }
 

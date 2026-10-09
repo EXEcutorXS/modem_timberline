@@ -64,6 +64,7 @@ Modem::Modem()
     rawCapture.dst = 0; rawCapture.cap = 0; rawCapture.got = 0; rawCapture.chunkRemaining = 0;
     mqttScratch.urcResult = 0; mqttScratch.teardownThenNet = false;
     mqttScratch.netTeardownThenReinit = false; mqttScratch.reconnectRequested = false;
+    gsmPhase = true;
     otaScratch.startRequested = false; otaScratch.startRequestedTick = 0; otaScratch.retries = 0; otaScratch.failed = false; otaScratch.readLen = 0;
     otaErrorReason[0] = 0;
     regScratch.startRequested = false; regScratch.retries = 0;
@@ -934,26 +935,30 @@ void Modem::doIdle(void) {
        next time it comes up above already reads config.force2gOnly fresh. */
     if (internetAllowed && prevForce2gOnly != config.force2gOnly) {
         prevForce2gOnly = config.force2gOnly;
+        gsmPhase = true;   /* a changed setting starts over from GSM-only */
         internet.isInternetConnected = false;
         mqttScratch.netTeardownThenReinit = true;
         if (mqtt.connected) { mqttScratch.teardownThenNet = true; setState(ST_MQTT_TEARDOWN); return; }
         setState(ST_NET_TEARDOWN);
         return;
     } else if (!internetAllowed) {
+        if (prevForce2gOnly != config.force2gOnly) gsmPhase = true;
         prevForce2gOnly = config.force2gOnly;
     }
 
-    /* Internet-down watchdog. Some carriers/cells can leave the module's
-       TCP/IP stack wedged in a state the plain periodic retry further down
-       (timers.net — just ST_INIT_NET, no teardown first) never recovers
-       from on its own, confirmed on real hardware: internet stayed down
-       indefinitely until someone manually toggled config.force2gOnly off
-       and back on, which works only because that path (just above) does a
-       real AT+CGACT=0 teardown before reiniting, not because 2G itself
-       matters. Once internet has been down continuously for 10 minutes —
-       long past any normal registration/retry delay — force that same
-       teardown+reinit automatically instead of waiting on a person to
-       notice and toggle it by hand. Tracked here (not as an InternetState
+    /* Internet-down watchdog. A module can sit registered with a data attach
+       the network keeps refusing (AT+CGATT=1 fine, AT+CGACT=1,1 ERROR every
+       60 s retry), and the plain periodic retry further down (timers.net,
+       straight to ST_INIT_NET) just repeats the same failing sequence. What
+       clears it is changing the radio mode, which makes the module re-select
+       the network — confirmed on real hardware both ways: a SIM that attaches
+       fine on 4G but not on 2G, and one wedged until toggled 2G -> 4G -> 2G.
+       So after 10 minutes of continuous downtime, with the "2G autofallback"
+       setting (config.force2gOnly) on (it starts on GSM-only), switch the radio
+       mode — GSM-only <-> automatic 2G/4G — and re-init; it keeps alternating every 10 minutes for as
+       long as the internet stays down, and stays on whichever mode finally
+       works. With the setting off the radio mode is left alone and this is
+       just a plain teardown + re-init. Tracked here (not as an InternetState
        member) since it's pure idle-loop bookkeeping, same as
        prevInternetAllowed/prevForce2gOnly above. */
     static uint32_t internetDownSince = 0;
@@ -963,6 +968,11 @@ void Modem::doIdle(void) {
         } else if ((now - internetDownSince) >= 600000) { /* 10 min */
             internetDownSince = now; /* restart the window - don't re-fire every idle pass while this teardown+reinit is itself in flight */
             mqttScratch.netTeardownThenReinit = true;
+            if (config.force2gOnly) {
+                gsmPhase = !gsmPhase;
+                log_info(gsmPhase ? "[NET] no internet, back to GSM only\r\n"
+                                  : "[NET] no internet, trying automatic 2G/4G\r\n");
+            }
             if (mqtt.connected) { mqttScratch.teardownThenNet = true; setState(ST_MQTT_TEARDOWN); return; }
             setState(ST_NET_TEARDOWN);
             return;
@@ -1431,7 +1441,7 @@ void Modem::doInitNet(void) {
     const char* passToUse = internet.apnPassword[0] ? internet.apnPassword : (isTelekomDe ? "tm"                : "");
 
     switch (step) {
-    case 0: if (atCmd(config.force2gOnly ? "AT+CNMP=13\r\n" : "AT+CNMP=2\r\n", 300)) step++; break;
+    case 0: if (atCmd(useGsm() ? "AT+CNMP=13\r\n" : "AT+CNMP=2\r\n", 300)) step++; break;
     case 1: {
         int n = 0;
         const char* pre = "AT+CGDCONT=1,\"IP\",\"";

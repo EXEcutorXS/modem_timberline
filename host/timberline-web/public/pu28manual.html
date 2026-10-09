@@ -342,7 +342,7 @@ const SECTIONS = { ru: [
   img:"17_modem_settings.png",
   hot:[
     [5,10,315,43,"Только SMS","Модем работает только через SMS-команды, без мобильного интернета."],
-    [5,48,315,81,"Только 2G","Запрещает 3G/4G — модем всегда цепляется только к 2G."],
+    [5,48,315,81,"Только 2G","Режим «2G autofallback»: модем начинает с 2G (GSM); если интернета нет 10 минут подряд, переключается на автоматический режим 2G/4G, ещё через 10 минут возвращается на 2G и так по кругу, пока интернет не заработает. Выключено — всегда автоматический режим 2G/4G."],
     [5,86,315,119,"Роуминг","Разрешает регистрацию в сети роуминга."],
     [5,124,315,157,"SMS неиспр.","Присылать SMS-уведомление при появлении ошибки."],
     [5,162,315,195,"Подтв.команд","Присылать SMS-подтверждение на каждую принятую SMS-команду."],
@@ -672,7 +672,7 @@ const SECTIONS = { ru: [
   img:"17_modem_settings.png",
   hot:[
     [5,10,315,43,"Only SMS","The modem works via SMS commands only, no mobile internet."],
-    [5,48,315,81,"Only 2G","Forbids 3G/4G — the modem always attaches to 2G only."],
+    [5,48,315,81,"Only 2G","“2G autofallback” mode: the modem starts on 2G (GSM); if there is no internet for 10 minutes in a row it switches to automatic 2G/4G, then back to 2G after another 10 minutes, and so on until the internet works. Off — always automatic 2G/4G."],
     [5,86,315,119,"Roaming","Allows registering on a roaming network."],
     [5,124,315,157,"Fault SMS","Send an SMS notification whenever an error appears."],
     [5,162,315,195,"Cmd ack.","Send an SMS confirmation for every SMS command received."],
@@ -1002,7 +1002,7 @@ const SECTIONS = { ru: [
   img:"17_modem_settings.png",
   hot:[
     [5,10,315,43,"Nur SMS","Das Modem arbeitet nur über SMS-Befehle, ohne mobiles Internet."],
-    [5,48,315,81,"Nur 2G","Verbietet 3G/4G — das Modem bucht sich immer nur in 2G ein."],
+    [5,48,315,81,"Nur 2G","Modus „2G-Fallback“: das Modem startet auf 2G (GSM); gibt es 10 Minuten lang kein Internet, wechselt es auf automatisch 2G/4G, nach weiteren 10 Minuten zurück auf 2G, und so weiter, bis das Internet funktioniert. Aus — immer automatisch 2G/4G."],
     [5,86,315,119,"Roaming","Erlaubt die Registrierung in einem Roaming-Netz."],
     [5,124,315,157,"Fehler SMS","Sendet eine SMS-Benachrichtigung, sobald ein Fehler auftritt."],
     [5,162,315,195,"Befehl Best.","Sendet eine SMS-Bestätigung für jeden empfangenen SMS-Befehl."],

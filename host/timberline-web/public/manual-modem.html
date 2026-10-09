@@ -131,9 +131,9 @@ const CMDS = [
  ["reset","neustart","—","—","—",
   "Перезагружает модем.","Reboots the modem.","Startet das Modem neu."],
  ["2g","2g","on/off или 0/1","on/off or 0/1","ein/aus (auch on/off/0/1)",
-  "on — принудительно использовать только сеть 2G (GSM), off — автоматический выбор 2G/4G. Применяется сразу, если интернет включён.",
-  "on forces the GSM-only radio (no 4G), off selects automatic 2G/4G. Takes effect immediately if internet is enabled.",
-  "ein erzwingt nur GSM (kein 4G), aus wählt automatisch 2G/4G. Wirkt sofort, wenn Internet aktiviert ist."],
+  "«2G autofallback». on — модем начинает с 2G (GSM); если интернета нет 10 минут подряд, переключается на автоматический режим 2G/4G, ещё через 10 минут без интернета возвращается на 2G и так по кругу, пока интернет не заработает; на рабочем режиме остаётся. off — всегда автоматический режим 2G/4G. Применяется сразу, если интернет включён.",
+  "“2G autofallback”. on — the modem starts on 2G (GSM); if there is no internet for 10 minutes in a row it switches to automatic 2G/4G, after another 10 minutes without internet it goes back to 2G, and so on until the internet works; it stays on whichever mode works. off — always automatic 2G/4G. Takes effect immediately if internet is enabled.",
+  "„2G-Fallback“. ein — das Modem startet auf 2G (GSM); gibt es 10 Minuten lang kein Internet, wechselt es auf automatisch 2G/4G, nach weiteren 10 Minuten ohne Internet zurück auf 2G, und so weiter, bis das Internet funktioniert; es bleibt auf dem Modus, der funktioniert. aus — immer automatisch 2G/4G. Wirkt sofort, wenn Internet aktiviert ist."],
  ["apn","apn","имя точки доступа (до 31 симв.)","access point name (up to 31 chars)","Zugangspunktname (bis 31 Zeichen)",
   "Задаёт APN вручную. Пустой аргумент возвращает автоматический выбор. Применяется при следующей попытке подключения (в течение минуты, если интернет не работает).",
   "Sets the APN explicitly. An empty argument returns to automatic. Takes effect on the next connect attempt (within a minute if internet is currently down).",
@@ -259,7 +259,7 @@ ru: {
     <p>Нажатие на значок открывает экраны модема. Подробно они описаны в руководстве на пульт:</p>
     <ul>
       <li><a href="/pu28manual.html#modeminfo">Статус модема</a> — регистрация, роуминг, уровень сигнала, оператор, IMEI, последняя SMS;</li>
-      <li><a href="/pu28manual.html#modemsettings">Настройки модема</a> — «Только SMS», «Только 2G», «Роуминг», «SMS неиспр.», «Подтв. команд»;</li>
+      <li><a href="/pu28manual.html#modemsettings">Настройки модема</a> — «Только SMS», «Только 2G» (2G autofallback), «Роуминг», «SMS неиспр.», «Подтв. команд»;</li>
       <li><a href="/pu28manual.html#modeminternet">Статус интернета</a> — интернет, MQTT, режим сети, адрес проверки, брокер, логин, пароль, кнопки REG и QR;</li>
       <li><a href="/pu28manual.html#modemqr">QR-код привязки</a>.</li>
     </ul>`},
@@ -277,7 +277,7 @@ ru: {
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Что видно</th><th>Что проверить</th></tr></thead><tbody>
       <tr><td>Значок серый</td><td>Модем не отвечает по CAN. Проверьте питание модема, провода CAN и общую массу; помните, что устройства соединяют по CAN только после подачи питания.</td></tr>
       <tr><td>Значок синий (нет регистрации в сети)</td><td>SIM-карта вставлена и активна, антенна подключена, есть покрытие оператора (уровень сигнала на экране «Статус модема»).</td></tr>
-      <tr><td>Значок голубой (регистрация есть, интернета нет)</td><td>Не включён ли режим «Только SMS» и включён ли интернет (<span class="cmd">internet 1</span>). Если вы в роуминге — разрешите его (<span class="cmd">roaming 1</span>): по умолчанию в роуминге интернет запрещён, а SMS при этом работают. Проверьте тариф и баланс для передачи данных. При необходимости задайте APN оператора командами <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span>. Если сети 2G в вашей стране нет, убедитесь, что режим «Только 2G» выключен (<span class="cmd">2g off</span>).</td></tr>
+      <tr><td>Значок голубой (регистрация есть, интернета нет)</td><td>Не включён ли режим «Только SMS» и включён ли интернет (<span class="cmd">internet 1</span>). Если вы в роуминге — разрешите его (<span class="cmd">roaming 1</span>): по умолчанию в роуминге интернет запрещён, а SMS при этом работают. Проверьте тариф и баланс для передачи данных. При необходимости задайте APN оператора командами <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span>. Если по одному из режимов (2G или 4G) данные не проходят, включите «2G autofallback» (<span class="cmd">2g on</span>): модем сам будет менять режим каждые 10 минут, пока интернет не появится.</td></tr>
       <tr><td>Значок оранжевый (интернет есть, брокера нет)</td><td>Проверьте адрес сервера, логин и пароль на экране «Статус интернета» (<span class="cmd">server</span>, <span class="cmd">login</span>, <span class="cmd">password</span>), при необходимости повторите привязку (<span class="cmd">getlink</span> или кнопка REG).</td></tr>
       <tr><td>Модем не отвечает на SMS</td><td>Правильность PIN или отправка с номера администратора, баланс SIM-карты, команда набрана верно (регистр не важен). Для проверки связи отправьте <span class="cmd">ping</span> — в ответ придёт «pong».</td></tr>
       <tr><td>Сам собой перестал работать интернет</td><td>Отправьте <span class="cmd">reset</span>, чтобы перезагрузить модем. Если не помогает — обратитесь в сервис.</td></tr>
@@ -383,7 +383,7 @@ en: {
     <p>Tapping the icon opens the modem screens, described in detail in the panel manual:</p>
     <ul>
       <li><a href="/pu28manual.html#modeminfo">Modem status</a> — registration, roaming, signal, operator, IMEI, last SMS;</li>
-      <li><a href="/pu28manual.html#modemsettings">Modem settings</a> — “Only SMS”, “Only 2G”, “Roaming”, “Fault SMS”, “Cmd ack.”;</li>
+      <li><a href="/pu28manual.html#modemsettings">Modem settings</a> — “Only SMS”, “Only 2G” (2G autofallback), “Roaming”, “Fault SMS”, “Cmd ack.”;</li>
       <li><a href="/pu28manual.html#modeminternet">Internet status</a> — internet, MQTT, network mode, check URL, broker, login, password, REG and QR buttons;</li>
       <li><a href="/pu28manual.html#modemqr">Pairing QR code</a>.</li>
     </ul>`},
@@ -401,7 +401,7 @@ en: {
     <div class="tblwrap"><table class="tbl"><thead><tr><th>What you see</th><th>What to check</th></tr></thead><tbody>
       <tr><td>Icon is gray</td><td>The modem does not answer on CAN. Check the modem's power, the CAN wires and the common ground; remember that devices are joined on CAN only after power is applied.</td></tr>
       <tr><td>Icon is blue (not registered)</td><td>The SIM card is inserted and active, the antenna is connected, and there is operator coverage (signal level on the “Modem status” screen).</td></tr>
-      <tr><td>Icon is cyan (registered, no internet)</td><td>Whether “Only SMS” is off and internet is enabled (<span class="cmd">internet 1</span>). If you are roaming, allow it (<span class="cmd">roaming 1</span>): by default internet is forbidden in roaming while SMS keeps working. Check the data plan and balance. If needed, set the operator's APN with <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span>. If there is no 2G network in your country, make sure “Only 2G” is off (<span class="cmd">2g off</span>).</td></tr>
+      <tr><td>Icon is cyan (registered, no internet)</td><td>Whether “Only SMS” is off and internet is enabled (<span class="cmd">internet 1</span>). If you are roaming, allow it (<span class="cmd">roaming 1</span>): by default internet is forbidden in roaming while SMS keeps working. Check the data plan and balance. If needed, set the operator's APN with <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span>. If data does not get through on one of the modes (2G or 4G), turn on “2G autofallback” (<span class="cmd">2g on</span>): the modem then changes mode every 10 minutes by itself until the internet works.</td></tr>
       <tr><td>Icon is orange (internet, no broker)</td><td>Check the server address, login and password on the “Internet status” screen (<span class="cmd">server</span>, <span class="cmd">login</span>, <span class="cmd">password</span>); repeat the pairing if needed (<span class="cmd">getlink</span> or the REG button).</td></tr>
       <tr><td>No reply to SMS</td><td>Correct PIN or sending from the admin number, SIM balance, command typed correctly (case does not matter). To test the link, send <span class="cmd">ping</span> — the reply is “pong”.</td></tr>
       <tr><td>Internet stopped working by itself</td><td>Send <span class="cmd">reset</span> to reboot the modem. If that does not help, contact service.</td></tr>
@@ -505,7 +505,7 @@ de: {
     <p>Ein Tipp auf das Symbol öffnet die Modem-Bildschirme, die in der Panel-Anleitung ausführlich beschrieben sind:</p>
     <ul>
       <li><a href="/pu28manual.html#modeminfo">Modemstatus</a> — Registrierung, Roaming, Signal, Anbieter, IMEI, letzte SMS;</li>
-      <li><a href="/pu28manual.html#modemsettings">Modem-Einstellungen</a> — „Nur SMS“, „Nur 2G“, „Roaming“, „Störungs-SMS“, „Befehlsbestätigung“;</li>
+      <li><a href="/pu28manual.html#modemsettings">Modem-Einstellungen</a> — „Nur SMS“, „Nur 2G“ (2G-Fallback), „Roaming“, „Störungs-SMS“, „Befehlsbestätigung“;</li>
       <li><a href="/pu28manual.html#modeminternet">Internetstatus</a> — Internet, MQTT, Netzmodus, Prüf-URL, Broker, Login, Passwort, Tasten REG und QR;</li>
       <li><a href="/pu28manual.html#modemqr">QR-Code zur Kopplung</a>.</li>
     </ul>`},
@@ -523,7 +523,7 @@ de: {
     <div class="tblwrap"><table class="tbl"><thead><tr><th>Was zu sehen ist</th><th>Was zu prüfen ist</th></tr></thead><tbody>
       <tr><td>Symbol grau</td><td>Das Modem antwortet nicht am CAN. Stromversorgung des Modems, CAN-Leitungen und gemeinsame Masse prüfen; Geräte werden erst nach dem Einschalten am CAN verbunden.</td></tr>
       <tr><td>Symbol blau (nicht registriert)</td><td>SIM-Karte eingesetzt und aktiv, Antenne angeschlossen, Netzabdeckung vorhanden (Signalstärke auf dem Bildschirm „Modemstatus“).</td></tr>
-      <tr><td>Symbol cyan (registriert, kein Internet)</td><td>Ist „Nur SMS“ aus und das Internet aktiviert (<span class="cmd">internet ein</span>)? Im Roaming erlauben Sie es mit <span class="cmd">roaming ein</span>: standardmäßig ist Internet im Roaming gesperrt, während SMS weiter funktionieren. Datentarif und Guthaben prüfen. Bei Bedarf den APN des Anbieters mit <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span> setzen. Gibt es in Ihrem Land kein 2G-Netz, muss „Nur 2G“ aus sein (<span class="cmd">2g aus</span>).</td></tr>
+      <tr><td>Symbol cyan (registriert, kein Internet)</td><td>Ist „Nur SMS“ aus und das Internet aktiviert (<span class="cmd">internet ein</span>)? Im Roaming erlauben Sie es mit <span class="cmd">roaming ein</span>: standardmäßig ist Internet im Roaming gesperrt, während SMS weiter funktionieren. Datentarif und Guthaben prüfen. Bei Bedarf den APN des Anbieters mit <span class="cmd">apn</span>, <span class="cmd">apnuser</span>, <span class="cmd">apnpass</span> setzen. Kommen auf einem der Modi (2G oder 4G) keine Daten durch, schalten Sie „2G-Fallback“ ein (<span class="cmd">2g ein</span>): das Modem wechselt dann alle 10 Minuten selbständig den Modus, bis das Internet funktioniert.</td></tr>
       <tr><td>Symbol orange (Internet, kein Broker)</td><td>Serveradresse, Login und Passwort auf dem Bildschirm „Internetstatus“ prüfen (<span class="cmd">server</span>, <span class="cmd">login</span>, <span class="cmd">password</span>); bei Bedarf Kopplung wiederholen (<span class="cmd">getlink</span> oder Taste REG).</td></tr>
       <tr><td>Keine Antwort auf SMS</td><td>Richtige PIN oder Absenden von der Admin-Nummer, SIM-Guthaben, Befehl korrekt geschrieben. Zum Testen <span class="cmd">ping</span> senden — Antwort: „pong“.</td></tr>
       <tr><td>Internet funktioniert plötzlich nicht mehr</td><td>Mit <span class="cmd">neustart</span> das Modem neu starten. Hilft das nicht, den Service kontaktieren.</td></tr>

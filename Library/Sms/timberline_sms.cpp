@@ -374,7 +374,9 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         c.type = TL_CMD_ROAMING; c.boolVal = bval; add_cmd(res, c); return;
     }
 
-    /* ── 2g on/off — force GSM-only radio (no 4G) vs. automatic 2G/4G ─────── */
+    /* ── 2g on/off — "2G autofallback": on = start on GSM-only, alternating with
+       automatic 2G/4G every 10 min while the internet stays down (Modem::doIdle());
+       off = always automatic 2G/4G ─────────────────────────────────────────── */
     if (!strcmp(cmd, "2g")) {
         if (!parse_bool(arg, bval, bde)) { add_error(res, "2g: on/off"); return; }
         if (bde) mark_german(res);

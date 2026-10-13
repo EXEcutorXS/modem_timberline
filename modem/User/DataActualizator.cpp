@@ -5,8 +5,13 @@
 #include "StringTransfer.h"
 #include <string.h>
 
+/* Broadcast (127/7), not addressed to this modem itself — same convention and
+   same fix as id60/id18 in work.cpp's canBroadcast(): every listener on the
+   bus (panel, ...) is meant to receive the settings sub-packet, and a frame
+   with this device's own type/address in the destination field is not for
+   them. */
 static uint32_t Pgn60Id(void) {
-    return (60u<<20) | ((uint32_t)can.idType<<13) | ((uint32_t)can.idAddress<<10)
+    return (60u<<20) | ((uint32_t)Can::BROADCAST_TYPE<<13) | ((uint32_t)Can::BROADCAST_ADDRESS<<10)
          | ((uint32_t)can.idType<<3) | can.idAddress;
 }
 

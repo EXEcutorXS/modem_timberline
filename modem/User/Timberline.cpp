@@ -115,7 +115,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         switch((D[0]<<8)+D[1])
         {
         case  0://
-            can.SendMessage(ID,D[0],D[1],VERSION_1,VERSION_2,VERSION_2,VERSION_4,0xFF,0xFF);
+            can.SendMessage(ID,D[0],D[1],VERSION_1,VERSION_2,VERSION_3,VERSION_4,0xFF,0xFF);
             break;
         case 1://
             break;
@@ -472,7 +472,12 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
 
 void sendToHcu(uint16_t pgn,uint8_t* D)
 {
-    can.SendMessage(pgn<<20 | timberline.hcuType<<13 | timberline.hcuAddress<<10 | can.idType | can.idAddress,D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+    /* Source field is (our type << 3) | our address, same as every other sender
+       here — it used to be "can.idType | can.idAddress" with no shift, which put
+       a garbled source (type ~15 instead of 121) in front of the HCU. */
+    can.SendMessage(((uint32_t)pgn<<20) | ((uint32_t)timberline.hcuType<<13) | ((uint32_t)timberline.hcuAddress<<10)
+                    | ((uint32_t)can.idType<<3) | can.idAddress,
+                    D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
 }
 
 static int appendUint(char* buf, int n, uint32_t v) {
@@ -1805,18 +1810,20 @@ void Timberline::mqttActualizerHandler(void) {
    Texts the admin number once when the modem's external NTC (see ntc.h)
    leaves the configured tempMin..tempMax range. One SMS per excursion: it
    re-arms only after the reading is back inside the range by 1 deg C, so a
-   value hovering on a limit doesn't send a message every second. Off when
+   value hovering on a limit doesn't send a message every second, and only
+   fires once the reading has stayed outside for 10 s. Off when
    the alarm is disabled or no sensor is connected. The thresholds live in
    flash (Modem::Config), so this works with no internet — plain SMS. */
 void Timberline::tempAlarmHandler(void) {
     enum { T_OK = 0, T_LOW, T_HIGH };
     static uint8_t  state = T_OK;
+    static uint8_t  confirm = 0;     /* consecutive seconds outside the range */
     static uint32_t last  = 0;
     uint32_t now = core.getTick();
     if ((now - last) < 1000) return;
     last = now;
 
-    if (!modem.config.tempAlarm || !ntc.connected) { state = T_OK; return; }
+    if (!modem.config.tempAlarm || !ntc.connected) { state = T_OK; confirm = 0; return; }
 
     const int HYST = 1;
     int t  = ntc.temperature;
@@ -1824,7 +1831,14 @@ void Timberline::tempAlarmHandler(void) {
     int mx = modem.config.tempMax;
     if (state == T_LOW  && t >= mn + HYST) state = T_OK;
     if (state == T_HIGH && t <= mx - HYST) state = T_OK;
-    if (state != T_OK) return;
+    if (state != T_OK) { confirm = 0; return; }
+
+    /* The reading has to stay outside the range for 10 s in a row before it
+       counts: ignores a single wild sample (power-up, wiring noise, a hand
+       touching the sensor) instead of texting the admin about it. */
+    if (t >= mn && t <= mx) { confirm = 0; return; }
+    if (++confirm < 10) return;
+    confirm = 0;
 
     const char* phone = modem.config.phones[0];   /* admin */
     if (phone[0] != '+') return;                  /* no admin number yet — stay armed */

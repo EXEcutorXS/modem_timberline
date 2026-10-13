@@ -20,6 +20,20 @@ Ntc ntc;
    (if extreme) reading. */
 #define ADC_OPEN_CIRCUIT_THRESHOLD 4080
 
+/* The opposite fault: a reading this low means A1 is shorted to ground or
+the divider is broken - the NTC itself would have to be well past 125 C
+(~140 counts at that point) to get here, beyond what it can measure. Treated
+as "no sensor" instead of being turned into an absurd temperature. */
+#define ADC_SHORT_CIRCUIT_THRESHOLD 60
+
+/* Seconds of readings thrown away after power-up before any are trusted. The
+   first conversions after enabling/calibrating the ADC come out wrong on this
+   chip with a 10k divider (high source impedance, input not settled yet) -
+   one such sample used to seed the smoothing filter below and read as an
+   absurdly high temperature for the next ~15 s, long enough for the alarm to
+   fire (and its SMS to be queued) before registration even finished. */
+#define NTC_WARMUP_SAMPLES 3
+
 void Ntc::initialize(void)
 {
     pin.Initialize(GPIOA, GPIO_PIN_1, GPIO_Mode_AIN);
@@ -49,6 +63,7 @@ void Ntc::initialize(void)
        should be able to wedge the whole MCU if calibration somehow never
        reports done. */
     for (uint32_t i = 0; i < 1000000 && ADC_GetCalibrationStatus(ADC1) == SET; i++) {}
+    readRaw();   /* throwaway first conversion, see NTC_WARMUP_SAMPLES */
 }
 
 uint16_t Ntc::readRaw(void)
@@ -71,7 +86,10 @@ void Ntc::handler(void)
     timer = now;
 
     uint16_t raw = readRaw();
-    if (raw >= ADC_OPEN_CIRCUIT_THRESHOLD) {
+    static uint8_t warmup = 0;
+    if (warmup < NTC_WARMUP_SAMPLES) { warmup++; return; }   /* connected stays false meanwhile */
+
+    if (raw >= ADC_OPEN_CIRCUIT_THRESHOLD || raw < ADC_SHORT_CIRCUIT_THRESHOLD) {
         connected = false;
         return;
     }
@@ -92,6 +110,8 @@ void Ntc::handler(void)
     if (!filterSeeded) { filtered = celsius; filterSeeded = true; }
     else                filtered += (celsius - filtered) * 0.25f;
 
+    if (filtered > 125.0f)  filtered = 125.0f;    /* the NTC's usable range - and keeps the int8 cast below from wrapping */
+    if (filtered < -55.0f)  filtered = -55.0f;
     temperature = (int8_t)(filtered + (filtered >= 0.0f ? 0.5f : -0.5f));
     connected = true;
 }

@@ -246,7 +246,7 @@ ru: {
     </ol>
     <ul>
       <li>SMS приходит на <b>номер администратора</b>: «Modem temp alarm: 45C, above max 40C» (или «below min …»); если язык модема немецкий — по-немецки.</li>
-      <li>На одно выхождение за границу — одно сообщение. Следующее придёт только после того, как температура вернётся в диапазон (с запасом 1&nbsp;°C) и снова выйдет из него.</li>
+      <li>SMS отправляется, если температура остаётся за границей 10 секунд подряд (одиночные выбросы и первые секунды после включения не считаются). На одно выхождение за границу — одно сообщение. Следующее придёт только после того, как температура вернётся в диапазон (с запасом 1&nbsp;°C) и снова выйдет из него.</li>
       <li>Границы хранятся в самом модеме, поэтому тревога работает и без интернета (по обычному SMS), в том числе после перезагрузки.</li>
       <li>Если датчик отсоединён или номер администратора не задан, SMS не отправляется.</li>
     </ul>
@@ -384,7 +384,7 @@ en: {
     </ol>
     <ul>
       <li>The SMS goes to the <b>admin number</b>: “Modem temp alarm: 45C, above max 40C” (or “below min …”); in German if the modem's language is German.</li>
-      <li>One message per excursion. The next one is sent only after the temperature has come back into the range (by a 1&nbsp;°C margin) and left it again.</li>
+      <li>The SMS is sent once the temperature has stayed outside the range for 10 seconds in a row (single spikes and the first seconds after power-up do not count). One message per excursion. The next one is sent only after the temperature has come back into the range (by a 1&nbsp;°C margin) and left it again.</li>
       <li>The limits are stored in the modem itself, so the alarm works without internet (by plain SMS), also after a reboot.</li>
       <li>Nothing is sent if the sensor is disconnected or no admin number is set.</li>
     </ul>
@@ -520,7 +520,7 @@ de: {
     </ol>
     <ul>
       <li>Die SMS geht an die <b>Admin-Nummer</b>: „Modem-Temperatur Alarm: 45C, ueber Max 40C“ (oder „unter Min …“); auf Englisch, wenn die Modemsprache Englisch ist.</li>
-      <li>Pro Überschreitung eine Nachricht. Die nächste folgt erst, nachdem die Temperatur wieder im Bereich war (mit 1&nbsp;°C Abstand) und ihn erneut verlassen hat.</li>
+      <li>Die SMS wird gesendet, wenn die Temperatur 10 Sekunden in Folge außerhalb des Bereichs bleibt (einzelne Ausreißer und die ersten Sekunden nach dem Einschalten zählen nicht). Pro Überschreitung eine Nachricht. Die nächste folgt erst, nachdem die Temperatur wieder im Bereich war (mit 1&nbsp;°C Abstand) und ihn erneut verlassen hat.</li>
       <li>Die Grenzen sind im Modem selbst gespeichert, daher funktioniert der Alarm auch ohne Internet (per normaler SMS) und nach einem Neustart.</li>
       <li>Ist der Sensor nicht angeschlossen oder keine Admin-Nummer gesetzt, wird nichts gesendet.</li>
     </ul>

@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 22
+#define VERSION_4 24
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,12 @@
 //TODO
 //Датчик температуры добавить в телеметрию
 //Добавить управление нагрузками
+
+121.0.0.24
+Fix: PGN=60 settings sub-packet (DataActualizator::sendSettings) was addressed to the modem itself instead of broadcast 127/7; commands to the HCU (sendToHcu) carried a malformed source field (type not shifted << 3); PGN=1 version reply sent VERSION_2 twice instead of VERSION_3
+
+121.0.0.23
+Fix: false temperature alarm right after power-up (first ADC samples seeded the filter): NTC warm-up, short-circuit guard, clamp to -55..125 C, alarm needs 10 s outside the range
 
 121.0.0.22
 Modem temperature alarm: SMS to the admin number when the external NTC leaves tempMin..tempMax (web app Misc -> cmd/desired/tempAlarm|tempMin|tempMax, persisted in flash)

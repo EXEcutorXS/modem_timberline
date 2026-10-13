@@ -963,7 +963,26 @@ void Modem::doIdle(void) {
        member) since it's pure idle-loop bookkeeping, same as
        prevInternetAllowed/prevForce2gOnly above. */
     static uint32_t internetDownSince = 0;
+    static uint32_t internetDownStart = 0;   /* NOT restarted by the 10-min window: total time down, for the reboot below */
     if (internetAllowed && !internet.isInternetConnected) {
+        if (internetDownStart == 0) internetDownStart = now;
+        /* Last resort, the same thing the "reset" SMS command does and the one
+           thing confirmed to bring a stuck modem back (seen at home: toggling
+           "2g" over SMS, i.e. all the soft steps above, did nothing for as long
+           as it was tried, "reset" had it online in 20 s): after 30 minutes
+           without internet *while the network itself is registered* — so there
+           is coverage and something is wedged, rather than nothing to connect
+           to — reboot the whole controller and let the normal start-up
+           sequence rebuild everything from scratch. Never while an SMS is being
+           sent or waiting in the queue (it would be lost with the reboot). */
+        if ((now - internetDownStart) >= 1800000 && network.isRegistered && !sms.pending && !ussdPending) {
+            bool queued = false;
+            for (int i = 0; i < SMS_QUEUE_MAX; i++) if (sms.queue[i].pending) queued = true;
+            if (!queued) {
+                log_info("[NET] no internet for 30 min, rebooting\r\n");
+                NVIC_SystemReset();
+            }
+        }
         if (internetDownSince == 0) {
             internetDownSince = now;
         } else if ((now - internetDownSince) >= 600000) { /* 10 min */
@@ -980,6 +999,7 @@ void Modem::doIdle(void) {
         }
     } else {
         internetDownSince = 0;
+        internetDownStart = 0;
     }
 
     /* Internet dropped out from under an active MQTT session — tear it down;

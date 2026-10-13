@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 24
+#define VERSION_4 25
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,9 @@
 //TODO
 //Датчик температуры добавить в телеметрию
 //Добавить управление нагрузками
+
+121.0.0.25
+Internet-down watchdog last resort: 30 min without internet while registered -> reboot the controller (same as the reset SMS command)
 
 121.0.0.24
 Fix: PGN=60 settings sub-packet (DataActualizator::sendSettings) was addressed to the modem itself instead of broadcast 127/7; commands to the HCU (sendToHcu) carried a malformed source field (type not shifted << 3); PGN=1 version reply sent VERSION_2 twice instead of VERSION_3

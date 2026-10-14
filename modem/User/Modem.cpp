@@ -1094,7 +1094,22 @@ void Modem::doIdle(void) {
        so we're not needlessly polling the air interface. */
     uint32_t cregInterval = network.isRegistered ? 60000 : 5000;
     if ((now - timers.creg) >= cregInterval) { setState(ST_POLL_CREG);  return; }
-    if (internetAllowed && (now - timers.net) >= 60000) {
+    /* No separate internet check while MQTT is connected: a live session (its
+       keepalive and every acknowledged publish) is better proof of connectivity
+       than an HTTP GET to some third-party site, and the check can only do
+       harm here — one failed probe (+HTTPACTION: 0,713,0 against example.com,
+       seen on real hardware) used to tear down a perfectly healthy MQTT session
+       and the data context, ~70 s of outage for nothing. When MQTT drops,
+       timers.net is long expired, so the check runs at once and decides whether
+       it is the internet or just the broker. */
+    /* While the internet is not confirmed (start-up, or just lost) retry every
+       15 s for the first 2 minutes of downtime, then back to once a minute: the
+       very first check right after power-up often fails because the module has
+       only just booted (+HTTPACTION: 0,713 two seconds before PB DONE on real
+       hardware), and waiting a full minute for the second try delayed MQTT by
+       just as long. */
+    uint32_t netInterval = (!internet.isInternetConnected && (now - internetDownStart) < 120000) ? 15000 : 60000;
+    if (internetAllowed && !(mqtt.connected && internet.isInternetConnected) && (now - timers.net) >= netInterval) {
         /* Already up — just re-verify (cheap: CGPADDR ± HTTP check). Down —
            go through the full CNMP/CGDCONT/CGATT/CGACT sequence again
            (ST_CHECK_INTERNET alone only re-checks CGPADDR; it can't bring a
@@ -1556,8 +1571,19 @@ void Modem::doCheckInternet(void) {
                 setState(ST_IDLE);
                 return;
             }
-            step++;
+            step = 6;
         }
+        break;
+    case 6:
+        /* Close any HTTP session left over from before — the cellular module
+           keeps its HTTP service across a reset of this controller (reboot, SMS
+           "reset", reflashing), and a leftover one makes the AT+HTTPINIT below
+           answer ERROR and the first check fail (seen on real hardware: HTTPINIT
+           ERROR, then +HTTPACTION: 0,713,0, internet reported down for minutes
+           with the data context perfectly fine). Same idea as the CMQTTDISC/REL/
+           STOP up front in doMqttStart(). An ERROR here just means nothing was
+           open; the result is ignored. */
+        if (atCmd("AT+HTTPTERM\r\n", 2000)) step = 1;
         break;
     case 1: if (atCmd("AT+HTTPINIT\r\n",         2000)) step++; break;
     case 2: {
@@ -1807,16 +1833,27 @@ void Modem::doMqttStart(void) {
         break;
     case 1: if (atCmd("AT+CMQTTREL=0\r\n", 3000)) step++; break;
     case 2: if (atCmd("AT+CMQTTSTOP\r\n", 3000)) step++; break;
-    case 3: if (atCmd("AT+CMQTTSTART\r\n", 5000)) step++; break;
+    case 3: if (atCmd("AT+CMQTTSTART\r\n", 5000)) step = 20; break;
+    /* The MQTT connection is always TLS (broker port 8883): SSL context 0 — protocol version "all" (the module picks the best), no
+       server-certificate check yet (authmode 0: traffic is encrypted but the server is not
+       authenticated — a CA certificate has to be loaded into the module for that), and the
+       certificate date check is skipped (the module's clock is not trustworthy). Errors
+       are ignored like everywhere else in this sequence; CMQTTCONNECT reports the outcome. */
+    case 20: if (atCmd("AT+CSSLCFG=\"sslversion\",0,4\r\n", 2000))      step++;     break;
+    case 21: if (atCmd("AT+CSSLCFG=\"authmode\",0,0\r\n", 2000))        step++;     break;
+    case 22: if (atCmd("AT+CSSLCFG=\"ignorelocaltime\",0,1\r\n", 2000)) step = 4;   break;
     case 4: {
         int n = 0;
         const char* pre = "AT+CMQTTACCQ=0,\"";
         while (*pre) cmdBuf[n++] = *pre++;
         for (const char* p = mqtt.username; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
-        cmdBuf[n++] = '"'; cmdBuf[n++] = '\r'; cmdBuf[n++] = '\n'; cmdBuf[n] = 0;
-        if (atCmd(cmdBuf, 3000)) step++;
+        cmdBuf[n++] = '"';
+        cmdBuf[n++] = ','; cmdBuf[n++] = '1';   /* server_type 1 = SSL/TLS */
+        cmdBuf[n++] = '\r'; cmdBuf[n++] = '\n'; cmdBuf[n] = 0;
+        if (atCmd(cmdBuf, 3000)) step = 23;
         break;
     }
+    case 23: if (atCmd("AT+CMQTTSSLCFG=0,0\r\n", 2000)) step = 5; break;   /* bind session 0 to SSL context 0 */
     /* Last Will and Testament — "<username>/cmd/actual/online" = "0",
        registered with the broker before CONNECT so that if this session
        ever drops without a clean DISCONNECT (crashed, lost signal, power
@@ -1873,7 +1910,7 @@ void Modem::doMqttStart(void) {
            window so PINGs refresh the NAT binding well before it can expire,
            on 2G/EDGE as much as 4G (attach type doesn't change the
            carrier-side NAT timeout that's actually the culprit here). */
-        const char* mid = ":1883\",25,1,\"";
+        const char* mid = ":8883\",25,1,\"";
         while (*mid) cmdBuf[n++] = *mid++;
         for (const char* p = mqtt.username; *p && n < cmdMax; ) cmdBuf[n++] = *p++;
         cmdBuf[n++] = '"'; cmdBuf[n++] = ','; cmdBuf[n++] = '"';
@@ -1899,7 +1936,7 @@ void Modem::doMqttStart(void) {
            command's own ERROR (see the note above) — either way, answer
            already reflects it by the time we get here. */
         if (answer & ANS_MQTT_URC) step++;
-        else if ((core.getTick() - t) >= 20000) { mqttScratch.urcResult = 0xFF; step++; }
+        else if ((core.getTick() - t) >= 45000) { mqttScratch.urcResult = 0xFF; step++; }   /* the TLS handshake on EDGE is slow */
         break;
     default:
         if (mqttScratch.urcResult == 0) {

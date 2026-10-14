@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 25
+#define VERSION_4 26
 /*
 
 Адрес        Длина      Назначение региона
@@ -21,6 +21,15 @@
 //TODO
 //Датчик температуры добавить в телеметрию
 //Добавить управление нагрузками
+
+
+
+
+121.0.0.26
+MQTT is always over TLS now (broker port 8883, AT+CSSLCFG/CMQTTSSLCFG, no server-certificate check yet); no setting, no SMS command
+Internet check closes a leftover HTTP session first (AT+HTTPTERM before AT+HTTPINIT): the module keeps its HTTP service across a controller reset, which made the first check fail
+No periodic internet check while MQTT is connected (a failed probe used to tear down a healthy session)
+Internet check retries every 15 s (instead of 60 s) during the first 2 minutes without internet: the first check after power-up often fails because the module has only just booted, which delayed MQTT by a minute
 
 121.0.0.25
 Internet-down watchdog last resort: 30 min without internet while registered -> reboot the controller (same as the reset SMS command)

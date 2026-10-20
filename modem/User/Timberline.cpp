@@ -1856,6 +1856,43 @@ void Timberline::tempAlarmHandler(void) {
     }
 }
 
+/* ── statsHandler ────────────────────────────────────────────────────────
+   Counts seconds of uptime / registered / internet / MQTT (modem.stats) and
+   every 20 minutes (and once right after MQTT first connects) publishes all
+   six statistics as one value,
+   cmd/actual/stats = "<uptime>_<net>_<internet>_<mqtt>_<smsRx>_<smsTx>"
+   (seconds, seconds, seconds, seconds, count, count; all since boot). Time is
+   accumulated from tick deltas, so a late call loses nothing, and the 32-bit
+   ms tick wrapping after 49 days doesn't affect the counters. The value is
+   queued even while MQTT is down and goes out on reconnect. */
+void Timberline::statsHandler(void) {
+    static uint32_t last = 0;
+    static uint32_t nextPublishSec = 20 * 60;
+    uint32_t now = core.getTick();
+    while ((uint32_t)(now - last) >= 1000) {
+        last += 1000;
+        modem.stats.secUp++;
+        if (modem.network.isRegistered)         modem.stats.secNet++;
+        if (modem.internet.isInternetConnected) modem.stats.secInternet++;
+        if (modem.mqtt.connected)               modem.stats.secMqtt++;
+    }
+    /* Start-up publication: once, as soon as MQTT first connects after a boot,
+       so the retained value from the previous run is replaced right away
+       instead of 20 minutes later. */
+    static bool startSent = false;
+    bool due = false;
+    if (!startSent && modem.mqtt.connected) { startSent = true; due = true; }
+    if (modem.stats.secUp >= nextPublishSec) { nextPublishSec += 20 * 60; due = true; }
+    if (!due) return;
+
+    char msg[68];
+    sprintf(msg, "%lu_%lu_%lu_%lu_%lu_%lu",
+            (unsigned long)modem.stats.secUp,       (unsigned long)modem.stats.secNet,
+            (unsigned long)modem.stats.secInternet, (unsigned long)modem.stats.secMqtt,
+            (unsigned long)modem.stats.smsRx,       (unsigned long)modem.stats.smsTx);
+    modem.mqttPublish("stats", msg);
+}
+
 /* ── timeSyncHandler ─────────────────────────────────────────────────────
    Consumes a reading left by Modem::doTimeSync() (modem.timeSync.resultReady):
    UTC -> local time using the configured offset + DST rule, then, if the

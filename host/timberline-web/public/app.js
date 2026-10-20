@@ -79,6 +79,9 @@ const I18N = {
     selfOtaApply: 'Apply', selfOtaApplyStatusIdle: 'Not applied', selfOtaApplyStatusPending: 'Applying…',
     selfOtaApplyStatusDone: 'Applied', selfOtaApplyNothingStaged: 'Nothing loaded yet',
     deviceAddressLabel: 'Address', deviceVersionLabel: 'version', modemVersionLabel: 'Modem version',
+    statsTitle: 'Modem statistics (since last restart)', statsUptime: 'Uptime', statsNet: 'Registered in network',
+    statsInternet: 'With internet', statsMqtt: 'With MQTT', statsSms: 'SMS received / sent',
+    unitD: 'd', unitH: 'h', unitM: 'm', unitS: 's',
     canRelayFlash: 'Flash device', canRelayStatusIdle: 'Not flashed yet', canRelayStatusStaging: 'Flashing…',
     canRelayStatusDone: 'Device up to date', canRelayStatusError: 'Flashing failed',
     canRelayStepSwitching: 'Switching to bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedFound: 'found',
@@ -125,6 +128,9 @@ const I18N = {
     selfOtaApply: 'Применить', selfOtaApplyStatusIdle: 'Не применено', selfOtaApplyStatusPending: 'Применяется…',
     selfOtaApplyStatusDone: 'Применено', selfOtaApplyNothingStaged: 'Ничего не загружено',
     deviceAddressLabel: 'Адрес', deviceVersionLabel: 'версия', modemVersionLabel: 'Версия модема',
+    statsTitle: 'Статистика модема (с последней перезагрузки)', statsUptime: 'Время работы', statsNet: 'В сотовой сети',
+    statsInternet: 'С интернетом', statsMqtt: 'С MQTT', statsSms: 'SMS принято / отправлено',
+    unitD: 'д', unitH: 'ч', unitM: 'мин', unitS: 'с',
     canRelayFlash: 'Прошить устройство', canRelayStatusIdle: 'Ещё не прошито', canRelayStatusStaging: 'Прошивка…',
     canRelayStatusDone: 'Устройство актуально', canRelayStatusError: 'Ошибка прошивки',
     canRelayStepSwitching: 'Перевод в загрузчик…', canRelayStepDetectedPrefix: 'Загрузчик', canRelayStepDetectedFound: 'найден',
@@ -171,6 +177,9 @@ const I18N = {
     selfOtaApply: 'Anwenden', selfOtaApplyStatusIdle: 'Nicht angewendet', selfOtaApplyStatusPending: 'Wird angewendet…',
     selfOtaApplyStatusDone: 'Angewendet', selfOtaApplyNothingStaged: 'Noch nichts geladen',
     deviceAddressLabel: 'Adresse', deviceVersionLabel: 'Version', modemVersionLabel: 'Modem-Version',
+    statsTitle: 'Modem-Statistik (seit letztem Neustart)', statsUptime: 'Laufzeit', statsNet: 'Im Mobilfunknetz',
+    statsInternet: 'Mit Internet', statsMqtt: 'Mit MQTT', statsSms: 'SMS empfangen / gesendet',
+    unitD: 'T', unitH: 'Std', unitM: 'Min', unitS: 's',
     canRelayFlash: 'Gerät flashen', canRelayStatusIdle: 'Noch nicht geflasht', canRelayStatusStaging: 'Flashen…',
     canRelayStatusDone: 'Gerät aktuell', canRelayStatusError: 'Flashen fehlgeschlagen',
     canRelayStepSwitching: 'Wechsel in den Bootloader…', canRelayStepDetectedPrefix: 'Bootloader', canRelayStepDetectedFound: 'gefunden',
@@ -1550,11 +1559,41 @@ function renderOtaErrorBanner() {
   banner.classList.remove('hidden');
 }
 
+/* Modem statistics — rawStatus.stats = "<uptime s>_<s registered>_<s internet>_<s MQTT>_<SMS in>_<SMS out>",
+   published by the modem every 20 minutes (and once right after it first connects). Counted since its last
+   restart, so the shares are relative to the uptime. */
+function formatStatsDuration(sec) {
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d} ${t('unitD')} ${h} ${t('unitH')}`;
+  if (h > 0) return `${h} ${t('unitH')} ${m} ${t('unitM')}`;
+  if (m > 0) return `${m} ${t('unitM')}`;
+  return `${sec} ${t('unitS')}`;
+}
+
+function renderModemStats() {
+  const box = $('modemStats');
+  if (!box) return;
+  const p = (rawStatus.stats || '').split('_').map((x) => parseInt(x, 10));
+  if (p.length !== 6 || p.some((x) => !isFinite(x))) { box.classList.add('hidden'); return; }
+  const [up, net, inet, mq, smsIn, smsOut] = p;
+  const share = (v) => `${formatStatsDuration(v)} (${up > 0 ? Math.min(100, Math.round(v * 100 / up)) : 0}%)`;
+  const row = (label, value) => `<div class="ota-staged-row"><span>${label}</span><span class="stats-value">${value}</span></div>`;
+  box.innerHTML = `<div class="stats-title">${t('statsTitle')}</div>`
+    + row(t('statsUptime'), formatStatsDuration(up))
+    + row(t('statsNet'), share(net))
+    + row(t('statsInternet'), share(inet))
+    + row(t('statsMqtt'), share(mq))
+    + row(t('statsSms'), `${smsIn} / ${smsOut}`);
+  box.classList.remove('hidden');
+}
+
 function renderOtaPanel() {
   const modemVersionEl = $('modemVersionText');
   const listEl = $('deviceList');
   const noneEl = $('otaNoDevicesText');
   if (!modemVersionEl || !listEl || !noneEl) return; /* not logged in yet — controlBox not shown */
+
+  renderModemStats();
 
   renderOtaErrorBanner();
 

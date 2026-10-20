@@ -161,6 +161,9 @@
     font-size: 13px; color: var(--muted);
   }
   #modemVersionText { font-weight: 600; color: var(--text); }
+  .modem-stats { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: grid; gap: 4px; }
+  .modem-stats .stats-title { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .modem-stats .stats-value { font-weight: 600; color: var(--text); }
   .ota-status-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
@@ -446,6 +449,7 @@
         <span id="modemVersionLabel">Modem version</span>
         <span id="modemVersionText"></span>
       </div>
+      <div id="modemStats" class="modem-stats hidden"></div>
       <div id="selfOtaCard" class="device-card hidden">
         <div class="device-card-title" id="selfOtaTitle"></div>
         <div class="setting-row"><label><span id="selfOtaVersionLabel"></span></label>

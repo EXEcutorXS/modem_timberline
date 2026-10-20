@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 26
+#define VERSION_4 27
 /*
 
 Адрес        Длина      Назначение региона
@@ -24,6 +24,9 @@
 
 
 
+
+121.0.0.27
+Statistics: right after the first MQTT connect and then every 20 minutes cmd/actual/stats = "<uptime s>_<seconds registered>_<seconds with internet>_<seconds with MQTT>_<SMS received>_<SMS sent>" (since boot, not persisted)
 
 121.0.0.26
 MQTT is always over TLS now (broker port 8883, AT+CSSLCFG/CMQTTSSLCFG, no server-certificate check yet); no setting, no SMS command

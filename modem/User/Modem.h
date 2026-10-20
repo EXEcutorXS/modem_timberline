@@ -320,6 +320,19 @@ public:
         uint32_t utc;         /* unix seconds (UTC) from the latest successful reading */
     } timeSync;
 
+    /* Statistics since the last boot (never persisted — flash wear): seconds
+       counted once a second by Timberline::statsHandler(), which publishes them
+       every 20 minutes as one MQTT value; the SMS counters are bumped here in
+       doReadSms()/doSendSms(). */
+    struct Stats {
+        uint32_t secUp;        /* uptime */
+        uint32_t secNet;       /* registered in the cellular network */
+        uint32_t secInternet;  /* internet.isInternetConnected */
+        uint32_t secMqtt;      /* mqtt.connected */
+        uint32_t smsRx;        /* SMS received and passed on to the command parser */
+        uint32_t smsTx;        /* SMS the module confirmed as sent */
+    } stats;
+
     /* Runtime-only (never persisted), meaningful only while config.force2gOnly
        ("2G autofallback") is on: true = the watchdog has currently put the
        module on GSM-only. Always starts true (GSM-only) after a boot
@@ -577,8 +590,10 @@ private:
         /* Must fit the largest single payload: the "errors" CSV topic's
            worst case (8 codes × 3 digits + 7 commas + null = 32) is
            currently the biggest, just ahead of "telemetry"'s 24-char
-           base64 + null and the 16-hex-char "getlink" token + null. */
-        char value[36];
+           base64 + null and the 16-hex-char "getlink" token + null. The
+           "stats" line (six numbers joined with '_', up to 10 digits each) is
+           now the longest: 6*10 + 5 + null = 66, rounded to 68. */
+        char value[68];
         bool dirty;
     };
     struct MqttScratch {

@@ -48,6 +48,8 @@ Modem::Modem()
     network.lac = 0xFFFF; network.cellId = 0xFFFFFFFF; network.networkAcT = 0xFF;
     internet.isInternetConnected = false;
     mqtt.connected = false;
+    stats.secUp = stats.secNet = stats.secInternet = stats.secMqtt = 0;
+    stats.smsRx = stats.smsTx = 0;
     mqtt.telemetryIntervalSec = 15;
     config.useInternet = false;
     config.tempUnit = 0;
@@ -1311,6 +1313,7 @@ void Modem::doReadSms(void) {
         if (atCmd(cmd, 5000)) {
             if ((answer & ANS_CMGR) && (answer & ANS_OK)) {
                 log_info("SMS from "); log_info(network.cmgrPhone); log_info(": "); log_info(network.cmgrBody); log_info("\r\n");
+                stats.smsRx++;
                 if (onSmsReceived) onSmsReceived(network.cmgrPhone, network.cmgrBody);
             }
             sms.slot = 0;
@@ -1368,6 +1371,7 @@ void Modem::doSendSms(void) {
     case 4:
         drainRx();
         if (answer & ANS_OK) {
+            stats.smsTx++;
             sms.pending = false;
             setState(ST_IDLE);
         } else if (answer & ANS_ERROR) {

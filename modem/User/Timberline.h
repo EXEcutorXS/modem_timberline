@@ -32,6 +32,7 @@ class Timberline
 	void mqttTelemetryHandler(void);
 	void timeSyncHandler(void);
 	void tempAlarmHandler(void);
+	void statsHandler(void);
 
 	/* Generic device discovery — every PGN=18 announcement (any device
 	   type, not just the MBC-2/heater-family special cases handled

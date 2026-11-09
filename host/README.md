@@ -242,10 +242,47 @@ Two independent TLS terminations share the one certificate:
   **deploy-hook**, runs after every issue/renewal) copies both cert files
   into `/etc/mosquitto/certs/`, `chown`s them to the `mosquitto` user, and
   reloads mosquitto.
-- Plain MQTT on **1883 stays unencrypted** — that's the modem's own raw
-  connection, and the SIMCOM AT-command set this firmware uses has no TLS
-  support wired up. Only the browser-facing pieces (website, WebSocket) got
-  TLS.
+- **MQTT over TLS on 8883** (same cert files as the wss listener): firmware
+  121.0.0.26 and newer always connects there. Plain MQTT on **1883** is still
+  open only for devices running older firmware that have not been updated.
+
+### Hard constraint: the server certificate must be RSA (cellular module TLS)
+
+The SIMCom A76xx module that does the modem's HTTPS and MQTT-over-TLS has a
+limited TLS stack. **Use an RSA 2048 server certificate. Do not use ECDSA.**
+
+What was observed (2026-11-06, moving to a new VPS on Ubuntu 24.04):
+- certbot 2.9 issues an **ECDSA (prime256v1)** certificate by default (the
+  Let's Encrypt chain is ECDSA too). The old server's certbot issued RSA.
+- With the ECDSA certificate the modem's `AT+HTTPACTION` to
+  `https://<domain>/api/register-device...` failed within ~0.1–0.4 s with
+  **`+HTTPACTION: 0,715,0`** (auto-registration `[AUTOREG] failed,
+  http.status=715`), while plain `http://` requests worked. Nothing appears
+  in nginx's access/error log because the TLS handshake is aborted by the
+  client before any HTTP.
+- After reissuing the same names with an RSA 2048 key, auto-registration
+  succeeded. Nothing else was changed.
+
+Rules for any new or moved server:
+- Issue with `--key-type rsa --rsa-key-size 2048` (`setup.sh` does). The
+  choice is stored in `/etc/letsencrypt/renewal/<name>.conf` (`key_type =
+  rsa`), so renewals keep it — check this line after any re-registration of
+  the certificate. To switch an existing certificate:
+  `certbot certonly --webroot -w /var/www/html --cert-name <name> -d ... --key-type rsa --rsa-key-size 2048 --force-renewal`.
+- Keep **TLS 1.2** enabled with RSA key-exchange/ECDHE-RSA AES-GCM suites on
+  nginx and on the mosquitto 8883 listener. Never restrict either to TLS 1.3
+  only or to ECDSA-only suites.
+- Verify with an RSA-only client before announcing a new server:
+  `openssl s_client -connect <host>:8883 -tls1_2 -cipher ECDHE-RSA-AES128-GCM-SHA256`.
+- The same certificate serves port 8883, so MQTT-over-TLS would be affected
+  the same way (not tested with an ECDSA certificate on real hardware).
+- What is **not** established: whether the module lacks TLS 1.3 itself. The
+  servers offer TLS 1.2 and 1.3, so a TLS-1.2-only client would still
+  connect; the failure was tied to the ECDSA certificate (the key, the
+  ECDSA cipher suites, or the ECDSA intermediate chain were not told apart).
+  Do not assume more than "RSA works, ECDSA does not".
+- mosquitto does **not** reload TLS certificates on `reload`/SIGHUP: the
+  deploy hook uses `systemctl restart mosquitto`.
 
 **Consequence for `mqttBroker`**: the firmware's `getlink` SMS command
 builds a link as `"https://" + mqttBroker + "/go/..."` (`Timberline.cpp`).

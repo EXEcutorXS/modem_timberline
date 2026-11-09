@@ -22,4 +22,8 @@ cp "$SRC/privkey.pem" "$DST/privkey.pem"
 chown mosquitto:mosquitto "$DST/fullchain.pem" "$DST/privkey.pem"
 chmod 600 "$DST/fullchain.pem" "$DST/privkey.pem"
 
-systemctl reload mosquitto || systemctl restart mosquitto
+# restart, not reload: mosquitto does not re-read the listeners' TLS certificate
+# on SIGHUP, so after a reload it keeps serving the previous one (seen on the
+# 2026-11-06 server move). The certificate must stay RSA 2048 (cellular module
+# TLS limitation) - see host/README.md "Hard constraint: the server certificate must be RSA".
+systemctl restart mosquitto

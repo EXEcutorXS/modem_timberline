@@ -1838,7 +1838,11 @@ void Modem::doMqttStart(void) {
     case 1: if (atCmd("AT+CMQTTREL=0\r\n", 3000)) step++; break;
     case 2: if (atCmd("AT+CMQTTSTOP\r\n", 3000)) step++; break;
     case 3: if (atCmd("AT+CMQTTSTART\r\n", 5000)) step = 20; break;
-    /* The MQTT connection is always TLS (broker port 8883): SSL context 0 — protocol version "all" (the module picks the best), no
+    /* The server certificate MUST be RSA (2048): the module's HTTPS (+HTTPACTION 715) fails the
+       handshake against an ECDSA certificate, which is certbot's default on Ubuntu 24.04 — see
+       host/README.md "Hard constraint: the server certificate must be RSA". Keep TLS 1.2 enabled
+       on the server; do not assume the module does TLS 1.3.
+       The MQTT connection is always TLS (broker port 8883): SSL context 0 — protocol version "all" (the module picks the best), no
        server-certificate check yet (authmode 0: traffic is encrypted but the server is not
        authenticated — a CA certificate has to be loaded into the module for that), and the
        certificate date check is skipped (the module's clock is not trustworthy). Errors

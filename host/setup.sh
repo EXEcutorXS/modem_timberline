@@ -94,7 +94,10 @@ systemctl reload nginx
 # --nginx: obtains the cert AND edits the site config in place to add the
 # 443/TLS server block + the 80->443 redirect. Requires DOMAIN's DNS to
 # already point here (see header comment).
-certbot --nginx -d "$DOMAIN" -m "$EMAIL" --agree-tos --redirect -n
+# RSA, not certbot's ECDSA default on newer releases: the modem's SIMCom module
+# fails the TLS handshake against an ECDSA server certificate (+HTTPACTION 715),
+# see host/README.md "Hard constraint: the server certificate must be RSA".
+certbot --nginx -d "$DOMAIN" -m "$EMAIL" --agree-tos --redirect -n --key-type rsa --rsa-key-size 2048
 
 echo "== 8/13: cert for mosquitto's wss listener =="
 # mosquitto's own TLS (listener 8083) reads the cert directly rather than

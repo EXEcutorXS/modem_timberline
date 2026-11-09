@@ -136,7 +136,9 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
                (see PU28's ModemInternetInfo), which normally keeps this from
                even being reachable once configured, but the guard belongs
                here too since CAN messages aren't trustworthy on their own. */
-            if (modem.mqtt.username[0] == 0) modem.startAutoRegister();
+            /* D[2] == 1 - принудительный перезапуск: панель шлёт его после 10 нажатий подряд на кнопку "Registered" (учётные данные
+               уже есть). Новые логин и пароль заменяют прежние только после успешной регистрации (HTTP 200), при ошибке остаются старые. */
+            if (modem.mqtt.username[0] == 0 || D[2] == 1) modem.startAutoRegister();
             break;
         default:
             can.SendMessage((2<<20)+(TransType<<13)+(TransAddr<<10)+(can.idType<<3)+can.idAddress,D[0],D[1],0xFF,0xFF,0xFF,0xFF,0xFF,0xFF);

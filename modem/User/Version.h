@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 27
+#define VERSION_4 28
 /*
 
 Адрес        Длина      Назначение региона
@@ -24,6 +24,9 @@
 
 
 
+
+121.0.0.28
+Autoregister sequence now available even with login and password
 
 121.0.0.27
 Statistics: right after the first MQTT connect and then every 20 minutes cmd/actual/stats = "<uptime s>_<seconds registered>_<seconds with internet>_<seconds with MQTT>_<SMS received>_<SMS sent>" (since boot, not persisted)

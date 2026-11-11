@@ -50,9 +50,9 @@ const ICONS = {
    either — that would need i18n on the backend too, out of scope for now. */
 const I18N = {
   en: {
-    heater: 'Heater', element: 'Element', floor: 'Floor', engine: 'Engine', eco: 'Eco',
+    heater: 'Heater', element: 'Element', floor: 'Floor', engine: 'Engine', eco: 'Eco', storage: 'Storage',
     day: 'Day', fan: 'Fan', night: 'Night',
-    floorHeating: 'Floor heating', engineHeater: 'Engine heater', misc: 'Misc', raw: 'Raw',
+    floorHeating: 'Floor heating', engineHeater: 'Engine heater', storageMode: 'Storage mode', misc: 'Misc', raw: 'Raw',
     setpoint: 'Setpoint', hysteresis: 'Hysteresis', runTime: 'Run time', unlimited: 'Unlimited',
     telemetryInterval: 'Telemetry interval', language: 'Language',
     theme: 'Theme', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark',
@@ -99,9 +99,9 @@ const I18N = {
     heaterPump: 'Heater pump', auxPump1: 'Aux pump 1', auxPump2: 'Aux pump 2', auxPump3: 'Aux pump 3',
   },
   ru: {
-    heater: 'Котёл', element: 'ТЭН', floor: 'Пол', engine: 'Двигатель', eco: 'Эко',
+    heater: 'Котёл', element: 'ТЭН', floor: 'Пол', engine: 'Двигатель', eco: 'Эко', storage: 'Хранение',
     day: 'День', fan: 'Вентилятор', night: 'Ночь',
-    floorHeating: 'Тёплый пол', engineHeater: 'Подогрев двигателя', misc: 'Разное', raw: 'Сырые данные',
+    floorHeating: 'Тёплый пол', engineHeater: 'Подогрев двигателя', storageMode: 'Режим хранения', misc: 'Разное', raw: 'Сырые данные',
     setpoint: 'Уставка', hysteresis: 'Гистерезис', runTime: 'Время работы', unlimited: 'Без ограничения',
     telemetryInterval: 'Интервал телеметрии', language: 'Язык',
     theme: 'Тема', themeSystem: 'Системная', themeLight: 'Светлая', themeDark: 'Тёмная',
@@ -148,9 +148,9 @@ const I18N = {
     heaterPump: 'Насос котла', auxPump1: 'Доп. насос 1', auxPump2: 'Доп. насос 2', auxPump3: 'Доп. насос 3',
   },
   de: {
-    heater: 'Heizung', element: 'Heizelement', floor: 'Fußboden', engine: 'Motor', eco: 'Eco',
+    heater: 'Heizung', element: 'Heizelement', floor: 'Fußboden', engine: 'Motor', eco: 'Eco', storage: 'Lagerung',
     day: 'Tag', fan: 'Lüfter', night: 'Nacht',
-    floorHeating: 'Fußbodenheizung', engineHeater: 'Motorheizung', misc: 'Sonstiges', raw: 'Rohdaten',
+    floorHeating: 'Fußbodenheizung', engineHeater: 'Motorheizung', storageMode: 'Lagermodus', misc: 'Sonstiges', raw: 'Rohdaten',
     setpoint: 'Sollwert', hysteresis: 'Hysterese', runTime: 'Laufzeit', unlimited: 'Unbegrenzt',
     telemetryInterval: 'Telemetrie-Intervall', language: 'Sprache',
     theme: 'Design', themeSystem: 'System', themeLight: 'Hell', themeDark: 'Dunkel',
@@ -258,6 +258,7 @@ function applyStaticTranslations() {
   $('smsContinueBtn').textContent = t('continueToLogin');
   $('floorSettings').querySelector('summary').textContent = t('floorHeating');
   $('engineSettings').querySelector('summary').textContent = t('engineHeater');
+  $('storageSettings').querySelector('summary').textContent = t('storageMode');
   $('miscSettings').querySelector('summary').textContent = t('misc');
   $('otaSummary').textContent = t('otaDevices');
   $('selfOtaSummary').textContent = t('ownFirmware');
@@ -284,6 +285,9 @@ const ICON_BUTTONS = [
 /* Everything else, rendered the old label/ON-off way below the icon row. */
 const OTHER_BUTTONS = [
   { name: 'btnEco', label: 'eco' },
+  /* Storage mode (HCU PGN 21): forces heater, element and all zones on and
+     switches the zones to the storage setpoint below. */
+  { name: 'btnStorage', label: 'storage' },
 ];
 
 const ZONE_COUNT = 5;
@@ -317,6 +321,14 @@ const ENGINE_SETTINGS = [
   { key: 'engineSp', label: 'setpoint', min: 0, max: 80, step: 1, unit: '°' },
   { key: 'engineDur', label: 'runTime', min: 10, max: 1450, step: 10, unit: ' min',
     format: (v) => (Number(v) > 1440 ? t('unlimited') : `${v} min`) },
+];
+/* Storage mode zone setpoint (one value for all zones, °C). Gated on
+   'storageAvailable', which is set once the modem publishes storageSp at
+   all — it only does that after the HCU has reported the value, so with an
+   older HCU firmware the group stays hidden instead of showing a dead slider.
+   Range mirrors the firmware clamp (STORAGE_TEMP_MIN..MAX in Timberline.h). */
+const STORAGE_SETTINGS = [
+  { key: 'storageSp', label: 'setpoint', min: 3, max: 15, step: 1, unit: '°' },
 ];
 /* Modem-level settings, not tied to any zone/hardware presence — always
    shown, unlike FLOOR_SETTINGS/ENGINE_SETTINGS above (see
@@ -884,6 +896,7 @@ function buildSettingsPanels() {
   settingsRowsBuilt = true;
   FLOOR_SETTINGS.forEach((s) => $('floorSettings').appendChild(buildSettingsRow('floorSettings', s)));
   ENGINE_SETTINGS.forEach((s) => $('engineSettings').appendChild(buildSettingsRow('engineSettings', s)));
+  STORAGE_SETTINGS.forEach((s) => $('storageSettings').appendChild(buildSettingsRow('storageSettings', s)));
   MISC_SETTINGS.forEach((s) => $('miscSettings').appendChild(buildSettingsRow('miscSettings', s)));
 }
 
@@ -965,6 +978,7 @@ function renderSettings() {
   buildSettingsPanels();
   updateSettingsGroup('floorSettings', 'floorConnected', FLOOR_SETTINGS);
   updateSettingsGroup('engineSettings', 'engineConnected', ENGINE_SETTINGS);
+  updateSettingsGroup('storageSettings', 'storageAvailable', STORAGE_SETTINGS);
   updateSettingsGroup('miscSettings', null, MISC_SETTINGS);
 }
 
@@ -1914,6 +1928,7 @@ function connectMqtt(creds) {
     rawStatus[name] = value;
     if (ICON_BUTTONS.some(b => b.name === name) || OTHER_BUTTONS.some(b => b.name === name)) buttonState[name] = value;
     if (name === 'floorConnected' || name === 'engineConnected') connectedState[name] = value;
+    if (name === 'storageSp') connectedState.storageAvailable = '1';
     if (name === 'telemetry') { telemetry = decodeTelemetry(value); rawStatus.telemetry_decoded = telemetry; }
     if (name === 'online') setDeviceStatus(value === '1');
     renderStatus();

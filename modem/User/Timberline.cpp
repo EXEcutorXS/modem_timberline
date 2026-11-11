@@ -307,6 +307,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
                 elementSeconds = D[1]<<24|D[2]<<16|D[3]<<8|D[4];
             if (((D[5]>>0)&3)<2) floorPumpState  = (D[5]>>0)&1;
             if (((D[5]>>2)&3)<2) enginePumpState = (D[5]>>2)&1;
+            if (D[6]>=STORAGE_TEMP_MIN && D[6]<=STORAGE_TEMP_MAX) storageTemp = D[6];   /* storage mode zone setpoint, °C */
         }
         if (D[0]==6)
         {
@@ -326,6 +327,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
         if (D[6]!=0xFF) liquidLevel = D[6];
         if (((D[7]>>2)&3)!=3) elementState = (D[7]>>2)&3;
         if (((D[7]>>4)&3)<3) elementDisabled = (D[7]>>4)&3;
+        if ((D[7]&3)<2) StorageButton = D[7]&1;              /* storage mode */
         break;
 
     case 22:
@@ -773,6 +775,20 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
         D[0] = 1; D[4] = (uint8_t)(0xCF | (bval << 4));
         sendToHcu(19, D);
     }
+    else if (!strcmp(name, "btnStorage")) {
+        /* PGN21, D[7] bits 0-1 — HCU accepts only this field of PGN21, and
+           only when addressed to it (sendToHcu does that). */
+        D[7] = (uint8_t)(0xFC | bval);
+        sendToHcu(21, D);
+    }
+    else if (!strcmp(name, "storageSp")) {
+        /* PGN19, sub-packet 5, D[6] — storage mode zone setpoint, plain °C
+           (no +75 offset), same as the read side in ProcessCanMessage. */
+        ival = atoi(payload);
+        if (ival < STORAGE_TEMP_MIN || ival > STORAGE_TEMP_MAX) return;
+        D[0] = 5; D[6] = (uint8_t)ival;
+        sendToHcu(19, D);
+    }
     else if (!strcmp(name, "dayStartHr")) {
         /* PGN41, same byte layout as the read side (ProcessCanMessage case 41) —
            no sub-packet selector, same PGN number for read and write, like
@@ -918,6 +934,7 @@ static void onMqttCommandReceived(const char* name, const char* payload) {
 static const char HELP_SMS[] =
     "Bad cmd\n"
     "burner/element/floor/engine on/off\n"
+    "storage on/off\n"
     "z1 off\n"
 		"z1 heat\n"
 		"z1 vent\n"
@@ -1050,6 +1067,18 @@ static void onSmsReceived(const char* phone, const char* text) {
             ack(phone, de ? (cmd.boolVal ? "Heizstab: EIN" : "Heizstab: AUS")
                         : (cmd.boolVal ? "Element: ON"    : "Element: OFF"));
             break;
+
+        case TL_CMD_STORAGE: {
+            /* Own buffer, not the shared per-SMS D[]: its D[7] must not leak
+               into a following PGN22 command of the same SMS (D[7] there is
+               the burner/element/floor/engine buttons). */
+            uint8_t Ds[8] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+            Ds[7] = 0xFC | cmd.boolVal;          /* PGN21, D[7] bits 0-1 */
+            sendToHcu(21, Ds);
+            ack(phone, de ? (cmd.boolVal ? "Lagermodus: EIN"   : "Lagermodus: AUS")
+                        : (cmd.boolVal ? "Storage mode: ON"  : "Storage mode: OFF"));
+            break;
+        }
 
         case TL_CMD_FLOOR_TOGGLE:
             D[7] = 0xCF | (cmd.boolVal << 4);
@@ -1379,8 +1408,9 @@ void Timberline::mqttActualizerHandler(void) {
        of this — see the zone loop's own comment. */
     static char        prevZoneCombined[ZONE_COUNT][32];
     /* Read-only mirrors — no known HCU write protocol yet, see mqtt-topic-scheme memory.
-       StorageButton/mainHeaterNum deliberately excluded — not needed. */
-    static bool        prevEco;
+       mainHeaterNum deliberately excluded — not needed. */
+    static bool        prevEco, prevStorage;
+    static uint8_t     prevStorageSp;
     static uint8_t     prevFloorHyst, prevPumpForceDur;
     static uint8_t     prevDayStartHr, prevDayStartMin, prevNightStartHr, prevNightStartMin;
     static uint8_t     prevTelemetryInterval;
@@ -1536,6 +1566,14 @@ void Timberline::mqttActualizerHandler(void) {
     }
 
     if (EcoButton != prevEco || justConnected) { prevEco = EcoButton; modem.mqttPublish("btnEco", EcoButton ? "1" : "0"); }
+    if (StorageButton != prevStorage || justConnected) { prevStorage = StorageButton; modem.mqttPublish("btnStorage", StorageButton ? "1" : "0"); }
+    /* storageSp only once HCU has reported it (PGN 19/5, byte 6) — older HCU
+       firmware never sends it, so 0 means "unknown", not a real setpoint. */
+    if (storageTemp && (storageTemp != prevStorageSp || justConnected)) {
+        prevStorageSp = storageTemp;
+        sprintf(buf, "%d", storageTemp);
+        modem.mqttPublish("storageSp", buf);
+    }
     if (floorConnected && (floorHysteresis != prevFloorHyst || justConnected || floorJustConnected)) {
         prevFloorHyst = floorHysteresis;
         sprintf(buf, "%d", floorHysteresis);
@@ -2042,6 +2080,12 @@ void Timberline::sendStatus(const char* phone, bool german) {
     uint8_t n = 0;
     const char* u = UNIT_STR();
     bool de = german;
+
+    /* ── Storage mode first: burner/element/zones below are all forced on by it ── */
+    if (StorageButton) {
+        n = apStr(msg, n, de ? "Lagermodus ein" : "storage mode on");
+        msg[n++] = '\n';
+    }
 
     /* ── Burner ── */
     n = apStr(msg, n, de ? "Brenner:" : "Burn:");

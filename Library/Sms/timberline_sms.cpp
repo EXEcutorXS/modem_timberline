@@ -457,6 +457,15 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         return;
     }
 
+    /* ── storage / lagerung on/off (1/0) ──────────────────────────────────── */
+    if (!strcmp(cmd, "storage") || !strcmp(cmd, "lagerung")) {
+        if (!strcmp(cmd, "lagerung")) mark_german(res);
+        if (!parse_bool(arg, bval, bde)) { add_error(res, "storage: on/off"); return; }
+        if (bde) mark_german(res);
+        c.type = TL_CMD_STORAGE; c.boolVal = bval; add_cmd(res, c);
+        return;
+    }
+
     /* ── floor/fussboden on/off  |  floor 2..32 C / 36..90 F ─────────────── */
     if (!strcmp(cmd, "floor") || !strcmp(cmd, "fussboden")) {
         if (!strcmp(cmd, "fussboden")) mark_german(res);

@@ -2,6 +2,8 @@
 
 #define ZONE_COUNT 5
 #define PUMP_COUNT 8
+#define STORAGE_TEMP_MIN 3   /* storage mode zone setpoint range, °C (same as HCU) */
+#define STORAGE_TEMP_MAX 15
 
 #define PUMP1 0
 #define PUMP2 1
@@ -97,7 +99,8 @@ class Timberline
 	bool FloorButton;
 	bool EngineButton;
 	bool EcoButton;
-	bool StorageButton;
+	bool StorageButton;                  // режим хранения (PGN 21, байт 7, биты 0-1)
+	uint8_t storageTemp;                 // уставка зон в режиме хранения, °C (PGN 19/5, байт 6), 0 - ещё не получена
 	zoneState_t zoneStates[ZONE_COUNT];
 	uint8_t zoneDaySetpoint[ZONE_COUNT];
 	uint8_t zoneNightSetpoint[ZONE_COUNT];

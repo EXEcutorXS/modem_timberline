@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 28
+#define VERSION_4 29
 /*
 
 Адрес        Длина      Назначение региона
@@ -24,6 +24,8 @@
 
 
 
+121.0.0.29
+Storage mode support added
 
 121.0.0.28
 Autoregister sequence now available even with login and password

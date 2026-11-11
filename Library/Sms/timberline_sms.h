@@ -57,6 +57,7 @@ enum TlCmdType {
     TL_CMD_CHECKURL,        /* strArg (0-63 chars)    — HTTP GET target used to verify real internet connectivity;
                                                           empty = skip the check, PDP-up alone counts (see doCheckInternet()) */
     TL_CMD_USSD,            /* strArg (1-31 chars of 0-9 * # +) — forward a USSD request; the reply comes back by SMS (admin only, enforced in Timberline.cpp) */
+    TL_CMD_STORAGE,         /* boolVal                — storage mode on/off (HCU PGN 21, byte 7 bits 0-1) */
 };
 
 /* ── Zone sub-payload ───────────────────────────────────────────────────────*/

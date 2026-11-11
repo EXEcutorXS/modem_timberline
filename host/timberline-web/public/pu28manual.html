@@ -160,11 +160,13 @@ const SECTIONS = { ru: [
 {
   id:"timers", tag:"Экран 5 · таймеры", title:"Таймеры системы",
   access:"Меню → значок шестерёнки.",
-  lede:"Два защитных параметра, которые уходят напрямую в блок управления по CAN — в самом пульте не хранятся.",
+  lede:"Защитные таймеры и режим хранения. Значения уходят напрямую в блок управления по CAN — в самом пульте не хранятся.",
   img:"04_setup_page2_timers.png",
   hot:[
-    [30,12,265,50,"Таймер работы","Максимальная непрерывная работа отопителя, 1–96 ч (значение выше показывается как «Безлимит»); после — принудительная остановка."],
-    [30,50,265,100,"Время помпы","Циркуляция теплоносителя после остановки горелки, 2–60 мин."],
+    [0,0,320,40,"Таймер работы","Максимальная непрерывная работа отопителя, 1–96 ч (значение выше показывается как «Безлимит»); после — принудительная остановка."],
+    [0,40,320,75,"Время помпы","Циркуляция теплоносителя после остановки горелки, 2–60 мин."],
+    [0,75,320,111,"Темп. хранения","Температура, которую зоны поддерживают в режиме хранения, 3–15 °C (одна для всех зон). «--» — блок управления её не передаёт (старая прошивка)."],
+    [95,190,225,240,"Хранение","Включает и выключает режим хранения: горелка, ТЭН и все зоны включаются и держат температуру хранения. Пока режим включён, надпись подсвечена."],
     [0,200,50,240,"Назад",""],
   ],
   extra:`<div class="note">Кнопки «Применить» нет — выбранное поле меняется барабаном и уходит в блок управления немедленно, значение за значением.</div>`
@@ -490,11 +492,13 @@ const SECTIONS = { ru: [
 {
   id:"timers", tag:"Screen 5 · timers", title:"System timers",
   access:"Menu → gear icon.",
-  lede:"Two safety parameters that go straight to the control unit over CAN — they aren't stored on the panel itself.",
+  lede:"Safety timers and storage mode. The values go straight to the control unit over CAN — they aren't stored on the panel itself.",
   img:"04_setup_page2_timers.png",
   hot:[
-    [30,12,265,50,"System run time","Maximum continuous heater operation, 1–96h (a higher value shows as “Unlimited”); after that, a forced stop."],
-    [30,50,265,100,"Pump run time","Coolant circulation after the heater stops, 2–60 min."],
+    [0,0,320,40,"System run time","Maximum continuous heater operation, 1–96h (a higher value shows as “Unlimited”); after that, a forced stop."],
+    [0,40,320,75,"Pump run time","Coolant circulation after the heater stops, 2–60 min."],
+    [0,75,320,111,"Storage temp","Temperature the zones hold in storage mode, 3–15 °C (one value for all zones). “--” means the control unit doesn't report it (older firmware)."],
+    [95,190,225,240,"Storage","Turns storage mode on and off: the burner, element and all zones switch on and hold the storage temperature. The label is highlighted while the mode is on."],
     [0,200,50,240,"Back",""],
   ],
   extra:`<div class="note">There's no “Apply” button — the selected field is changed with the drum and sent to the control unit immediately, value by value.</div>`
@@ -820,11 +824,13 @@ const SECTIONS = { ru: [
 {
   id:"timers", tag:"Bildschirm 5 · Zeitgeber", title:"Systemzeitgeber",
   access:"Menü → Zahnrad-Symbol.",
-  lede:"Zwei Sicherheitsparameter, die direkt über CAN an das Steuergerät gehen — sie werden nicht auf dem Panel selbst gespeichert.",
+  lede:"Sicherheitszeitgeber und Lagermodus. Die Werte gehen direkt über CAN an das Steuergerät — sie werden nicht auf dem Panel selbst gespeichert.",
   img:"04_setup_page2_timers.png",
   hot:[
-    [30,12,265,50,"Systemlaufzeit","Maximale ununterbrochene Heizungslaufzeit, 1–96 h (ein höherer Wert wird als „Unlimited“ angezeigt); danach ein Zwangsstopp."],
-    [30,50,265,100,"Pumpenlaufzeit","Kühlmittelumwälzung nach dem Abschalten der Heizung, 2–60 min."],
+    [0,0,320,40,"Systemlaufzeit","Maximale ununterbrochene Heizungslaufzeit, 1–96 h (ein höherer Wert wird als „Unlimited“ angezeigt); danach ein Zwangsstopp."],
+    [0,40,320,75,"Pumpenlaufzeit","Kühlmittelumwälzung nach dem Abschalten der Heizung, 2–60 min."],
+    [0,75,320,111,"Lagertemp.","Temperatur, die die Zonen im Lagermodus halten, 3–15 °C (ein Wert für alle Zonen). „--“ bedeutet, dass das Steuergerät sie nicht meldet (ältere Firmware)."],
+    [95,190,225,240,"Lagerung","Schaltet den Lagermodus ein und aus: Brenner, Heizstab und alle Zonen werden eingeschaltet und halten die Lagertemperatur. Solange der Modus aktiv ist, ist die Beschriftung hervorgehoben."],
     [0,200,50,240,"Zurück",""],
   ],
   extra:`<div class="note">Es gibt keine „Übernehmen“-Taste — das ausgewählte Feld wird mit der Trommel geändert und sofort, Wert für Wert, an das Steuergerät gesendet.</div>`

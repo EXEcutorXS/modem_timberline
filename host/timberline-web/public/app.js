@@ -92,7 +92,7 @@ const I18N = {
     tankTemp: 'Tank temp', heaterTemp: 'Heater temp', voltage: 'Voltage', outdoorTemp: 'Outdoor temp',
     heaterState: 'Heater state', domesticWater: 'Domestic water', liquidLevel: 'Liquid level',
     pumpsRunning: 'Pumps running', floorTemp: 'Floor temp', floorPump: 'Floor pump',
-    engineTemp: 'Engine temp', enginePump: 'Engine pump', errorsLabel: 'Errors', extTemp: 'Modem temp sensor',
+    engineTemp: 'Engine temp', enginePump: 'Engine pump', errorsLabel: 'Errors', errUnknown: 'Unknown error', extTemp: 'Modem temp sensor',
     onState: 'ON', offState: 'off', flowing: 'flowing', noneLabel: 'none',
     heaterIdle: 'Idle', heaterBlowing: 'Blowing', heaterIgnition: 'Ignition/warming', heaterWorkOnPower: 'Work on power',
     pump1: 'Pump 1', pump2: 'Pump 2', pump3: 'Pump 3', pump4: 'Pump 4',
@@ -141,7 +141,7 @@ const I18N = {
     tankTemp: 'Температура бака', heaterTemp: 'Температура котла', voltage: 'Напряжение', outdoorTemp: 'Уличная температура',
     heaterState: 'Состояние котла', domesticWater: 'Горячая вода', liquidLevel: 'Уровень жидкости',
     pumpsRunning: 'Работают насосы', floorTemp: 'Температура пола', floorPump: 'Насос пола',
-    engineTemp: 'Температура двигателя', enginePump: 'Насос двигателя', errorsLabel: 'Ошибки', extTemp: 'Датчик температуры модема',
+    engineTemp: 'Температура двигателя', enginePump: 'Насос двигателя', errorsLabel: 'Ошибки', errUnknown: 'Неизвестная ошибка', extTemp: 'Датчик температуры модема',
     onState: 'ВКЛ', offState: 'выкл', flowing: 'есть проток', noneLabel: 'нет',
     heaterIdle: 'Ожидание', heaterBlowing: 'Обдув', heaterIgnition: 'Розжиг/прогрев', heaterWorkOnPower: 'Работа на мощности',
     pump1: 'Насос 1', pump2: 'Насос 2', pump3: 'Насос 3', pump4: 'Насос 4',
@@ -190,7 +190,7 @@ const I18N = {
     tankTemp: 'Tanktemperatur', heaterTemp: 'Kesseltemperatur', voltage: 'Spannung', outdoorTemp: 'Außentemperatur',
     heaterState: 'Kesselstatus', domesticWater: 'Warmwasser', liquidLevel: 'Flüssigkeitsstand',
     pumpsRunning: 'Laufende Pumpen', floorTemp: 'Fußbodentemperatur', floorPump: 'Fußbodenpumpe',
-    engineTemp: 'Motortemperatur', enginePump: 'Motorpumpe', errorsLabel: 'Fehler', extTemp: 'Modem-Temperatursensor',
+    engineTemp: 'Motortemperatur', enginePump: 'Motorpumpe', errorsLabel: 'Fehler', errUnknown: 'Unbekannter Fehler', extTemp: 'Modem-Temperatursensor',
     onState: 'EIN', offState: 'aus', flowing: 'Durchfluss', noneLabel: 'keine',
     heaterIdle: 'Bereit', heaterBlowing: 'Gebläse', heaterIgnition: 'Zündung/Aufwärmen', heaterWorkOnPower: 'Volllast',
     pump1: 'Pumpe 1', pump2: 'Pumpe 2', pump3: 'Pumpe 3', pump4: 'Pumpe 4',
@@ -1220,6 +1220,89 @@ function statusRow(label, value) {
   return `<tr><td>${label}</td><td>${value}</td></tr>`;
 }
 
+/* Error code -> description, [en, ru, de]. Codes are the heater/HCU/extension-board
+   fault numbers published in the "errors" CSV topic (the active HCU error list,
+   see Timberline.cpp); the table follows FaultManager.cpp's list (the same texts
+   the modem puts into its fault SMS) plus the panel's own naming (User/Text/
+   strings.cpp). Numbered families (zone sensors, pumps, fans, aux sensors) are
+   generated below, odd/even code = short circuit / open circuit like on the panel. */
+const ERROR_TEXTS = {
+  1: ['Overheat', 'Перегрев', 'Überhitzung'],
+  2: ['Overheat', 'Перегрев', 'Überhitzung'],
+  3: ['Overheat sensor error', 'Ошибка датчика перегрева', 'Fehler Überhitzungssensor'],
+  4: ['Liquid temperature sensor error', 'Ошибка датчика температуры жидкости', 'Fehler Flüssigkeitstemperatursensor'],
+  5: ['Flame sensor: open circuit', 'Обрыв датчика пламени', 'Flammensensor: Unterbrechung'],
+  9: ['Glow plug error', 'Ошибка свечи накаливания', 'Glühkerze defekt'],
+  10: ['Fan speed does not match the setpoint', 'Скорость вентилятора не соответствует заданной', 'Lüfterdrehzahl weicht vom Sollwert ab'],
+  12: ['High supply voltage', 'Повышенное напряжение питания', 'Zu hohe Versorgungsspannung'],
+  13: ['No ignition', 'Нет розжига', 'Keine Zündung'],
+  14: ['Water pump error', 'Ошибка водяного насоса', 'Wasserpumpe: Fehler'],
+  15: ['Low supply voltage', 'Пониженное напряжение питания', 'Zu niedrige Versorgungsspannung'],
+  16: ['Body temperature sensor does not cool down', 'Датчик температуры корпуса не остывает', 'Gehäusesensor kühlt nicht ab'],
+  17: ['Fuel pump: short circuit', 'КЗ топливного насоса', 'Kraftstoffpumpe: Kurzschluss'],
+  22: ['Fuel pump: open circuit', 'Обрыв топливного насоса', 'Kraftstoffpumpe: Unterbrechung'],
+  27: ['Fan does not rotate', 'Вентилятор не вращается', 'Lüfter dreht nicht'],
+  28: ['Fan self-rotation', 'Самовращение вентилятора', 'Lüfter dreht von selbst'],
+  29: ['Flame blowout limit exceeded', 'Превышен лимит срывов пламени', 'Flammabriss-Limit überschritten'],
+  36: ['Flame indicator overheating', 'Перегрев датчика пламени', 'Flammenwächter überhitzt'],
+  40: ['No connection with the heater', 'Нет связи с подогревателем', 'Keine Verbindung zum Heizgerät'],
+  45: ['Tank temperature sensor: open circuit', 'Обрыв датчика температуры бака', 'Tanktemperatursensor: Unterbrechung'],
+  46: ['Tank temperature sensor: short circuit', 'КЗ датчика температуры бака', 'Tanktemperatursensor: Kurzschluss'],
+  53: ['Flow sensor: open circuit', 'Обрыв датчика потока', 'Durchflusssensor: Unterbrechung'],
+  54: ['Flow sensor: short circuit', 'КЗ датчика потока', 'Durchflusssensor: Kurzschluss'],
+  55: ['Outdoor temperature sensor: open circuit', 'Обрыв датчика наружной температуры', 'Außentemperatursensor: Unterbrechung'],
+  56: ['Outdoor temperature sensor: short circuit', 'КЗ датчика наружной температуры', 'Außentemperatursensor: Kurzschluss'],
+  91: ['Liquid level too low', 'Слишком низкий уровень жидкости', 'Flüssigkeitsstand zu niedrig'],
+  92: ['Liquid level too high', 'Слишком высокий уровень жидкости', 'Flüssigkeitsstand zu hoch'],
+  93: ['Level sensor: short circuit', 'КЗ датчика уровня', 'Pegelsensor: Kurzschluss'],
+  94: ['Level sensor: open circuit', 'Обрыв датчика уровня', 'Pegelsensor: Unterbrechung'],
+  103: ['Extension board link fault', 'Нет связи с платой расширения', 'Verbindungsfehler Erweiterungsplatine'],
+  104: ['Zone/pump conflict', 'Конфликт зоны и насоса', 'Konflikt Zone/Pumpe'],
+  200: ['No connection with the inverter', 'Нет связи с инвертором', 'Keine Verbindung zum Inverter'],
+  201: ['Evaporator fan: short circuit', 'КЗ вентилятора испарителя', 'Verdampferlüfter: Kurzschluss'],
+  202: ['Evaporator fan: open circuit', 'Обрыв вентилятора испарителя', 'Verdampferlüfter: Unterbrechung'],
+  203: ['Evaporator fan: overcurrent', 'Перегрузка по току вентилятора испарителя', 'Verdampferlüfter: Überstrom'],
+  204: ['Evaporator sensor: short circuit', 'КЗ датчика испарителя', 'Verdampfersensor: Kurzschluss'],
+  205: ['Evaporator sensor: open circuit', 'Обрыв датчика испарителя', 'Verdampfersensor: Unterbrechung'],
+  206: ['Cabin temperature sensor: short circuit', 'КЗ датчика температуры салона', 'Kabinentemperatursensor: Kurzschluss'],
+  207: ['Cabin temperature sensor: open circuit', 'Обрыв датчика температуры салона', 'Kabinentemperatursensor: Unterbrechung'],
+  210: ['Compressor: short circuit', 'КЗ компрессора', 'Kompressor: Kurzschluss'],
+  211: ['Compressor: single-phase open circuit', 'Обрыв одной фазы компрессора', 'Kompressor: Unterbrechung einer Phase'],
+  212: ['Compressor: overcurrent', 'Перегрузка по току компрессора', 'Kompressor: Überstrom'],
+  213: ['Condenser fan: short circuit', 'КЗ вентилятора конденсатора', 'Kondensatorlüfter: Kurzschluss'],
+  214: ['Condenser fan: open circuit', 'Обрыв вентилятора конденсатора', 'Kondensatorlüfter: Unterbrechung'],
+  215: ['Condenser fan: overcurrent', 'Перегрузка по току вентилятора конденсатора', 'Kondensatorlüfter: Überstrom'],
+  216: ['Low voltage', 'Пониженное напряжение', 'Unterspannung'],
+  217: ['Inverter board overheat', 'Перегрев платы инвертора', 'Überhitzung Inverterplatine'],
+};
+(function buildNumberedErrors() {
+  const fam = (first, enF, ruF, deF) => {      // first = code of "#1 short circuit"; +1 = open circuit
+    for (let n = 1; n <= 5; n++) {
+      const sc = first + (n - 1) * 2;
+      ERROR_TEXTS[sc] = [enF(n, 'short circuit'), ruF(n, 'КЗ'), deF(n, 'Kurzschluss')];
+      ERROR_TEXTS[sc + 1] = [enF(n, 'open circuit'), ruF(n, 'обрыв'), deF(n, 'Unterbrechung')];
+    }
+  };
+  fam(57, (n, k) => `Zone ${n} temperature sensor: ${k}`, (n, k) => `Датчик температуры зоны ${n}: ${k}`, (n, k) => `Zone ${n} Temperatursensor: ${k}`);
+  fam(69, (n, k) => `Pump ${n}: ${k}`, (n, k) => `Насос ${n}: ${k}`, (n, k) => `Pumpe ${n}: ${k}`);
+  fam(79, (n, k) => `Zone ${n} fan: ${k}`, (n, k) => `Вентилятор зоны ${n}: ${k}`, (n, k) => `Zone ${n} Lüfter: ${k}`);
+  for (let n = 1; n <= 4; n++) {                // aux sensors: odd = open circuit, even = short circuit
+    const oc = 95 + (n - 1) * 2;
+    ERROR_TEXTS[oc] = [`Aux temperature sensor ${n}: open circuit`, `Датчик температуры AUX ${n}: обрыв`, `AUX-Temperatursensor ${n}: Unterbrechung`];
+    ERROR_TEXTS[oc + 1] = [`Aux temperature sensor ${n}: short circuit`, `Датчик температуры AUX ${n}: КЗ`, `AUX-Temperatursensor ${n}: Kurzschluss`];
+  }
+})();
+function errorDescription(code) {
+  const row = ERROR_TEXTS[code];
+  if (!row) return t('errUnknown');
+  return row[{ en: 0, ru: 1, de: 2 }[uiLang] ?? 0];
+}
+/* "12,34" -> one line per active code, "#12  High supply voltage". */
+function renderErrorLines(csv) {
+  return String(csv).split(',').map((c) => parseInt(c, 10)).filter((c) => Number.isFinite(c) && c > 0)
+    .map((c) => `<div>#${c} — ${errorDescription(c)}</div>`).join('');
+}
+
 /* Human-readable summary built from the decoded "telemetry" blob (see
    decodeTelemetry()) plus the "errors" CSV topic — everything else here
    (buttons, zones, drums) already has its own UI; this is just the fields
@@ -1259,7 +1342,7 @@ function renderStatusTable() {
     rows += statusRow(t('extTemp'), `${tel.extTemp}°`);
   }
   if (errors && errors !== '0') {
-    rows += `<tr class="errors-row"><td colspan="2">${t('errorsLabel')}: ${errors}</td></tr>`;
+    rows += `<tr class="errors-row"><td colspan="2">${t('errorsLabel')}:${renderErrorLines(errors)}</td></tr>`;
   }
   table.innerHTML = rows;
 }

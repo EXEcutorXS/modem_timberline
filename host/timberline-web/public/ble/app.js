@@ -891,14 +891,14 @@ async function writeFragmentBurst(addr, bytes, fragLabel, onRound, logElId, timi
 // confirmed received, so existing progress-bar rendering needs no changes).
 async function writeMemoryRegionBurst(startAddr, data, onProgress, logElId, token) {
   const timing = getFragTiming();
+  const plan = planFragmentsOrThrow(startAddr, data); // fragment boundaries avoid the legacy BLE-module OTA trigger
   const miniTotal = Math.max(1, Math.ceil(data.length / FRAG_MINI_SIZE));
-  const fragTotal = Math.max(1, Math.ceil(data.length / FRAG_SIZE));
+  const fragTotal = plan.length;
   let miniDoneBefore = 0;
-  let fragIndex = 0;
-  for (let off = 0; off < data.length; off += FRAG_SIZE) {
-    fragIndex++;
-    const chunk = data.subarray(off, Math.min(off + FRAG_SIZE, data.length));
-    await writeFragmentBurst(startAddr + off, chunk, `Frag_${fragIndex}/${fragTotal}`, (doneInFrag, totalInFrag) => {
+  for (let fi = 0; fi < plan.length; fi++) {
+    const { off, len } = plan[fi];
+    const chunk = data.subarray(off, off + len);
+    await writeFragmentBurst(startAddr + off, chunk, `Frag_${fi + 1}/${fragTotal}`, (doneInFrag, totalInFrag) => {
       if (onProgress) {
         const bytesDone = off + Math.min(doneInFrag * FRAG_MINI_SIZE, chunk.length);
         onProgress(bytesDone, data.length, miniDoneBefore + doneInFrag, miniTotal);
@@ -978,7 +978,101 @@ function crc8Of(bytes, len) {
 }
 const CRC8_EXEMPT_TYPES = new Set([PACKET_TYPE.MEMORY_DATA, PACKET_TYPE.FRAG_DATA, PACKET_TYPE.FRAG_DATA_ACK]);
 
+/* -- Legacy BLE-module OTA-wipe guard ---------------------------------------
+   BLE module firmware up to v12.0.0.6 (BlueNRG-132, ble-bridge repo) jumps into
+   its OTA Service Manager - which ERASES the module's whole application and
+   needs an SWD programmer to restore - whenever the last frame it relayed had
+   byte[1]==4 and byte[2]==28 (found 2026-11-17, see main.cpp's
+   handlerBluetooth()). Modules like that are all over the field and the
+   panel never reports the module's version, so instead of depending on a
+   module update this page simply NEVER SENDS such a frame:
+   - a burst data frame is [type, mini-fragment index, 16 data bytes, CRC16],
+     so the only way to hit it is index 4 carrying data byte 28, i.e. the byte
+     64 bytes into a fragment being 0x1C. planFragments() below chooses the
+     fragment boundaries so that never happens (the panel accepts any fragment
+     address/length, see BluetoothHandler.cpp case 14/18);
+   - doWrite() refuses to put any such frame on the air at all - the safety
+     net for every other path (control packets, the legacy memory protocol,
+     any future caller). */
+function isLegacyOtaTrigger(b) { return b[1] === 4 && b[2] === 28; }
+
+// The panel programs a fragment as consecutive 128-byte W25 PAGE_PROGRAMs
+// (BluetoothHandler.cpp case 18, no page-boundary handling in Memory::writePage),
+// so none of them may cross a 256-byte flash page or the chip wraps the write
+// inside the page and corrupts it. Mirrors that loop exactly.
+function fragmentPageSafe(destAddr, len) {
+  for (let w = 0; w < len; w += 128) {
+    const c = Math.min(128, len - w);
+    if (((destAddr + w) & 0xFF) + c > 0x100) return false;
+  }
+  return true;
+}
+
+// Splits `data` (destined for startAddr) into fragments of at most FRAG_SIZE
+// bytes, each starting/ending on a mini-fragment boundary, such that every
+// fragment is page-safe and none contains the legacy OTA trigger frame (index 4
+// with first data byte 28). Dynamic programming over 16-byte positions picks the
+// plan with the fewest fragments; for an image without the trigger pattern this
+// is the plain 2048-byte plan used before. Returns [{off, len}, ...].
+function planFragments(startAddr, data) {
+  const size = data.length;
+  if (size === 0) return [{ off: 0, len: 0 }];
+  const M = FRAG_MINI_SIZE;
+  const maxMini = FRAG_SIZE / M;
+  const positions = Math.ceil(size / M);        // start positions 0, M, 2M ...
+  const INF = 1e9;
+  const best = new Array(positions + 1).fill(INF); // fragments needed from each position
+  const next = new Array(positions + 1).fill(-1);  // fragment length chosen there
+  best[positions] = 0;
+  const ok = (s, len) => fragmentPageSafe(startAddr + s, len)
+    && (len <= 4 * M || data[s + 4 * M] !== 28);   // index 4 exists only if len > 64
+  for (let pi = positions - 1; pi >= 0; pi--) {
+    const s = pi * M;
+    for (let m = maxMini; m >= 1; m--) {
+      let len = m * M;
+      let ni = pi + m;
+      if (s + len >= size) { len = size - s; ni = positions; } // the tail fragment ends exactly at size
+      if (best[ni] >= INF || !ok(s, len)) continue;
+      if (best[ni] + 1 < best[pi]) { best[pi] = best[ni] + 1; next[pi] = len; }
+    }
+  }
+  if (best[0] >= INF) throw new Error('no fragment layout avoids the legacy BLE-module OTA trigger for this image');
+  const plan = [];
+  for (let off = 0; off < size; ) { const len = next[off / M]; plan.push({ off, len }); off += len; }
+  return plan;
+}
+
+// Every burst data frame the plan would send (built with the real
+// buildFragData(), so a layout change can't desync this) that matches the
+// legacy trigger. Always empty for a plan from planFragments(); kept as an
+// independent check on the actual frames.
+function findLegacyOtaTriggers(data, plan) {
+  const hits = [];
+  plan.forEach(({ off, len }, fi) => {
+    const chunk = data.subarray(off, off + len);
+    const minis = Math.ceil(len / FRAG_MINI_SIZE);
+    for (let idx = 0; idx < minis; idx++) {
+      const o = idx * FRAG_MINI_SIZE;
+      const frame = buildFragData(PACKET_TYPE.FRAG_DATA, idx, chunk, o, Math.min(FRAG_MINI_SIZE, len - o));
+      if (isLegacyOtaTrigger(frame)) hits.push({ fragment: fi + 1, mini: idx, offset: off + o });
+    }
+  });
+  return hits;
+}
+
+// Plans the transfer and double-checks the resulting frames; throws before
+// anything is erased or sent if no safe plan exists.
+function planFragmentsOrThrow(startAddr, data) {
+  const plan = planFragments(startAddr, data);
+  const hits = findLegacyOtaTriggers(data, plan);
+  if (hits.length) throw new Error(`internal: fragment plan still contains the legacy BLE-module OTA trigger (fragment ${hits[0].fragment})`);
+  return plan;
+}
+
 async function doWrite(bytes) {
+  if (isLegacyOtaTrigger(bytes)) {
+    throw new Error('blocked: this frame would put an old BLE module into OTA mode (wipes its firmware)');
+  }
   if (!ble.rxChar) throw new Error('not connected');
   if (!CRC8_EXEMPT_TYPES.has(bytes[0])) bytes[19] = crc8Of(bytes, 19);
   if (ble.rxChar.writeValueWithoutResponse) await ble.rxChar.writeValueWithoutResponse(bytes);
@@ -1084,6 +1178,7 @@ async function connectToDevice(device) {
 
     document.getElementById('connectBtn').classList.add('hidden');
     document.getElementById('disconnectBtn').classList.remove('hidden');
+    setConnectExtrasHidden(true);
     startPairing();
   } catch (e) {
     console.error(e);
@@ -1131,6 +1226,13 @@ async function tryAutoReconnect() {
   }
 }
 
+// "Show all devices", the iOS/Bluefy help text and the remembered-devices list
+// only matter while looking for a panel - hidden once a link is up so the
+// controls start right under the connection status.
+function setConnectExtrasHidden(hidden) {
+  document.querySelectorAll('#connectBox .connect-extra').forEach((el) => el.classList.toggle('hidden', hidden));
+}
+
 function onDisconnected() {
   if (pairingTimer) { clearInterval(pairingTimer); pairingTimer = null; }
   pairing = false;
@@ -1138,6 +1240,7 @@ function onDisconnected() {
   document.getElementById('connectBtn').classList.remove('hidden');
   document.getElementById('disconnectBtn').classList.add('hidden');
   document.getElementById('controlBox').classList.add('hidden');
+  setConnectExtrasHidden(false);
   renderKnownDevices();
 }
 
@@ -2319,6 +2422,7 @@ async function updateRestoreArea(version, btn, note) {
     throw new Error(`image is ${data.length}B, larger than the restore area's ${MEM_BACKUP_DATA_SIZE}B`);
   }
   note.textContent = `Step 1/4 — downloaded ${data.length} bytes.`;
+  planFragmentsOrThrow(MEM_ADDRESS_BACKUP, data); // before anything is erased: a safe fragment layout must exist
 
   const blocksNeeded = Math.ceil(data.length / 0x10000);
   note.textContent = `Step 2/4 — erasing restore area (1 meta block + ${blocksNeeded} data block(s))…`;
@@ -2400,6 +2504,7 @@ function wireServerFirmwareControls() {
         throw new Error(`image is ${data.length}B, larger than a slot's ${MEM_SLOT_DATA_SIZE}B data region`);
       }
       info.textContent = `Step 1/4 — downloaded ${data.length} bytes, target 0x${profile.flashBase.toString(16)}.`;
+      planFragmentsOrThrow(slotDataAddr(slot), data); // before anything is erased: a safe fragment layout must exist
 
       const blocksNeeded = Math.ceil(data.length / 0x10000);
       info.textContent = `Step 2/4 — erasing slot ${slot} (1 meta block + ${blocksNeeded} data block(s))…`;

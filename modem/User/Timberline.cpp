@@ -128,6 +128,18 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             if (D[2]==1) *(__IO uint32_t*)BOOT_MAGIC_ADDR = BOOT_MAGIC_ENTER_APP;  //остаться/вернуться в приложение
             NVIC_SystemReset();
             break;
+        case 31: { /* Factory serial. D[2..4] big-endian, only while the field is 0xFF. */
+            uint32_t serial = ((uint32_t)D[2] << 16) | ((uint32_t)D[3] << 8) | D[4];
+            bool ok = flash.programSerial(serial);
+            can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, 0xFF, 0xFF, 0xFF);
+            break;
+        }
+        case 32: { /* Factory PUK, 8 digits. D[2..5] big-endian, only while the field is 0xFF. */
+            uint32_t puk = ((uint32_t)D[2] << 24) | ((uint32_t)D[3] << 16) | ((uint32_t)D[4] << 8) | D[5];
+            bool ok = flash.programPuk(puk);
+            can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, ok ? D[5] : 0, 0xFF, 0xFF);
+            break;
+        }
         case 30: //Auto-register (panel "Авторегистрация" button)
             /* Only meaningful on a never-configured device — ignore silently
                if mqtt.username is already set, so an accidental/repeated
@@ -966,6 +978,14 @@ static const char HELP_SMS_DE[] =
    (see doAutoRegister()), which needs the exact same finishing step but has
    no phone number to reply to. */
 
+static bool messagePukOk(const TlSmsParseResult& result) {
+    for (uint8_t i = 0; i < result.cmdCount; i++) {
+        if (result.cmds[i].type == TL_CMD_PUK && flash.pukMatches(result.cmds[i].strArg))
+            return true;
+    }
+    return false;
+}
+
 static void onSmsReceived(const char* phone, const char* text) {
     /* Push the last-received SMS to the bus as soon as it arrives, regardless
        of auth outcome — useful for diagnosing rejected/garbled commands too. */
@@ -999,6 +1019,8 @@ static void onSmsReceived(const char* phone, const char* text) {
     if (hasUnknown)
         modem.sendSms(phone, de ? HELP_SMS_DE : HELP_SMS);
 
+    const bool secretsOk = messagePukOk(result);
+
     for (uint8_t i = 0; i < result.cmdCount; i++) {
         const TlSmsCmd& cmd = result.cmds[i];
         switch (cmd.type) {
@@ -1022,7 +1044,14 @@ static void onSmsReceived(const char* phone, const char* text) {
             NVIC_SystemReset();
             break;
 
+        case TL_CMD_PUK:
+            break;
+
         case TL_CMD_ADMIN: {
+            if (!secretsOk) {
+                modem.sendSms(phone, de ? "PUK erforderlich" : "PUK required");
+                break;
+            }
             const char* p = cmd.phone[0] ? cmd.phone : phone;
             strncpy(modem.config.phones[0], p, 15);
             modem.config.phones[0][15] = '\0';
@@ -1032,6 +1061,10 @@ static void onSmsReceived(const char* phone, const char* text) {
         }
 
         case TL_CMD_PHONE:
+            if (!secretsOk) {
+                modem.sendSms(phone, de ? "PUK erforderlich" : "PUK required");
+                break;
+            }
             if (cmd.phoneNum >= 1 && cmd.phoneNum <= 4) {
                 const char* p = cmd.phone[0] ? cmd.phone : phone;
                 strncpy(modem.config.phones[cmd.phoneNum], p, 15);
@@ -1042,6 +1075,10 @@ static void onSmsReceived(const char* phone, const char* text) {
             break;
 
         case TL_CMD_SETPIN:
+            if (!secretsOk) {
+                modem.sendSms(phone, de ? "PUK erforderlich" : "PUK required");
+                break;
+            }
             memcpy(modem.config.pin, cmd.pin, 5);
             /* flash write handled centrally by dataActualizator.handler(). */
             modem.sendSms(phone, de ? "PIN aktualisiert." : "PIN updated.");

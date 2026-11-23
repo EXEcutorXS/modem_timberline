@@ -149,7 +149,7 @@
      select grows to fill the row, the button stays a fixed, readable width
      next to it instead of stacking underneath on its own row. */
   .ota-load-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-  .ota-load-row select {
+  .ota-load-row select, #selfOtaVersion {
     flex: 1 1 auto; min-width: 0; padding: 8px 10px; border: 1px solid var(--border);
     border-radius: 8px; background: var(--card); color: var(--text); font-size: 14px;
     font-family: inherit;
@@ -494,6 +494,6 @@
   </div>
 
   <script src="/vendor-mqtt.min.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20261123c"></script>
 </body>
 </html>

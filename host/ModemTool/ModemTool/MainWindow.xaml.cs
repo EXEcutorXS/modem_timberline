@@ -114,6 +114,14 @@ public partial class MainWindow : Window
         if (line.StartsWith("[USB SET]"))
             StatusBar.Text = line;
 
+        if (line.StartsWith("puk="))
+        {
+            var value = line["puk=".Length..];
+            PukBox.Text = value == "none" ? "" : value;
+            StatusBar.Text = value == "none" ? "PUK is not programmed" : "PUK read";
+            return;
+        }
+
         switch (line)
         {
             case "[STATUS]":
@@ -173,6 +181,20 @@ public partial class MainWindow : Window
         _link.Send("config");
     }
 
+    private void ReadPuk_Click(object sender, RoutedEventArgs e)
+    {
+        if (_atBridge.IsRunning) return;
+        if (!_link.IsOpen)
+        {
+            MessageBox.Show(this, "Connect to the modem first.", "Modem Tool", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        _link.Send("puk");
+    }
+
+    private static bool CommandNeedsPuk(string command) =>
+        command is "admin" or "phone1" or "phone2" or "phone3" or "phone4" or "setpin";
+
     private void AutoRefresh_Checked(object sender, RoutedEventArgs e) { if (!_atBridge.IsRunning) _statusTimer.Start(); }
     private void AutoRefresh_Unchecked(object sender, RoutedEventArgs e) => _statusTimer.Stop();
 
@@ -192,7 +214,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        _link.Send($"set {command} {row.NewValue}");
+        var line = $"set {command} {row.NewValue}";
+        if (CommandNeedsPuk(command))
+        {
+            var puk = PukBox.Text.Trim();
+            if (puk.Length != 8 || !puk.All(char.IsDigit))
+            {
+                MessageBox.Show(this, "Read the PUK first. It is the 8 digits on the case.", "Modem Tool",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            line += $",puk {puk}";
+        }
+        _link.Send(line);
         row.NewValue = "";
         RequestConfigRefreshSoon();
     }
@@ -339,6 +373,8 @@ public partial class MainWindow : Window
         StatusRefreshButton.IsEnabled = enabled;
         AutoRefreshCheck.IsEnabled = enabled;
         ConfigRefreshButton.IsEnabled = enabled;
+        ReadPukButton.IsEnabled = enabled;
+        PukBox.IsEnabled = enabled;
         SettingsGrid.IsEnabled = enabled;
         LogAtButton.IsEnabled = enabled;
         LogGsmButton.IsEnabled = enabled;

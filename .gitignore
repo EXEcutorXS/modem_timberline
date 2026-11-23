@@ -42,3 +42,11 @@ Thumbs.db
 
 
 /.claude
+
+# Offline Ed25519 private keys (firmware signing and PUK grants).
+# Public keys live in host/timberline-web/keys/ and are tracked.
+/host/tools/keys/
+# SignFirmware.exe is built with the private key inside. Do not commit it.
+/host/tools/build/
+/host/tools/dist/
+/host/tools/*.spec

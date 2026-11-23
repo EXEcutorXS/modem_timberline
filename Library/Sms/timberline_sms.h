@@ -24,6 +24,7 @@ enum TlCmdType {
     TL_CMD_WARMUP,          /* warmupMode             — warmup burner/element/both */
     TL_CMD_FAULTREPORT,     /* boolVal                — enable fault SMS        */
     TL_CMD_SETPIN,          /* pin[5]                 — change PIN code         */
+    TL_CMD_PUK,             /* strArg[8 digits]       — authorises setpin/admin/phone in the same message */
     TL_CMD_UNIT,            /* unit (TlTempUnit)      — C or F                  */
     TL_CMD_BURNER,          /* boolVal                — diesel burner on/off    */
     TL_CMD_ELEMENT,         /* boolVal                — electric element on/off */

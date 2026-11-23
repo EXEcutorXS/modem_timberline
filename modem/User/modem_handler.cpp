@@ -3,6 +3,7 @@
 #include "Version.h"
 #include "CanRelay.h"
 #include "timberline_sms.h"
+#include "flash.h"
 #include <string.h>
 
 char             serialNumberModem[16]       = {0};
@@ -57,18 +58,28 @@ void modem_process_usb_set(void) {
     }
 
     bool mqttChanged = false;
+    bool secretsOk = false;
+    for (uint8_t i = 0; i < result.cmdCount; i++) {
+        if (result.cmds[i].type == TL_CMD_PUK && flash.pukMatches(result.cmds[i].strArg))
+            secretsOk = true;
+    }
 
     for (uint8_t i = 0; i < result.cmdCount; i++) {
         const TlSmsCmd& cmd = result.cmds[i];
         switch (cmd.type) {
 
+        case TL_CMD_PUK:
+            break;
+
         case TL_CMD_ADMIN:
+            if (!secretsOk) { log_info("[USB SET] PUK required\r\n"); break; }
             if (!cmd.phone[0]) { log_info("[USB SET] admin: phone number required\r\n"); break; }
             strncpy(modem.config.phones[0], cmd.phone, 15); modem.config.phones[0][15] = '\0';
             log_info("[USB SET] admin updated\r\n");
             break;
 
         case TL_CMD_PHONE:
+            if (!secretsOk) { log_info("[USB SET] PUK required\r\n"); break; }
             if (cmd.phoneNum < 1 || cmd.phoneNum > 4) break;
             if (!cmd.phone[0]) { log_info("[USB SET] phone: number required\r\n"); break; }
             strncpy(modem.config.phones[cmd.phoneNum], cmd.phone, 15);
@@ -77,6 +88,7 @@ void modem_process_usb_set(void) {
             break;
 
         case TL_CMD_SETPIN:
+            if (!secretsOk) { log_info("[USB SET] PUK required\r\n"); break; }
             memcpy(modem.config.pin, cmd.pin, 5);
             log_info("[USB SET] pin updated\r\n");
             break;
@@ -190,6 +202,16 @@ static int appendUint(char* buf, int n, uint32_t v) {
     return n;
 }
 
+static void serialText(char* out, int cap) {
+    int n = 0;
+    for (int i = 0; i < 16 && n < cap - 1; i++) {
+        unsigned char c = (unsigned char)serialNumberModem[i];
+        if (c < 0x20 || c > 0x7e) break;
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+}
+
 static void logKV(const char* key, const char* value) {
     log_info(key); log_info("="); log_info(value); log_info("\r\n");
 }
@@ -225,7 +247,9 @@ extern "C" void usb_print_status(void) {
 
     const uint8_t fwVersion[4] = { VERSION_1, VERSION_2, VERSION_3, VERSION_4 };
     logKVVersion("fw", fwVersion);
-    logKV("serial", serialNumberModem);
+    char serial[17];
+    serialText(serial, (int)sizeof(serial));
+    logKV("serial", serial);
 
     logKVBool("gsm.registered", modem.network.isRegistered);
     logKVBool("gsm.roaming", modem.network.isRoaming);
@@ -304,4 +328,12 @@ extern "C" void usb_print_config(void) {
     logKV("net.connectionLink", modem.internet.connectionLink);
 
     log_info("[END]\r\n");
+}
+
+extern "C" void usb_print_puk(void) {
+    char puk[9];
+    if (!flash.copyPuk(puk)) { log_info("puk=none\r\n"); return; }
+    log_info("puk=");
+    log_info(puk);
+    log_info("\r\n");
 }

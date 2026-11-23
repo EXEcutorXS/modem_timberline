@@ -204,28 +204,109 @@ void Flash_C::readSetup(void)
     }
 }
 
-void Flash_C::writeSerial(void)
-{
-    uint32_t a, N;
-    uint8_t array[16], i;
-
-    FLASH_Unlock();
-    FLASH_EraseOnePage(FLASH_SERIAL_ADDR);
-    for (i = 0; i < 16; i++) array[i] = serialNumberModem[i];
-    for (a = 0; a < 16; a += 4) {
-        N  = (uint32_t)array[a];
-        N |= (uint32_t)array[a+1] << 8;
-        N |= (uint32_t)array[a+2] << 16;
-        N |= (uint32_t)array[a+3] << 24;
-        FLASH_ProgramWord(FLASH_SERIAL_ADDR + a, N);
-    }
-    FLASH_Lock();
-}
+/* PUK lives in the same page as the serial, 8 ASCII digits at offset 16.
+   Nothing in this firmware erases FLASH_SERIAL_ADDR — see flash.h. */
+static char    pukDigits[9];
+static bool    pukReady = false;
 
 void Flash_C::readSerial(void)
 {
     for (uint16_t i = 0; i < 16; i++)
         serialNumberModem[i] = *(__IO uint8_t*)(FLASH_SERIAL_ADDR + i);
+
+    bool ok = true;
+    char tmp[8];
+    for (uint16_t i = 0; i < 8; i++) {
+        uint8_t c = *(__IO uint8_t*)(FLASH_SERIAL_ADDR + 16 + i);
+        if (c < '0' || c > '9') ok = false;
+        tmp[i] = (char)c;
+    }
+    if (ok) {
+        for (int i = 0; i < 8; i++) pukDigits[i] = tmp[i];
+        pukDigits[8] = '\0';
+        pukReady = true;
+    } else {
+        pukDigits[0] = '\0';
+        pukReady = false;
+    }
+}
+
+bool Flash_C::pukMatches(const char* digits)
+{
+    if (!pukReady || !digits) return false;
+    uint8_t diff = 0;
+    for (int i = 0; i < 8; i++) {
+        char c = digits[i];
+        if (c < '0' || c > '9') return false;
+        diff |= (uint8_t)(pukDigits[i] ^ c);
+    }
+    if (digits[8] != '\0') return false;
+    return diff == 0;
+}
+
+bool Flash_C::copyPuk(char out[9])
+{
+    if (!pukReady || !out) return false;
+    for (int i = 0; i < 9; i++) out[i] = pukDigits[i];
+    return true;
+}
+
+static bool fieldIsErased(uint32_t addr, int len)
+{
+    for (int i = 0; i < len; i++)
+        if (*(__IO uint8_t*)(addr + i) != 0xFF) return false;
+    return true;
+}
+
+static bool programBytes(uint32_t addr, const uint8_t* data, int len)
+{
+    FLASH_Unlock();
+    bool ok = true;
+    for (int off = 0; off < len; off += 4) {
+        uint32_t word = (uint32_t)data[off]
+                      | ((uint32_t)data[off + 1] << 8)
+                      | ((uint32_t)data[off + 2] << 16)
+                      | ((uint32_t)data[off + 3] << 24);
+        if (FLASH_ProgramWord(addr + off, word) != FLASH_COMPL) { ok = false; break; }
+    }
+    FLASH_Lock();
+    return ok;
+}
+
+bool Flash_C::programSerial(uint32_t value)
+{
+    if (value > 0xFFFFFFu) return false;
+    if (!fieldIsErased(FLASH_SERIAL_ADDR, 16)) return false;
+
+    uint8_t text[16];
+    for (int i = 0; i < 16; i++) text[i] = 0;
+    char tmp[8];
+    int n = 0;
+    uint32_t v = value;
+    if (v == 0) tmp[n++] = '0';
+    else while (v && n < 8) { tmp[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    for (int i = 0; i < n; i++) text[i] = (uint8_t)tmp[n - 1 - i];
+
+    if (!programBytes(FLASH_SERIAL_ADDR, text, 16)) return false;
+    for (int i = 0; i < 16; i++) serialNumberModem[i] = text[i];
+    return true;
+}
+
+bool Flash_C::programPuk(uint32_t value)
+{
+    if (value > 99999999u) return false;
+    if (!fieldIsErased(FLASH_SERIAL_ADDR + 16, 8)) return false;
+
+    uint8_t text[8];
+    for (int i = 7; i >= 0; i--) {
+        text[i] = (uint8_t)('0' + (value % 10u));
+        value /= 10u;
+    }
+    if (!programBytes(FLASH_SERIAL_ADDR + 16, text, 8)) return false;
+    for (int i = 0; i < 8; i++) pukDigits[i] = (char)text[i];
+    pukDigits[8] = '\0';
+    pukReady = true;
+    return true;
 }
 
 uint8_t Flash_C::getHardwareVersion(void)

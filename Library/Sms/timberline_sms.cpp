@@ -278,6 +278,21 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         return;
     }
 
+    /* ── puk <8 digits> ─────────────────────────────────────────────────────
+       Does nothing by itself. Present in the same message, and matching the
+       code programmed next to the serial, it authorises setpin / admin /
+       phone. See onSmsReceived() and modem_process_usb_set(). */
+    if (!strcmp(cmd, "puk")) {
+        if (strlen(arg) != 8) { add_error(res, "puk: need 8 digits"); return; }
+        for (int i = 0; i < 8; i++)
+            if (arg[i] < '0' || arg[i] > '9') { add_error(res, "puk: digits only"); return; }
+        c.type = TL_CMD_PUK;
+        memcpy(c.strArg, arg, 8);
+        c.strArg[8] = '\0';
+        add_cmd(res, c);
+        return;
+    }
+
     /* ── unit / einheit C/F ───────────────────────────────────────────────── */
     if (!strcmp(cmd, "unit") || !strcmp(cmd, "einheit")) {
         if (!strcmp(cmd, "einheit")) mark_german(res);

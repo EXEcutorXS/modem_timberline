@@ -5,7 +5,7 @@ under host/timberline-web/public/firmware/<type>/ — see server.js's
 /firmware/:type/:version/{firmware.bin,firmware.crc16,profile} routes and
 Modem::doOta() on the modem side which downloads+verifies page by page.
 
-Filename: "<version>_0x<flashBase>.bin" — no per-version subfolder, no
+Filename: "<version>_0x<flashBase>_<128 hex signature>.bin" — no per-version subfolder, no
 profile.txt, no crc sidecar; everything else the modem needs (flash base
 address, per-page CRC16) is derived by the server from this one file's name
 and bytes. See host/README.md for the full convention.
@@ -48,6 +48,9 @@ import glob
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sign_firmware import sign_image
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # host/
 FIRMWARE_ROOT = os.path.join(REPO_ROOT, 'timberline-web', 'public', 'firmware')
@@ -103,7 +106,8 @@ def parse_intel_hex(path: str) -> bytes:
 def build_one(hex_path: str, dev_type: str, version: str):
     base, image = parse_intel_hex(hex_path)
 
-    name = f'{version}_0x{base:08X}.bin'
+    sig = sign_image(version, base, image)
+    name = f'{version}_0x{base:08X}_{sig}.bin'
 
     out_dir = os.path.join(FIRMWARE_ROOT, dev_type)
     os.makedirs(out_dir, exist_ok=True)

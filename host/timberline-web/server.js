@@ -7,6 +7,7 @@ const Database = require('better-sqlite3');
 const mqtt = require('mqtt');
 const http = require('http');
 const { WebSocketServer } = require('ws');
+const { inspectFile } = require('./firmwareSig');
 
 const app = express();
 const server = http.createServer(app);
@@ -38,6 +39,10 @@ const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
 const LOGIN_MIN = 1;
 const LOGIN_MAX = 15; /* matches Modem::mqttUsername[16] and the "login" SMS command bound */
 const LINK_OBSERVER_USER = '_linkobserver'; /* reserved, registration rejects a leading "_" */
+const GC_USER = '_gc';                     /* localhost retained-topic sweeper, same reservation */
+const SEEN_TOUCH_MS = 60 * 1000;
+const TWO_YEARS_MS = 730 * 24 * 60 * 60 * 1000;
+const GC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; /* magic-link session password validity */
 
 const db = new Database(path.join(__dirname, 'users.db'));
@@ -54,8 +59,30 @@ db.exec(`
         expires_at INTEGER NOT NULL
     );
 `);
-const getUserStmt = db.prepare('SELECT login, password_hash, email FROM users WHERE login = ?');
-const insertUserStmt = db.prepare('INSERT INTO users (login, password_hash, email) VALUES (?, ?, ?)');
+/* Existing databases predate these columns. created_at for a row that
+   never had one is "now", so the weekly sweep does not treat it as two
+   years idle on the first run after the migration. */
+{
+    const names = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
+    if (!names.has('created_at')) db.exec('ALTER TABLE users ADD COLUMN created_at INTEGER');
+    if (!names.has('last_device_seen')) db.exec('ALTER TABLE users ADD COLUMN last_device_seen INTEGER');
+    if (!names.has('last_user_seen')) db.exec('ALTER TABLE users ADD COLUMN last_user_seen INTEGER');
+    db.prepare('UPDATE users SET created_at = ? WHERE created_at IS NULL').run(Date.now());
+}
+const getUserStmt = db.prepare('SELECT login, password_hash, email, created_at, last_device_seen, last_user_seen FROM users WHERE login = ?');
+const insertUserStmt = db.prepare('INSERT INTO users (login, password_hash, email, created_at) VALUES (?, ?, ?, ?)');
+const touchDeviceStmt = db.prepare('UPDATE users SET last_device_seen = ? WHERE login = ?');
+const touchUserStmt = db.prepare('UPDATE users SET last_user_seen = ? WHERE login = ?');
+const deleteUserStmt = db.prepare('DELETE FROM users WHERE login = ?');
+const deleteSessionStmt = db.prepare('DELETE FROM link_sessions WHERE login = ?');
+const staleUsersStmt = db.prepare(`
+    SELECT login FROM users
+    WHERE substr(login, 1, 1) != '_'
+      AND (
+        (last_device_seen IS NOT NULL AND last_device_seen < ?)
+        OR (last_device_seen IS NULL AND created_at IS NOT NULL AND created_at < ?)
+      )
+`);
 const upsertServiceUserStmt = db.prepare(`
     INSERT INTO users (login, password_hash, email) VALUES (?, ?, NULL)
     ON CONFLICT(login) DO UPDATE SET password_hash = excluded.password_hash
@@ -75,9 +102,9 @@ app.use(express.json());
    its name and its bytes. See host/README.md for the full naming
    convention and rationale; in short:
 
-     121.0.0.8_0x0802A800.bin          erase the whole program region
+     121.0.0.8_0x0802a000_<128 hex chars>.bin
 
-   Filename: "<version>_0x<flashBase>.bin" — version is this org's usual
+   Filename: "<version>_0x<flashBase>_<ed25519 sig>.bin" — version is this org's usual
    1-4 dot-separated decimal bytes (matches what the CAN bootloader itself
    reports, OmniProtocol PGN=6 param 18); flashBase is hex (any digit
    count, whatever the file was named with). Erase is always the target
@@ -88,7 +115,6 @@ app.use(express.json());
    comment). */
 const FIRMWARE_TYPE_RE = /^[a-z0-9_-]+$/i;
 const FIRMWARE_VERSION_RE = /^[0-9.]+$/;
-const FIRMWARE_FILENAME_RE = /^([0-9]+(?:\.[0-9]+){0,3})_0x([0-9A-Fa-f]+)\.bin$/;
 const FIRMWARE_PAGE_SIZE = 2048;
 
 /* Lists every published version for a type, parsed straight from the
@@ -106,9 +132,9 @@ function listFirmwareFiles(type) {
     const out = [];
     for (const e of entries) {
         if (!e.isFile()) continue;
-        const m = FIRMWARE_FILENAME_RE.exec(e.name);
-        if (!m) continue;
-        out.push({ fileName: e.name, version: m[1], flashBaseHex: m[2] });
+        const info = inspectFile(path.join(typeDir, e.name), e.name);
+        if (!info) continue;
+        out.push(info);
     }
     return out;
 }
@@ -227,7 +253,7 @@ app.get('/firmware/:type/:version/profile', (req, res) => {
     }
     const match = resolveFirmwareFile(req.params.type, req.params.version);
     if (!match) return res.status(404).end();
-    const body = `flashBase=0x${match.flashBaseHex}\n`;
+    const body = `flashBase=0x${match.flashBaseHex}\nlength=${match.length}\nsig=${match.sigHex}\n`;
     res.set('Content-Type', 'text/plain');
     res.status(200).send(body);
 });
@@ -277,6 +303,26 @@ app.get('/firmware/versions', (req, res) => {
    so the cache rebuilds itself automatically after a restart — no separate
    persistence needed for the cache itself. */
 const linkTokenCache = new Map();
+const seenTouchAt = new Map();
+const gcBusy = new Set();
+
+/* column is 'last_device_seen' or 'last_user_seen'. MQTT traffic is
+   throttled to once a minute per account; HTTP login forces a write. */
+function touchSeen(login, column, force) {
+    if (!login || login.startsWith('_') || gcBusy.has(login)) return;
+    const key = column + '\0' + login;
+    const now = Date.now();
+    if (!force && now - (seenTouchAt.get(key) || 0) < SEEN_TOUCH_MS) return;
+    seenTouchAt.set(key, now);
+    (column === 'last_device_seen' ? touchDeviceStmt : touchUserStmt).run(now, login);
+}
+
+function noteMqttTopic(topic) {
+    let m = topic.match(/^([^/]+)\/cmd\/actual\//);
+    if (m) { touchSeen(m[1], 'last_device_seen', false); return; }
+    m = topic.match(/^([^/]+)\/(?:cmd\/desired|web)\//);
+    if (m) touchSeen(m[1], 'last_user_seen', false);
+}
 
 async function startLinkObserver() {
     const password = crypto.randomBytes(24).toString('hex');
@@ -288,10 +334,15 @@ async function startLinkObserver() {
         password,
         clientId: 'link-observer',
     });
-    client.on('connect', () => client.subscribe('+/cmd/actual/linkToken'));
+    client.on('connect', () => {
+        client.subscribe('+/cmd/actual/#');
+        client.subscribe('+/cmd/desired/#');
+        client.subscribe('+/web/#');
+    });
     client.on('message', (topic, payload) => {
         const m = topic.match(/^([^/]+)\/cmd\/actual\/linkToken$/);
         if (m) linkTokenCache.set(m[1], payload.toString());
+        noteMqttTopic(topic);
     });
     client.on('error', (e) => console.error('link observer MQTT error:', e.message));
 }
@@ -314,7 +365,7 @@ async function registerAccount(login, password, email) {
     if (getUserStmt.get(login)) return { status: 409, error: 'login already taken' };
 
     const passwordHash = await bcrypt.hash(password, 10);
-    insertUserStmt.run(login, passwordHash, email || null);
+    insertUserStmt.run(login, passwordHash, email || null, Date.now());
     return null;
 }
 
@@ -352,11 +403,13 @@ app.post('/api/login', async (req, res) => {
     /* No session/JWT here — MVP. The browser gets the MQTT credentials
        directly (the same password it just proved it knows) and talks to
        the broker itself. */
+    touchSeen(login, 'last_user_seen', true);
     res.json({
         mqttHost: MQTT_HOST || req.hostname,
         mqttWsPort: MQTT_WS_PORT,
         mqttUsername: login,
         mqttPassword: password,
+        lastDeviceSeen: user.last_device_seen || null,
     });
 });
 
@@ -377,12 +430,15 @@ app.get('/api/go/:username/:token', async (req, res) => {
     const sessionPassword = crypto.randomBytes(16).toString('hex');
     const sessionHash = await bcrypt.hash(sessionPassword, 10);
     upsertSessionStmt.run(username, sessionHash, Date.now() + SESSION_TTL_MS);
+    touchSeen(username, 'last_user_seen', true);
+    const user = getUserStmt.get(username);
 
     res.json({
         mqttHost: MQTT_HOST || req.hostname,
         mqttWsPort: MQTT_WS_PORT,
         mqttUsername: username,
         mqttPassword: sessionPassword,
+        lastDeviceSeen: user ? user.last_device_seen || null : null,
     });
 });
 
@@ -413,19 +469,36 @@ async function verifyCredentials(username, password) {
    2xx/4xx status code is the whole answer, no body needed) on every MQTT
    CONNECT/SUBSCRIBE/PUBLISH. */
 app.post('/auth/user', async (req, res) => {
-    const ok = await verifyCredentials(req.body?.username, req.body?.password);
+    const username = req.body?.username;
+    const ok = await verifyCredentials(username, req.body?.password);
+    if (ok) {
+        const clientId = req.body?.clientid || '';
+        /* The modem's MQTT client id is its username. Browsers use "web-…". */
+        touchSeen(username, clientId === username ? 'last_device_seen' : 'last_user_seen', false);
+    }
     res.sendStatus(ok ? 200 : 403);
+});
+
+app.post('/api/presence', async (req, res) => {
+    const { login, password } = req.body || {};
+    if (!(await verifyCredentials(login, password))) return res.status(401).json({ error: 'invalid credentials' });
+    const user = getUserStmt.get(login);
+    res.json({ lastDeviceSeen: user ? user.last_device_seen || null : null });
 });
 
 app.post('/auth/acl', (req, res) => {
     const { username, topic } = req.body || {};
     if (!username || !topic) return res.sendStatus(403);
 
-    /* The link-observer service account may additionally read every
-       device's linkToken topic, across all usernames. */
-    if (username === LINK_OBSERVER_USER && /^[^/]+\/cmd\/actual\/linkToken$/.test(topic)) {
+    /* The link-observer service account reads every account's telemetry
+       and the browser topics, so last_device_seen / last_user_seen stay
+       current while a session is up — not only at MQTT connect. */
+    if (username === LINK_OBSERVER_USER && /^[^/]+\/(?:cmd\/actual|cmd\/desired|web)\//.test(topic)) {
         return res.sendStatus(200);
     }
+    /* _gc clears retained topics for accounts idle more than two years.
+       Its password exists only in this process and it connects to localhost. */
+    if (username === GC_USER) return res.sendStatus(200);
     /* Mirrors the old /etc/mosquitto/acl's "pattern readwrite %u/#" exactly —
        every account may only read/write topics under its own username
        namespace. */
@@ -489,4 +562,87 @@ wss.on('connection', async (ws, req) => {
     }
 });
 
+/* Drop accounts whose modem has not been seen for two years (or that were
+   created that long ago and never connected one). Retained topics are
+   cleared before the row goes, so a later registration of the same login
+   does not inherit them. Runs here, on localhost, as _gc. */
+function clearRetained(client, login) {
+    return new Promise((resolve) => {
+        const prefix = `${login}/`;
+        const topics = new Set();
+        let live = false;
+        const onMessage = (topic, _payload, packet) => {
+            if (!topic.startsWith(prefix)) return;
+            if (packet && packet.retain) topics.add(topic);
+            else live = true;
+        };
+        client.on('message', onMessage);
+        client.subscribe(`${login}/#`, () => {
+            setTimeout(() => {
+                client.removeListener('message', onMessage);
+                client.unsubscribe(`${login}/#`);
+                if (live) return resolve(false);
+                const list = [...topics];
+                if (list.length === 0) return resolve(true);
+                let left = list.length;
+                for (const topic of list) {
+                    client.publish(topic, '', { retain: true }, () => {
+                        if (--left === 0) resolve(true);
+                    });
+                }
+            }, 2500);
+        });
+    });
+}
+
+let gcRunning = false;
+async function runGc() {
+    if (gcRunning) return;
+    gcRunning = true;
+    const password = crypto.randomBytes(24).toString('hex');
+    const hash = await bcrypt.hash(password, 10);
+    upsertServiceUserStmt.run(GC_USER, hash);
+
+    const cutoff = Date.now() - TWO_YEARS_MS;
+    const stale = staleUsersStmt.all(cutoff, cutoff);
+    if (stale.length === 0) { gcRunning = false; return; }
+
+    const client = mqtt.connect(MQTT_BROKER_URL, {
+        username: GC_USER,
+        password,
+        clientId: 'gc-local',
+    });
+    try {
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('broker connect timeout')), 10000);
+            client.once('connect', () => { clearTimeout(timer); resolve(); });
+            client.once('error', (err) => { clearTimeout(timer); reject(err); });
+        });
+        for (const { login } of stale) {
+            const fresh = getUserStmt.get(login);
+            if (!fresh) continue;
+            const seen = fresh.last_device_seen;
+            const created = fresh.created_at;
+            const stillStale = seen ? seen < cutoff : (created && created < cutoff);
+            if (!stillStale) continue;
+            gcBusy.add(login);
+            const cleared = await clearRetained(client, login);
+            if (!cleared) { gcBusy.delete(login); continue; }
+            deleteSessionStmt.run(login);
+            deleteUserStmt.run(login);
+            linkTokenCache.delete(login);
+            gcBusy.delete(login);
+            console.log(`gc: removed idle account ${login}`);
+        }
+    } catch (e) {
+        console.error('gc:', e.message);
+    } finally {
+        gcBusy.clear();
+        client.end(true);
+        gcRunning = false;
+    }
+}
+
 server.listen(PORT, HOST, () => console.log(`timberline-web listening on ${HOST}:${PORT}`));
+setTimeout(runGc, 20000);
+setInterval(runGc, GC_INTERVAL_MS);

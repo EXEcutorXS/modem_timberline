@@ -47,10 +47,19 @@
 
             <TabItem Header="Settings">
                 <DockPanel Margin="4">
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button x:Name="ConfigRefreshButton" Content="Read settings" Click="RefreshConfig_Click"/>
-                        <TextBlock Text="Hover a parameter name for its expected format. Rows with no Apply button are read-only (no console setter exists for them)."
-                                   TextWrapping="Wrap" Foreground="Gray" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="ConfigRefreshButton" Content="Read settings" Click="RefreshConfig_Click"/>
+                            <TextBlock Text="Hover a parameter name for its expected format. Rows with no Apply button are read-only (no console setter exists for them)."
+                                       TextWrapping="Wrap" Foreground="Gray" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="PUK:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBox x:Name="PukBox" Width="90" MaxLength="8" VerticalAlignment="Center"/>
+                            <Button x:Name="ReadPukButton" Content="Read from modem" Margin="8,0,0,0" Click="ReadPuk_Click"/>
+                            <TextBlock Text="Sent automatically with admin, phone and PIN changes."
+                                       Foreground="Gray" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        </StackPanel>
                     </StackPanel>
                     <DataGrid x:Name="SettingsGrid" ItemsSource="{Binding ConfigRows}" AutoGenerateColumns="False"
                               CanUserAddRows="False" GridLinesVisibility="Horizontal" HeadersVisibility="Column">

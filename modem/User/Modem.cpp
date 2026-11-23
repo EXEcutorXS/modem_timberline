@@ -6,6 +6,8 @@
 #include "flash.h"
 #include "Version.h"
 #include "TimeZone.h"
+#include "randomize.h"
+#include "verify.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -60,6 +62,7 @@ Modem::Modem()
     ota.status = OTA_IDLE; ota.page = 0; ota.pageTotal = 0;
     ota.stagedValid = false; ota.stagedVersion[0] = 0; ota.stagedBytes = 0;
     ota.deviceType = 0; ota.flashBase = 0;
+    ota.imageLength = 0; ota.imageSigSet = false;
 
     sms.pending = false; sms.slot = 0; sms.notifySlot = 0; sms.notifyPending = false;
     timers.csq = 0; timers.creg = 0; timers.net = 0; timers.mqttRetry = 0; timers.smsPoll = 0;
@@ -1034,12 +1037,11 @@ void Modem::doIdle(void) {
             ota.status = OTA_STAGING;
             ota.page = 0;
             otaScratch.failed = false;
-            /* deviceType == VERSION_1: this modem's own firmware, not a
-               CAN-relay target — skip ST_FETCH_PROFILE entirely (the profile/
-               bootloaders.txt only exist to tell doCanRelay() a target's flash
-               layout and safe bootloader algorithm; the self-OTA buffer has no
-               CAN relay step) and go straight to the download. */
-            setState(otaScratch.deviceType == VERSION_1 ? ST_OTA : ST_FETCH_PROFILE);
+            /* Profile carries flashBase, length and the Ed25519 signature.
+               Self-OTA used to skip it (no CAN relay follows), which left
+               imageLength at 0 and made the later check report
+               bad-signature before it ever looked at the bytes. */
+            setState(ST_FETCH_PROFILE);
             return;
         } else if ((now - otaScratch.startRequestedTick) >= 30000) { /* 30s — generous vs. a normal reconnect, short vs. "forever" */
             otaScratch.startRequested = false;
@@ -1669,35 +1671,21 @@ void Modem::mqttPublish(const char* name, const char* payload) {
     /* queue full (all MQTT_PUB_MAX names in use) — drop silently */
 }
 
-/* Lightweight, non-cryptographic token generator — this MCU has no hardware
-   RNG. Mixes the boot tick, a call counter and the device's own IMEI through
-   two rounds of a simple string hash so repeated calls produce different
-   values. Not resistant to a determined attacker who can guess timing —
-   accepted as a known limitation. Used for the "getlink" token itself, and
-   (via publishLinkToken()) reused as-is for auto-registration's generated
-   login/password — same non-guarantee applies there too, but a self-chosen
-   throwaway MQTT password doesn't need to be cryptographically strong, just
-   not predictable at a glance. */
-/* Shared randomness core for generateLinkToken()/generateMemorableLogin() —
-   mixes the boot tick, a call counter and the device's own IMEI through two
-   rounds of a simple string hash, so repeated calls (even within the same
-   millisecond) produce different (h1,h2) pairs. */
+/* Lightweight token generator. There is no hardware RNG; entropy comes from
+   Randomize::getValue() (ADC LSBs of the temperature sensor). Not a
+   cryptographic guarantee. Used for the "getlink" token and, via
+   publishLinkToken(), for auto-registration's generated password. */
+/* Shared core for generateLinkToken()/generateMemorableLogin(). */
 static void generateRandomPair(uint32_t& h1, uint32_t& h2) {
     static uint32_t counter = 0;
     counter++;
-
-    char mix[32];
-    int  n = 0;
+    /* Two samples from the temperature-sensor LSB pool. The tick and the
+       counter only stop two calls in the same millisecond from colliding;
+       the IMEI used to be mixed in here and is not — it is static and
+       already published in telemetry, so it added nothing to the token. */
     uint32_t tick = core.getTick();
-    for (int i = 0; i < 4; i++) mix[n++] = (char)(tick >> (i * 8));
-    for (int i = 0; i < 4; i++) mix[n++] = (char)(counter >> (i * 8));
-    for (int i = 0; modem.network.imei[i] && n < 30; i++) mix[n++] = modem.network.imei[i];
-
-    h1 = 5381; h2 = 52711;
-    for (int i = 0; i < n; i++) {
-        h1 = h1 * 33 ^ (uint8_t)mix[i];
-        h2 = h2 * 33 ^ (uint8_t)mix[n - 1 - i];
-    }
+    h1 = randomize.getValue() ^ tick ^ (counter * 0x9E3779B9u);
+    h2 = randomize.getValue() ^ (tick << 1) ^ (counter * 0x85EBCA6Bu);
 }
 
 /* Lightweight, non-cryptographic token generator — this MCU has no hardware
@@ -2272,6 +2260,8 @@ void Modem::startOta(uint8_t deviceType, const char* version) {
     otaScratch.deviceType = deviceType;
     strncpy(otaScratch.version, version, sizeof(otaScratch.version) - 1);
     otaScratch.version[sizeof(otaScratch.version) - 1] = 0;
+    ota.imageSigSet = false;
+    ota.imageLength = 0;
     otaScratch.startRequested = true;
     otaScratch.startRequestedTick = core.getTick();
     otaErrorReason[0] = 0; /* a freshly-accepted request supersedes whatever was reported before */
@@ -2557,8 +2547,11 @@ bool Modem::isDeviceTypeSupportedByBootloader(const uint8_t* version, uint8_t de
    file instead of a binary CRC array. Expected format, one KEY=VALUE per
    line:
      flashBase=0x08020000
-   A profile that's missing, unreachable, or has a malformed/missing
-   flashBase= fails the whole otaStart the same way a missing
+     length=123456
+     sig=<128 hex chars>
+   length is the raw file size; sig is checked before the image is marked
+   staged. A profile that's missing, unreachable, or has a malformed
+   flashBase=/length=/sig= fails the whole otaStart the same way a missing
    firmware.crc16 already does — there's no safe default flash base to
    fall back to for an unknown device type/version (unlike the erase
    command, this one genuinely differs per firmware and can't be a single
@@ -2566,7 +2559,7 @@ bool Modem::isDeviceTypeSupportedByBootloader(const uint8_t* version, uint8_t de
 void Modem::doFetchProfile(void) {
     static char cmd[192];
     static char url[160];
-    static char profileBuf[96];
+    static char profileBuf[256];
     static uint16_t profileLen;
     static uint32_t t = 0;
 
@@ -2628,6 +2621,9 @@ void Modem::doFetchProfile(void) {
                this firmware, same style as the rest of the AT-response
                parsing in this file. */
             bool gotBase = false;
+            bool gotLen = false;
+            bool gotSig = false;
+            ota.imageSigSet = false;
             const char* baseKey = strstr(profileBuf, "flashBase=");
             if (baseKey) {
                 const char* p = baseKey + 10;  /* strlen("flashBase=") */
@@ -2643,8 +2639,37 @@ void Modem::doFetchProfile(void) {
                 }
                 if (any) { ota.flashBase = v; gotBase = true; }
             }
-            if (!gotBase) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
-            else { ota.deviceType = otaScratch.deviceType; logOtaInfoNum("profile flashBase", ota.flashBase); }
+            const char* lenKey = strstr(profileBuf, "length=");
+            if (lenKey) {
+                const char* p = lenKey + 7;
+                uint32_t v = 0; bool any = false;
+                for (; *p >= '0' && *p <= '9'; p++) { v = v * 10u + (uint32_t)(*p - '0'); any = true; }
+                if (any && v > 0) { ota.imageLength = v; gotLen = true; }
+            }
+            const char* sigKey = strstr(profileBuf, "sig=");
+            if (sigKey) {
+                const char* p = sigKey + 4;
+                gotSig = true;
+                for (int i = 0; i < 64; i++) {
+                    int hi = -1, lo = -1;
+                    char c = p[i * 2];
+                    char d = p[i * 2 + 1];
+                    if (c >= '0' && c <= '9') hi = c - '0';
+                    else if (c >= 'a' && c <= 'f') hi = c - 'a' + 10;
+                    else if (c >= 'A' && c <= 'F') hi = c - 'A' + 10;
+                    if (d >= '0' && d <= '9') lo = d - '0';
+                    else if (d >= 'a' && d <= 'f') lo = d - 'a' + 10;
+                    else if (d >= 'A' && d <= 'F') lo = d - 'A' + 10;
+                    if (hi < 0 || lo < 0) { gotSig = false; break; }
+                    ota.imageSig[i] = (uint8_t)((hi << 4) | lo);
+                }
+            }
+            if (!gotBase || !gotLen || !gotSig) { logOtaFail(5, "profile-parse-failed", 0); otaScratch.failed = true; }
+            else {
+                ota.imageSigSet = true;
+                ota.deviceType = otaScratch.deviceType;
+                logOtaInfoNum("profile flashBase", ota.flashBase);
+            }
             step = 6;
         } else if ((core.getTick() - t) >= 8000) {
             rawCapture.dst = 0;
@@ -2661,6 +2686,35 @@ void Modem::doFetchProfile(void) {
         }
         break;
     }
+}
+
+/* True when version is a well-formed quad strictly older than this
+   build. Used to refuse a self-OTA rollback onto an older signed image. */
+static bool versionOlderThanRunning(const char* v) {
+    unsigned cur[4] = { VERSION_1, VERSION_2, VERSION_3, VERSION_4 };
+    unsigned got[4] = { 0, 0, 0, 0 };
+    int part = 0;
+    unsigned n = 0;
+    bool any = false;
+    if (!v) return true;
+    for (const char* p = v;; p++) {
+        if (*p >= '0' && *p <= '9') {
+            n = n * 10u + (unsigned)(*p - '0');
+            any = true;
+            continue;
+        }
+        if (*p != '.' && *p != 0) return true;
+        if (!any || part >= 4) return true;
+        got[part++] = n;
+        n = 0;
+        any = false;
+        if (*p == 0) break;
+    }
+    if (part != 4) return true;
+    for (int i = 0; i < 4; i++) {
+        if (got[i] != cur[i]) return got[i] < cur[i];
+    }
+    return false;
 }
 
 void Modem::doOta(void) {
@@ -2966,7 +3020,19 @@ void Modem::doOta(void) {
     case 20:
         if (atCmd("AT+HTTPTERM\r\n", 2000)) {
             if (!otaScratch.failed) {
-                if (self) {
+                const uint32_t span = (uint32_t)ota.pageTotal * MODEM_OTA_PAGE_SIZE;
+                const bool lenOk = ota.imageSigSet && ota.imageLength > 0 && ota.imageLength <= span
+                    && (span - ota.imageLength) < MODEM_OTA_PAGE_SIZE;
+                const uint8_t* image = (const uint8_t*)(self ? FLASH_SELF_OTA_BUF_ADDR : FLASH_OTA_BUF_ADDR);
+                if (!lenOk || !firmwareSignatureOk(otaScratch.version, ota.flashBase, image, ota.imageLength, ota.imageSig)) {
+                    otaScratch.failed = true;
+                    setOtaError("bad-signature");
+                    logOtaFail(20, "bad-signature", ota.imageLength);
+                } else if (self && versionOlderThanRunning(otaScratch.version)) {
+                    otaScratch.failed = true;
+                    setOtaError("downgrade");
+                    logOtaFail(20, "downgrade", 0);
+                } else if (self) {
                     /* No separate meta record for self any more, but the
                        downloaded image's own trailing page only ever holds
                        the build-time debug placeholder — proof a download

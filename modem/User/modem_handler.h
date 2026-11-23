@@ -64,6 +64,7 @@ extern "C" {
 #endif
 void usb_print_status(void);
 void usb_print_config(void);
+void usb_print_puk(void);
 #ifdef __cplusplus
 }
 #endif

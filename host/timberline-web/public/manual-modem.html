@@ -33,13 +33,13 @@
 /* Command table: [en keyword, de keyword, arg ru, arg en, arg de, desc ru, desc en, desc de] */
 const CMDS = [
  ["admin","admin","номер телефона*","phone number*","Telefonnummer*",
-  "Задаёт номер администратора. Команды с этого номера не требуют PIN. На этот номер приходят аварийные сообщения при неисправности системы. Пустой аргумент назначает администратором номер отправителя.",
-  "Sets the admin phone number. Commands from this phone do not require a PIN. This phone will receive alarm messages in case of a system fault. An empty argument designates the sender's phone number as admin.",
-  "Legt die Admin-Telefonnummer fest. Befehle von dieser Nummer benötigen keine PIN. Diese Nummer erhält Alarmmeldungen bei einer Störung. Ein leeres Argument setzt die Nummer des Absenders als Admin."],
+  "Задаёт номер администратора. Команды с этого номера не требуют PIN. На этот номер приходят аварийные сообщения при неисправности системы. Пустой аргумент назначает администратором номер отправителя. В той же SMS должна быть команда puk с 8 цифрами с наклейки на корпусе.",
+  "Sets the admin phone number. Commands from this phone do not require a PIN. This phone will receive alarm messages in case of a system fault. An empty argument designates the sender's phone number as admin. The same SMS must also contain puk and the 8 digits from the label on the case.",
+  "Legt die Admin-Telefonnummer fest. Befehle von dieser Nummer benötigen keine PIN. Diese Nummer erhält Alarmmeldungen bei einer Störung. Ein leeres Argument setzt die Nummer des Absenders als Admin. Dieselbe SMS muss auch puk und die 8 Ziffern vom Aufkleber am Gehäuse enthalten."],
  ["phone#","telefon#","номер телефона*","phone number*","Telefonnummer*",
-  "Задаёт доверенный номер № (1–4). Команды с него не требуют PIN. Аварийные сообщения на этот номер не приходят. Пустой аргумент назначает доверенным номер отправителя.",
-  "Sets trusted phone number #N (1-4). Commands from this phone do not require a PIN. This phone will not receive alarm messages in case of a system fault. An empty argument designates the sender's phone number as trusted.",
-  "Legt die vertrauenswürdige Telefonnummer #N (1-4) fest. Befehle von dieser Nummer benötigen keine PIN. Diese Nummer erhält keine Alarmmeldungen. Ein leeres Argument setzt die Nummer des Absenders als vertrauenswürdig."],
+  "Задаёт доверенный номер № (1–4). Команды с него не требуют PIN. Аварийные сообщения на этот номер не приходят. Пустой аргумент назначает доверенным номер отправителя. В той же SMS должна быть команда puk с 8 цифрами с наклейки на корпусе.",
+  "Sets trusted phone number #N (1-4). Commands from this phone do not require a PIN. This phone will not receive alarm messages in case of a system fault. An empty argument designates the sender's phone number as trusted. The same SMS must also contain puk and the 8 digits from the label on the case.",
+  "Legt die vertrauenswürdige Telefonnummer #N (1-4) fest. Befehle von dieser Nummer benötigen keine PIN. Diese Nummer erhält keine Alarmmeldungen. Ein leeres Argument setzt die Nummer des Absenders als vertrauenswürdig. Dieselbe SMS muss auch puk und die 8 Ziffern vom Aufkleber am Gehäuse enthalten."],
  ["faultreport","fehlermeldung","on, off или 0, 1","on, off or 0, 1","ein, aus (auch on/off/0/1)",
   "Включает или выключает оповещение о неисправностях. При появлении нового кода ошибки модем отправляет SMS с кодом на номер администратора.",
   "Enables or disables the fault alarm function. When a new fault code appears, the modem will send an SMS with the error code to the admin number.",
@@ -49,7 +49,13 @@ const CMDS = [
   "Sends an acknowledgement after receiving a command.",
   "Sendet eine Bestätigung nach Erhalt eines Befehls."],
  ["setpin","pin","новый PIN (4 цифры)","new PIN code (4 digits)","neuer PIN-Code (4 Ziffern)",
-  "Меняет PIN-код.","Changes the PIN code.","Ändert den PIN-Code."],
+  "Меняет PIN-код. В той же SMS должна быть команда puk с 8 цифрами с наклейки на корпусе.",
+  "Changes the PIN code. The same SMS must also contain puk and the 8 digits from the label on the case.",
+  "Ändert den PIN-Code. Dieselbe SMS muss auch puk und die 8 Ziffern vom Aufkleber am Gehäuse enthalten."],
+ ["puk","puk","8 цифр с наклейки","8 digits from the label","8 Ziffern vom Aufkleber",
+  "Сама по себе ничего не меняет. Должна стоять в той же SMS, что и setpin, admin или phone, иначе эти команды отклоняются. Пример: puk 12345678,setpin 4321.",
+  "Does nothing by itself. It must be in the same SMS as setpin, admin or phone, otherwise those commands are rejected. Example: puk 12345678,setpin 4321.",
+  "Ändert allein nichts. Muss in derselben SMS stehen wie pin, admin oder telefon, sonst werden diese Befehle abgelehnt. Beispiel: puk 12345678,pin 4321."],
  ["unit","einheit","C, F","C, F","c, f",
   "Единицы температуры модема: градусы Цельсия или Фаренгейта.",
   "Sets the modem's temperature unit: Celsius or Fahrenheit.",
@@ -206,13 +212,14 @@ ru: {
     </tbody></table></div>`},
    {id:"security", title:"Первое включение и безопасность", html:()=>`
     <ul>
-      <li>С завода установлен PIN-код <b>1234</b>. Рекомендуем сменить его как можно скорее командой <span class="cmd">setpin</span>.</li>
-      <li>Задайте номер администратора командой <span class="cmd">admin</span> с вашего телефона (пустой аргумент назначает администратором номер отправителя). С этого номера команды выполняются без PIN, и именно на него приходят сообщения о неисправностях.</li>
-      <li>Дополнительные доверенные номера (до четырёх) задаются командами <span class="cmd">phone1</span>…<span class="cmd">phone4</span>. Они тоже работают без PIN, но аварийных сообщений не получают.</li>
+      <li>С завода установлен PIN-код <b>1234</b>. Рекомендуем сменить его как можно скорее. На корпусе наклеена этикетка с 8-значным кодом PUK: без него сменить PIN, номер администратора и доверенные номера нельзя. Пример: <span class="cmd">puk 12345678,setpin 4321</span>.</li>
+      <li>Задайте номер администратора командой <span class="cmd">admin</span> с вашего телефона (пустой аргумент назначает администратором номер отправителя). В той же SMS нужен PUK, например <span class="cmd">puk 12345678,admin</span>. С номера администратора обычные команды выполняются без PIN, и именно на него приходят сообщения о неисправностях.</li>
+      <li>Дополнительные доверенные номера (до четырёх) задаются командами <span class="cmd">phone1</span>…<span class="cmd">phone4</span>, тоже вместе с <span class="cmd">puk</span> в той же SMS. Они работают без PIN, но аварийных сообщений не получают.</li>
+      <li>Если этикетка не читается, те же 8 цифр можно прочитать по USB: подключите модем к компьютеру и отправьте команду <span class="cmd">puk</span> (в программе Modem Tool — кнопка «Read from modem»).</li>
       <li>Включите оповещение о неисправностях командой <span class="cmd">faultreport on</span>.</li>
     </ul>`},
    {id:"sms", title:"Управление по SMS", html:()=>`
-    <p>Команда с незарегистрированного телефона должна выглядеть так: <span class="cmd">PIN команда аргумент</span>, например <span class="cmd">1234 burner on</span> или <span class="cmd">1234 admin +79608123398</span>.</p>
+    <p>Команда с незарегистрированного телефона должна выглядеть так: <span class="cmd">PIN команда аргумент</span>, например <span class="cmd">1234 burner on</span> или <span class="cmd">1234 puk 12345678,admin +79608123398</span>.</p>
     <p>Команда с номера администратора (или доверенного номера) PIN не требует: <span class="cmd">z1 vent</span>, <span class="cmd">systimer 100</span>.</p>
     <ul>
       <li>«#» после «z» заменяется номером зоны.</li>
@@ -344,13 +351,14 @@ en: {
     </tbody></table></div>`},
    {id:"security", title:"First start and security", html:()=>`
     <ul>
-      <li>The device ships with the default PIN <b>1234</b>. We strongly recommend changing it as soon as possible with <span class="cmd">setpin</span>.</li>
-      <li>Set the admin number by sending <span class="cmd">admin</span> from your phone (an empty argument designates the sender's phone as admin). Commands from this number need no PIN, and fault messages are sent to it.</li>
-      <li>Up to four additional trusted numbers are set with <span class="cmd">phone1</span>…<span class="cmd">phone4</span>. They also work without a PIN but do not receive fault messages.</li>
+      <li>The device ships with the default PIN <b>1234</b>. We strongly recommend changing it as soon as possible. The case has a label with an 8-digit PUK: without it the PIN, the admin number and the trusted numbers cannot be changed. Example: <span class="cmd">puk 12345678,setpin 4321</span>.</li>
+      <li>Set the admin number by sending <span class="cmd">admin</span> from your phone (an empty argument designates the sender's phone as admin). The same SMS must include the PUK, for example <span class="cmd">puk 12345678,admin</span>. Ordinary commands from the admin number need no PIN, and fault messages are sent to it.</li>
+      <li>Up to four additional trusted numbers are set with <span class="cmd">phone1</span>…<span class="cmd">phone4</span>, also together with <span class="cmd">puk</span> in the same SMS. They work without a PIN but do not receive fault messages.</li>
+      <li>If the label cannot be read, the same 8 digits can be read over USB: connect the modem to a computer and send <span class="cmd">puk</span> (in Modem Tool, the “Read from modem” button).</li>
       <li>Enable fault notifications with <span class="cmd">faultreport on</span>.</li>
     </ul>`},
    {id:"sms", title:"SMS control", html:()=>`
-    <p>A command from an unregistered phone must look like <span class="cmd">PIN command argument</span>, for example <span class="cmd">1234 burner on</span> or <span class="cmd">1234 admin +79608123398</span>.</p>
+    <p>A command from an unregistered phone must look like <span class="cmd">PIN command argument</span>, for example <span class="cmd">1234 burner on</span> or <span class="cmd">1234 puk 12345678,admin +79608123398</span>.</p>
     <p>A command from the admin number (or a trusted number) does not need the PIN: <span class="cmd">z1 vent</span>, <span class="cmd">systimer 100</span>.</p>
     <ul>
       <li>“#” after “z” must be replaced with a zone number.</li>
@@ -482,13 +490,14 @@ de: {
     </tbody></table></div>`},
    {id:"security", title:"Erste Inbetriebnahme und Sicherheit", html:()=>`
     <ul>
-      <li>Das Gerät wird mit der Standard-PIN <b>1234</b> ausgeliefert. Wir empfehlen dringend, sie so bald wie möglich mit <span class="cmd">pin</span> zu ändern.</li>
-      <li>Legen Sie die Admin-Nummer fest, indem Sie von Ihrem Telefon <span class="cmd">admin</span> senden (ein leeres Argument setzt die Nummer des Absenders als Admin). Befehle von dieser Nummer benötigen keine PIN, und Störungsmeldungen werden an sie gesendet.</li>
-      <li>Bis zu vier weitere vertrauenswürdige Nummern werden mit <span class="cmd">telefon1</span>…<span class="cmd">telefon4</span> festgelegt. Sie funktionieren ebenfalls ohne PIN, erhalten aber keine Störungsmeldungen.</li>
+      <li>Das Gerät wird mit der Standard-PIN <b>1234</b> ausgeliefert. Wir empfehlen dringend, sie so bald wie möglich zu ändern. Am Gehäuse klebt ein Aufkleber mit einem 8-stelligen PUK: ohne ihn lassen sich PIN, Admin-Nummer und vertrauenswürdige Nummern nicht ändern. Beispiel: <span class="cmd">puk 12345678,pin 4321</span>.</li>
+      <li>Legen Sie die Admin-Nummer fest, indem Sie von Ihrem Telefon <span class="cmd">admin</span> senden (ein leeres Argument setzt die Nummer des Absenders als Admin). Dieselbe SMS muss den PUK enthalten, zum Beispiel <span class="cmd">puk 12345678,admin</span>. Gewöhnliche Befehle von der Admin-Nummer benötigen keine PIN, und Störungsmeldungen werden an sie gesendet.</li>
+      <li>Bis zu vier weitere vertrauenswürdige Nummern werden mit <span class="cmd">telefon1</span>…<span class="cmd">telefon4</span> festgelegt, ebenfalls zusammen mit <span class="cmd">puk</span> in derselben SMS. Sie funktionieren ohne PIN, erhalten aber keine Störungsmeldungen.</li>
+      <li>Wenn der Aufkleber nicht lesbar ist, können dieselben 8 Ziffern über USB gelesen werden: Modem an einen Computer anschließen und den Befehl <span class="cmd">puk</span> senden (in Modem Tool die Schaltfläche „Read from modem“).</li>
       <li>Aktivieren Sie die Störungsmeldung mit <span class="cmd">fehlermeldung ein</span>.</li>
     </ul>`},
    {id:"sms", title:"SMS-Steuerung", html:()=>`
-    <p>Ein Befehl von einem nicht registrierten Telefon muss so aussehen: <span class="cmd">PIN Befehl Argument</span>, zum Beispiel <span class="cmd">1234 brenner ein</span> oder <span class="cmd">1234 admin +49...</span>.</p>
+    <p>Ein Befehl von einem nicht registrierten Telefon muss so aussehen: <span class="cmd">PIN Befehl Argument</span>, zum Beispiel <span class="cmd">1234 brenner ein</span> oder <span class="cmd">1234 puk 12345678,admin +49...</span>.</p>
     <p>Ein Befehl von der Admin-Nummer (oder einer vertrauenswürdigen Nummer) benötigt keine PIN: <span class="cmd">z1 lueften</span>, <span class="cmd">systemzeit 100</span>.</p>
     <ul>
       <li>„#“ nach „z“ ist durch die Zonennummer zu ersetzen.</li>

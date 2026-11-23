@@ -150,7 +150,7 @@ address, per-page CRC16) is derived by the server from a single file's
 name and bytes:
 
 ```
-public/firmware/<type>/<version>_0x<flashBase>.bin
+public/firmware/<type>/<version>_0x<flashBase>_<128 hex signature>.bin
 ```
 
 - `<version>` — this org's device version scheme, 1-4 dot-separated
@@ -173,7 +173,7 @@ persistence bricking incident — see `Modem.h`'s `ota` struct comment and
 `CanRelay::handleGen2()`). This is a deliberate, permanent call for gen2
 devices: always full erase, not a per-device narrower list.
 
-Example: `121.0.0.8_0x0802A800.bin`.
+Example: `121.0.0.8_0x0802a000_<128 hex chars>.bin`. The hex is an Ed25519 signature over `TLFW1|<version>|<flash base>|<length>|<sha256>`, checked by the server before the file is listed and by the modem before the staged image is marked valid. `host/tools/hex_to_ota.py` signs with `host/tools/keys/firmware-ed25519.pem` (not on the server). A self-update older than the running modem build is refused.
 
 **Publishing a new version** — from a Keil-produced `.hex`:
 ```bash

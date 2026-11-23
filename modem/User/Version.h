@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 29
+#define VERSION_4 30
 /*
 
 Адрес        Длина      Назначение региона
@@ -23,6 +23,9 @@
 //Добавить управление нагрузками
 
 
+
+121.0.0.30
+PUK (8 digits) lives next to the serial and is required to change the PIN, admin and trusted numbers. The serial page is never erased by firmware. USB "puk" prints those digits. Production writes the serial (PGN 1 command 31, 24-bit) and the PUK (command 32, 32-bit) over CAN, once, and only while those bytes are still 0xFF. Self-OTA fetches /profile too: length and the signature live there, and skipping it reported bad-signature with length 0. OTA images must carry a signature in the filename; a self-update older than the running build is refused. getlink tokens come from randomize.getValue(), not the IMEI.
 
 121.0.0.29
 Storage mode support added

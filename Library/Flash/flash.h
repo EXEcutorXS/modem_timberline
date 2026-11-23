@@ -5,6 +5,10 @@
 /* Includes -------------------------------------------------------*/
 #include "n32wb452.h"
 /* Define -------------------------------------------------------- */
+/* Production identity page. Flash arrives erased (0xFF). The line writes
+   the serial and the 8-digit PUK once, over CAN (PGN 1, commands 31 and
+   32), and only while those bytes are still 0xFF. Firmware must not erase
+   this page — a rewrite of the serial used to, and that would destroy the PUK. */
 #define FLASH_SERIAL_ADDR               0x807F000       // Length 2 KB
 #define FLASH_SETUP_ADDR                0x807F800       // Length 2 KB
 
@@ -107,13 +111,23 @@ class Flash_C
         void writeSetup(void);
         void readSetup(void);
         void factoryReset(void);
-        void writeSerial(void);
         void readSerial(void);
+        /* One-shot factory programming. Refuses unless every byte of that
+           field is still 0xFF, and never erases the page. Serial is stored
+           as decimal ASCII in the 16-byte field (NUL-padded). PUK is stored
+           as exactly 8 ASCII digits; value must be 0..99999999. */
+        bool programSerial(uint32_t value);
+        bool programPuk(uint32_t value);
+        /* True when the presented 8 digits match the PUK programmed next
+           to the serial. False when the page is still erased. */
+        bool pukMatches(const char* digits);
+        /* Copies the 8 digits and a NUL into out. False when none is programmed. */
+        bool copyPuk(char out[9]);
         uint8_t getHardwareVersion(void);
 
         /* OTA staging area (see FLASH_OTA_BUF_ADDR above) — pageIndex is
            0..FLASH_OTA_PAGE_COUNT-1, data/outBuf must be exactly
-           FLASH_PAGE_SIZE (2048) bytes. Unlike writeSetup()/writeSerial(),
+           FLASH_PAGE_SIZE (2048) bytes. Unlike writeSetup(),
            writeOtaPage() checks every FLASH_STS return value — a silently
            dropped error here means flashing a bad image onto MBC-2. */
         bool     writeOtaPage(uint16_t pageIndex, const uint8_t* data);

@@ -66,6 +66,7 @@ const I18N = {
     connConnecting: 'Broker connecting…', connConnected: 'Broker connected',
     connReconnecting: 'Broker reconnecting…', connDisconnected: 'Broker disconnected',
     deviceUnknown: 'Device: —', deviceOnline: 'Device online', deviceOffline: 'Device offline',
+    deviceOfflineAgo: 'Device offline · {ago} ago',
     linkInvalid: 'This link is invalid or expired — request a new one (send "getlink" via SMS).',
     waitingDevice: 'Waiting for the device to finish connecting…',
     otaDevices: 'Devices', otaVersion: 'Version', otaUpdate: 'Load',
@@ -74,7 +75,10 @@ const I18N = {
     otaNoDevicesFound: 'No devices seen on the bus yet', deviceTypePrefix: 'Type',
     otaErrorBusyDownloading: 'A download is already in progress', otaErrorBusyRelaying: 'A flash is already in progress',
     otaErrorNothingStaged: 'Nothing loaded yet — load a version first', otaErrorBadPayload: 'Internal error (bad command)',
-    otaErrorNoInternet: 'Modem has no internet connection', otaErrorUnknownPrefix: 'Error:',
+    otaErrorNoInternet: 'Modem has no internet connection',
+    otaErrorBadSignature: 'Firmware signature check failed',
+    otaErrorDowngrade: 'Refusing a firmware older than the one running',
+    otaErrorUnknownPrefix: 'Error:',
     ownFirmware: 'Modem firmware',
     selfOtaApply: 'Apply', selfOtaApplyStatusIdle: 'Not applied', selfOtaApplyStatusPending: 'Applying…',
     selfOtaApplyStatusDone: 'Applied', selfOtaApplyNothingStaged: 'Nothing loaded yet',
@@ -115,6 +119,7 @@ const I18N = {
     connConnecting: 'Подключение к брокеру…', connConnected: 'Брокер подключён',
     connReconnecting: 'Переподключение к брокеру…', connDisconnected: 'Брокер отключён',
     deviceUnknown: 'Устройство: —', deviceOnline: 'Устройство онлайн', deviceOffline: 'Устройство офлайн',
+    deviceOfflineAgo: 'Устройство было {ago} назад',
     linkInvalid: 'Ссылка недействительна или устарела — запросите новую (отправьте SMS "getlink").',
     waitingDevice: 'Ожидание подключения устройства…',
     otaDevices: 'Устройства', otaVersion: 'Версия', otaUpdate: 'Загрузить',
@@ -123,7 +128,10 @@ const I18N = {
     otaNoDevicesFound: 'На шине пока не видно устройств', deviceTypePrefix: 'Тип',
     otaErrorBusyDownloading: 'Загрузка уже выполняется', otaErrorBusyRelaying: 'Прошивка уже выполняется',
     otaErrorNothingStaged: 'Ничего не загружено — сначала загрузите версию', otaErrorBadPayload: 'Внутренняя ошибка (некорректная команда)',
-    otaErrorNoInternet: 'У модема нет подключения к интернету', otaErrorUnknownPrefix: 'Ошибка:',
+    otaErrorNoInternet: 'У модема нет подключения к интернету',
+    otaErrorBadSignature: 'Подпись прошивки не сошлась',
+    otaErrorDowngrade: 'Прошивка старше той, что уже стоит',
+    otaErrorUnknownPrefix: 'Ошибка:',
     ownFirmware: 'Прошивка модема',
     selfOtaApply: 'Применить', selfOtaApplyStatusIdle: 'Не применено', selfOtaApplyStatusPending: 'Применяется…',
     selfOtaApplyStatusDone: 'Применено', selfOtaApplyNothingStaged: 'Ничего не загружено',
@@ -164,6 +172,7 @@ const I18N = {
     connConnecting: 'Verbinde mit Broker…', connConnected: 'Broker verbunden',
     connReconnecting: 'Broker verbindet erneut…', connDisconnected: 'Broker getrennt',
     deviceUnknown: 'Gerät: —', deviceOnline: 'Gerät online', deviceOffline: 'Gerät offline',
+    deviceOfflineAgo: 'Gerät offline · vor {ago}',
     linkInvalid: 'Der Link ist ungültig oder abgelaufen — fordern Sie einen neuen an (SMS „getlink“ senden).',
     waitingDevice: 'Warte auf Verbindungsaufbau des Geräts…',
     otaDevices: 'Geräte', otaVersion: 'Version', otaUpdate: 'Laden',
@@ -172,7 +181,10 @@ const I18N = {
     otaNoDevicesFound: 'Noch keine Geräte auf dem Bus gesehen', deviceTypePrefix: 'Typ',
     otaErrorBusyDownloading: 'Ein Download läuft bereits', otaErrorBusyRelaying: 'Ein Flash-Vorgang läuft bereits',
     otaErrorNothingStaged: 'Noch nichts geladen — zuerst eine Version laden', otaErrorBadPayload: 'Interner Fehler (ungültiger Befehl)',
-    otaErrorNoInternet: 'Modem hat keine Internetverbindung', otaErrorUnknownPrefix: 'Fehler:',
+    otaErrorNoInternet: 'Modem hat keine Internetverbindung',
+    otaErrorBadSignature: 'Signatur der Firmware ungültig',
+    otaErrorDowngrade: 'Ältere Firmware als die laufende wird abgelehnt',
+    otaErrorUnknownPrefix: 'Fehler:',
     ownFirmware: 'Modem-Firmware',
     selfOtaApply: 'Anwenden', selfOtaApplyStatusIdle: 'Nicht angewendet', selfOtaApplyStatusPending: 'Wird angewendet…',
     selfOtaApplyStatusDone: 'Angewendet', selfOtaApplyNothingStaged: 'Noch nichts geladen',
@@ -1438,6 +1450,30 @@ function versionsForSubtype(versions, subtype) {
   return versions.filter((v) => parseInt(v.split('.')[1], 10) === subtype);
 }
 
+function fillVersionSelect(select, versions, emptyLabel) {
+  const list = versions || [];
+  const key = list.join('|') || 'empty';
+  if (select.dataset.versionsKey === key && select.options.length) return;
+  const prev = select.value;
+  select.innerHTML = '';
+  if (!list.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = emptyLabel;
+    select.appendChild(opt);
+  } else {
+    list.forEach((v) => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      select.appendChild(opt);
+    });
+    if (list.includes(prev)) select.value = prev;
+  }
+  select.size = 1;
+  select.dataset.versionsKey = key;
+}
+
 const otaVersionsByType = {};
 const otaVersionsFetchedTypes = new Set();
 async function fetchOtaVersionsForType(type) {
@@ -1554,24 +1590,7 @@ function updateSelfOtaCard(status, staging) {
 
   const versions = versionsForSubtype(otaVersionsByType[ownType], ownSubtype);
   const select = card.querySelector('#selfOtaVersion');
-  if (document.activeElement !== select) {
-    const prevValue = select.value;
-    select.innerHTML = '';
-    if (versions && versions.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = t('otaNoVersions');
-      select.appendChild(opt);
-    } else {
-      (versions || []).forEach((v) => {
-        const opt = document.createElement('option');
-        opt.value = v;
-        opt.textContent = v;
-        select.appendChild(opt);
-      });
-    }
-    if (versions && versions.includes(prevValue)) select.value = prevValue;
-  }
+  fillVersionSelect(select, versions, t('otaNoVersions'));
 
   const selfStagedValid = !!rawStatus.selfOtaStaged;
   checkOtaLoadDone(ownType, selfStagedValid ? rawStatus.selfOtaStaged : undefined);
@@ -1645,6 +1664,8 @@ const OTA_ERROR_KEYS = {
   'nothing-staged': 'otaErrorNothingStaged',
   'bad-payload': 'otaErrorBadPayload',
   'no-internet': 'otaErrorNoInternet',
+  'bad-signature': 'otaErrorBadSignature',
+  'downgrade': 'otaErrorDowngrade',
 };
 function renderOtaErrorBanner() {
   const banner = $('otaErrorBanner');
@@ -1782,24 +1803,7 @@ function renderOtaPanel() {
 
     const versions = versionsForSubtype(otaVersionsByType[dev.type], dev.subtype);
     const select = card.querySelector('[data-role="version"]');
-    if (document.activeElement !== select) {
-      const prevValue = select.value;
-      select.innerHTML = '';
-      if (versions && versions.length === 0) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = t('otaNoVersions');
-        select.appendChild(opt);
-      } else {
-        (versions || []).forEach((v) => {
-          const opt = document.createElement('option');
-          opt.value = v;
-          opt.textContent = v;
-          select.appendChild(opt);
-        });
-      }
-      if (versions && versions.includes(prevValue)) select.value = prevValue;
-    }
+    fillVersionSelect(select, versions, t('otaNoVersions'));
 
     /* thisStaged reflects what's actually loaded in the modem right now for
        THIS device (stagedValid && stagedType matches) — used both to gate
@@ -1943,12 +1947,48 @@ function setConnStatus(state, labelKey) {
    all. Unknown (gray, "Device: —") until the first "online" message —
    which arrives immediately on subscribe if it was ever retained. */
 let lastDeviceOnline = null;
+let lastDeviceSeenMs = null;
+let sessionPassword = null;
+let presenceTimer = null;
+
+function formatAgo(ms) {
+  const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (sec < 60) return `${sec} ${t('unitS')}`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} ${t('unitM')}`;
+  const hours = Math.floor(min / 60);
+  if (hours < 48) return `${hours} ${t('unitH')}`;
+  return `${Math.floor(hours / 24)} ${t('unitD')}`;
+}
+
+function deviceStatusText(online) {
+  if (online === null) return t('deviceUnknown');
+  if (online) return t('deviceOnline');
+  if (lastDeviceSeenMs) return t('deviceOfflineAgo').replace('{ago}', formatAgo(lastDeviceSeenMs));
+  return t('deviceOffline');
+}
+
 function setDeviceStatus(online) {
   lastDeviceOnline = online;
   const dot = $('deviceDot');
   if (!dot) return;
   dot.className = 'conn-dot' + (online === null ? '' : online ? ' connected' : ' disconnected');
-  $('deviceLabel').textContent = online === null ? t('deviceUnknown') : online ? t('deviceOnline') : t('deviceOffline');
+  $('deviceLabel').textContent = deviceStatusText(online);
+}
+
+async function refreshPresence() {
+  if (!mqttUsername || !sessionPassword) return;
+  try {
+    const r = await fetch('/api/presence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ login: mqttUsername, password: sessionPassword }),
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    lastDeviceSeenMs = data.lastDeviceSeen || null;
+    setDeviceStatus(lastDeviceOnline);
+  } catch (e) { /* presence is a hint; the online topic stays authoritative */ }
 }
 
 /* Re-applies the connection/device status labels in the now-current
@@ -1961,6 +2001,8 @@ function refreshStatusLabels() {
 
 function connectMqtt(creds) {
   mqttUsername = creds.mqttUsername;
+  sessionPassword = creds.mqttPassword;
+  if (creds.lastDeviceSeen) lastDeviceSeenMs = creds.lastDeviceSeen;
   $('loginLabel').textContent = mqttUsername;
   /* A page loaded over https can't open a plain ws:// connection — the
      browser blocks it as mixed content. Match the page's own scheme. */
@@ -2008,6 +2050,11 @@ function connectMqtt(creds) {
     const idx = topic.indexOf(marker);
     if (idx === -1) return;
     const name = topic.slice(idx + marker.length);
+    /* A finished or newly started download supersedes the previous
+       otaError. The modem clears that retained topic with an empty
+       payload, which removes it for the next page load but does not
+       always reach a page that is already open. */
+    if (name === 'otaStatus' && (value === 'done' || value === 'staging')) rawStatus.otaError = '';
     rawStatus[name] = value;
     if (ICON_BUTTONS.some(b => b.name === name) || OTHER_BUTTONS.some(b => b.name === name)) buttonState[name] = value;
     if (name === 'floorConnected' || name === 'engineConnected') connectedState[name] = value;
@@ -2023,6 +2070,9 @@ function connectMqtt(creds) {
   showBox('controlBox');
   renderButtons();
   renderStatus();
+  refreshPresence();
+  if (presenceTimer) clearInterval(presenceTimer);
+  presenceTimer = setInterval(refreshPresence, 60000);
 }
 
 async function api(path, body) {

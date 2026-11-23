@@ -344,15 +344,17 @@ static void usb_process_line(char* line)
         return;
     }
 
-    /* set <name> <value>[,<name2> <value2>...]  — change any modem setting
-       directly over USB, no SMS/PIN/admin-phone auth needed (physical USB
-       access to the device already is the authorization). Same command
-       syntax as an SMS control command (see timberline_sms.h); takes effect
-       immediately (modem_process_usb_set() applies it, reconnects MQTT if
-       needed) and persists to flash. */
+    /* puk — print the 8 digits stored next to the serial. The same code
+       is on the case label; USB is just a way to read it back. */
+    if (!strcmp(line, "puk")) { usb_print_puk(); return; }
+
+    /* set <name> <value>[,<name2> <value2>...]  — change modem settings.
+       admin / phone1-4 / setpin in this line also need a matching
+       "puk <8 digits>" in the same comma-separated list. Other settings
+       stay available on physical USB without it. */
     if (!strncmp(line, "set ", 4)) {
         usb_set_config_line(line + 4);
-        log_info("[USB SET] queued: "); log_info(line + 4); log_info("\r\n");
+        log_info("[USB SET] queued\r\n");
         return;
     }
 
@@ -382,7 +384,7 @@ static void usb_process_line(char* line)
 void USB_To_USART_Send_Data(uint8_t* data_buffer, uint8_t Nb_bytes)
 {
     static uint8_t plusCount = 0;
-    static char    lineBuf[160];
+    static char    lineBuf[192];
     static uint8_t lineLen = 0;
 
     for (uint32_t i = 0; i < Nb_bytes; i++)

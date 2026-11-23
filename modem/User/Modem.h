@@ -156,6 +156,12 @@ public:
            the same day it was removed). */
         uint8_t   deviceType;
         uint32_t  flashBase;
+        /* From the profile, checked against the staged bytes before the
+           image is marked valid. imageSigSet is false until a profile
+           with a well-formed sig= line has been parsed. */
+        uint32_t  imageLength;
+        uint8_t   imageSig[64];
+        bool      imageSigSet;
     } ota;
     void startOta(uint8_t deviceType, const char* version);  /* called from onMqttCommandReceived() */
 

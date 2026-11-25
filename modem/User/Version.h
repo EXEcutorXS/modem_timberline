@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 30
+#define VERSION_4 31
 /*
 
 Адрес        Длина      Назначение региона
@@ -11,7 +11,7 @@
 0x0802A000   130 KB     Код основной программы + в конце длина/CRC16/версия
 0x0804A800     2 KB     OTA-футер (длина/CRC/версия образа целевого устройства/стартовый адрес программы)
 0x0804B000   208 KB     OTA-образ (буфер прошивки целевого устройства)
-0x0807F000     2 KB     Серийный номер (сектор)
+0x0807F000     2 KB     Серийный номер, PUK и номер сборки (сектор)
 0x0807F800     2 KB     Настройки (сектор)
 0x08080000   —          конец flash (512 KB)
 
@@ -24,8 +24,8 @@
 
 
 
-121.0.0.30
-PUK (8 digits) lives next to the serial and is required to change the PIN, admin and trusted numbers. The serial page is never erased by firmware. USB "puk" prints those digits. Production writes the serial (PGN 1 command 31, 24-bit) and the PUK (command 32, 32-bit) over CAN, once, and only while those bytes are still 0xFF. Self-OTA fetches /profile too: length and the signature live there, and skipping it reported bad-signature with length 0. OTA images must carry a signature in the filename; a self-update older than the running build is refused. getlink tokens come from randomize.getValue(), not the IMEI.
+121.0.0.31
+Unreleased. Identity page is binary: serial uint32, PUK uint32, assembly uint16, all big-endian at offsets 0, 4 and 8. Blank sentinels 0xFFFFFFFF and 0xFFFF are refused. PUK is required to change the PIN, admin and trusted numbers; the identity page is never erased. PGN 1 command 31 carries the serial in D[2..5]. PGN 60 sub-packet 6 carries serial and assembly and can program a still-blank field when the sender is not another modem. Sub-packet 5 is the button and the bootloader version. Processor temperature is PGN 13 D[2] (celsius+75). SIMCOM revision is string id 20, the AT+CGMR text, in the periodic string broadcast. PGN 6 answers PGN 13, PGN 18 and PGN 60; D[2] selects a sub-packet, 0xFF sends sub-packets 0..6, and sub-packet 8 (PUK) only when asked by number. Self-OTA fetches /profile. A self-update older than the running build is refused.
 
 121.0.0.29
 Storage mode support added

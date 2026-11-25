@@ -6,6 +6,7 @@
 #include "button.h"
 #include "led.h"
 #include "flash.h"
+#include "work.h"
 #include "log.h"
 #include "core.h"
 #include "ntc.h"
@@ -128,16 +129,22 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             if (D[2]==1) *(__IO uint32_t*)BOOT_MAGIC_ADDR = BOOT_MAGIC_ENTER_APP;  //остаться/вернуться в приложение
             NVIC_SystemReset();
             break;
-        case 31: { /* Factory serial. D[2..4] big-endian, only while the field is 0xFF. */
-            uint32_t serial = ((uint32_t)D[2] << 16) | ((uint32_t)D[3] << 8) | D[4];
+        case 31: { /* Factory serial, uint32 big-endian in D[2..5]. Once, while the field is 0xFF. */
+            uint32_t serial = ((uint32_t)D[2] << 24) | ((uint32_t)D[3] << 16) | ((uint32_t)D[4] << 8) | D[5];
             bool ok = flash.programSerial(serial);
-            can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, 0xFF, 0xFF, 0xFF);
+            can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, ok ? D[5] : 0, 0xFF, 0xFF);
             break;
         }
         case 32: { /* Factory PUK, 8 digits. D[2..5] big-endian, only while the field is 0xFF. */
             uint32_t puk = ((uint32_t)D[2] << 24) | ((uint32_t)D[3] << 16) | ((uint32_t)D[4] << 8) | D[5];
             bool ok = flash.programPuk(puk);
             can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, ok ? D[5] : 0, 0xFF, 0xFF);
+            break;
+        }
+        case 33: { /* Assembly number, uint16 big-endian in D[2..3]. Once, while the field is 0xFF. */
+            uint16_t assembly = ((uint16_t)D[2] << 8) | D[3];
+            bool ok = flash.programAssembly(assembly);
+            can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, 0xFF, 0xFF, 0xFF, 0xFF);
             break;
         }
         case 30: //Auto-register (panel "Авторегистрация" button)
@@ -190,7 +197,35 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
                but a flash-wear risk if something starts sending it on a
                regular cadence. */
         }
+        /* Sub-packet 6 is also the factory write for a still-blank serial
+           and assembly number. Same bytes as the broadcast: D[1..4] serial,
+           D[5..6] assembly. 0xFF means "leave this field". A frame from
+           another modem is its own telemetry, not a programming command. */
+        if (D[0]==6 && TransType != can.idType) {
+            bool wrote = false;
+            uint32_t serial = ((uint32_t)D[1] << 24) | ((uint32_t)D[2] << 16)
+                            | ((uint32_t)D[3] << 8) | D[4];
+            if (serial != 0xFFFFFFFFu && flash.programSerial(serial)) wrote = true;
+            uint16_t assembly = ((uint16_t)D[5] << 8) | D[6];
+            if (assembly != 0xFFFFu && flash.programAssembly(assembly)) wrote = true;
+            if (wrote) {
+                uint32_t nowSerial = flash.serialNumber();
+                uint16_t nowAssembly = flash.assemblyNumber();
+                uint32_t id60 = (60u<<20) | ((uint32_t)Can::BROADCAST_TYPE<<13) | ((uint32_t)Can::BROADCAST_ADDRESS<<10)
+                              | ((uint32_t)can.idType<<3) | can.idAddress;
+                can.SendMessage(id60, 6,
+                    (uint8_t)(nowSerial >> 24), (uint8_t)(nowSerial >> 16),
+                    (uint8_t)(nowSerial >> 8), (uint8_t)nowSerial,
+                    (uint8_t)(nowAssembly >> 8), (uint8_t)nowAssembly, 0xFF);
+            }
+        }
         break;
+    case 6: { /* PGN request. D[0..1] = requested PGN, D[2] = sub-packet or 0xFF. */
+        if (RecType != can.idType && RecType != 127) break;
+        if (RecAddr != can.idAddress && RecAddr != 7) break;
+        replyToPgnRequest(((uint16_t)D[0] << 8) | D[1], D[2], TransType, TransAddr);
+        break;
+    }
     case 7:
 
     /*
@@ -1414,6 +1449,7 @@ void Timberline::init(void) {
     stringTransfer.registerString(STRID_MODEM_PASSWORD,  modem.mqtt.password,  sizeof(modem.mqtt.password));
     stringTransfer.registerString(STRID_IP_V4,           modem.internet.ipAddress,     sizeof(modem.internet.ipAddress));
     stringTransfer.registerString(STRID_CONNECTION_LINK, modem.internet.connectionLink, sizeof(modem.internet.connectionLink));
+    stringTransfer.registerString(STRID_SIMCOM_FW,       modem.network.simcomFw,       sizeof(modem.network.simcomFw));
 }
 
 /* ── mqttActualizerHandler ─────────────────────────────────────────────

@@ -36,8 +36,6 @@
 #include "hw_config.h"
 #include "unix_time.h"
 
-extern char serialNumberModem[16];
-
 #if LOG_ENABLE
 
 int logTypeMess = LOG_TYPE_AT;

@@ -63,6 +63,7 @@ enum StringId
     STRID_OPERATOR_CODE      = 17,
     STRID_IP_V4              = 18,  /* modem.internet.ipAddress — from +CGPADDR, diagnostics only */
     STRID_CONNECTION_LINK    = 19,  /* modem.internet.connectionLink — last "getlink" URL, pushed to the panel when (re)generated */
+    STRID_SIMCOM_FW          = 20,  /* modem.network.simcomFw — AT+CGMR text, periodic with the other strings */
 };
 
 class StringTransfer

@@ -8,6 +8,8 @@
 #include "TimeZone.h"
 #include "randomize.h"
 #include "verify.h"
+#include "StringTransfer.h"
+#include "can.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -46,6 +48,7 @@ Modem::Modem()
        `network(...)`, not `network.isRegistered(...)`) — so their fields
        are just zeroed/defaulted here instead. */
     network.isRegistered = false; network.isRoaming = false; network.csq = 0xFF;
+    network.imei[0] = 0; network.iccid[0] = 0; network.ownNumber[0] = 0; network.simcomFw[0] = 0;
     csRegistered = csRoaming = epsRegistered = epsRoaming = false;
     network.lac = 0xFFFF; network.cellId = 0xFFFFFFFF; network.networkAcT = 0xFF;
     internet.isInternetConnected = false;
@@ -558,6 +561,31 @@ void Modem::parseLine(void) {
         }
         return;
     }
+    if (capture == CAP_CGMR) {
+        /* A7682 answers either with a plain revision line or "+CGMR: <rev>"
+           (sometimes quoted). Other "+..." URCs stay ignored. */
+        if (rx.len < 4 || strcmp(s, "OK") == 0 || strncmp(s, "ERROR", 5) == 0)
+            return;
+        const char* body = s;
+        if (starts(s, "+CGMR:")) {
+            body = s + 6;
+            while (*body == ' ' || *body == '"') body++;
+        } else if (s[0] == '+') {
+            return;
+        }
+        uint8_t n = 0;
+        while (body[n] && body[n] != '"' && n < sizeof(network.simcomFw) - 1) {
+            network.simcomFw[n] = body[n];
+            n++;
+        }
+        network.simcomFw[n] = 0;
+        if (n >= 4) {
+            capture = CAP_NONE;
+            stringTransfer.sendString(network.simcomFw, STRID_SIMCOM_FW,
+                Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS);
+        }
+        return;
+    }
     if (capture == CAP_CMGR_BODY) {
         capture = CAP_NONE;
         decodeUcs2Hex(s, network.cmgrBody, sizeof(network.cmgrBody));
@@ -886,13 +914,17 @@ void Modem::doInit(void) {
         capture = CAP_IMEI;
         if (atCmd("AT+CGSN\r\n", 3000)) { capture = CAP_NONE; step++; }
         break;
-    case 9:  if (atCmd("AT+CNUM\r\n",             3000)) step++; break;
-    case 10: if (atCmd("AT+CREG=2\r\n",            300)) step++; break;
-    case 11: if (atCmd("AT+CREG?\r\n",            2000)) step++; break;
-    case 12: if (atCmd("AT+CEREG=2\r\n",           300)) step++; break;
-    case 13: if (atCmd("AT+CEREG?\r\n",           2000)) step++; break;
-    case 14: if (atCmd("AT+COPS=3,2\r\n",          300)) step++; break;
-    case 15: if (atCmd("AT+COPS?\r\n",            3000)) step++; break;
+    case 9:
+        capture = CAP_CGMR;
+        if (atCmd("AT+CGMR\r\n", 3000)) { capture = CAP_NONE; step++; }
+        break;
+    case 10: if (atCmd("AT+CNUM\r\n",             3000)) step++; break;
+    case 11: if (atCmd("AT+CREG=2\r\n",            300)) step++; break;
+    case 12: if (atCmd("AT+CREG?\r\n",            2000)) step++; break;
+    case 13: if (atCmd("AT+CEREG=2\r\n",           300)) step++; break;
+    case 14: if (atCmd("AT+CEREG?\r\n",           2000)) step++; break;
+    case 15: if (atCmd("AT+COPS=3,2\r\n",          300)) step++; break;
+    case 16: if (atCmd("AT+COPS?\r\n",            3000)) step++; break;
     default:
         log_info("Modem ready. IMEI="); log_info(network.imei[0]       ? network.imei       : "?");
         log_info(" SIM=");              log_info(network.ownNumber[0]   ? network.ownNumber  : "?");

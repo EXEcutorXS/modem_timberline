@@ -42,6 +42,7 @@ public:
         char    imei[16];
         char    iccid[21];
         char    ownNumber[16];
+        char    simcomFw[48];  /* AT+CGMR, sent as PGN 60 sub-packet 7 */
 
         /* Last SMS seen in each direction — exposed for STRID_LAST_*_SMS_* */
         char    smsPhone[16];   /* last outgoing SMS recipient   */
@@ -419,7 +420,7 @@ private:
     bool csRegistered, csRoaming, epsRegistered, epsRoaming;
 
     /* ── Capture mode for multi-line responses ───────────────────────── */
-    enum CaptureMode { CAP_NONE, CAP_IMEI, CAP_CMGR_BODY, CAP_MQTT_TOPIC, CAP_MQTT_PAYLOAD, CAP_USSD };
+    enum CaptureMode { CAP_NONE, CAP_IMEI, CAP_CGMR, CAP_CMGR_BODY, CAP_MQTT_TOPIC, CAP_MQTT_PAYLOAD, CAP_USSD };
     CaptureMode capture;
 
     /* ── State machine ───────────────────────────────────────────────── */

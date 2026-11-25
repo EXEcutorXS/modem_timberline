@@ -6,9 +6,12 @@
 #include "n32wb452.h"
 /* Define -------------------------------------------------------- */
 /* Production identity page. Flash arrives erased (0xFF). The line writes
-   the serial and the 8-digit PUK once, over CAN (PGN 1, commands 31 and
-   32), and only while those bytes are still 0xFF. Firmware must not erase
-   this page — a rewrite of the serial used to, and that would destroy the PUK. */
+   each field once, over CAN (PGN 1, commands 31, 32 and 33), and only
+   while that field is still 0xFF. All three are unsigned integers,
+   big-endian. Firmware must not erase this page.
+   Offset 0: serial, uint32. 0xFFFFFFFF is not a value, it is the blank field.
+   Offset 4: PUK, uint32, range 0..99999999 (8 digits).
+   Offset 8: assembly number, uint16. 0xFFFF is the blank field. */
 #define FLASH_SERIAL_ADDR               0x807F000       // Length 2 KB
 #define FLASH_SETUP_ADDR                0x807F800       // Length 2 KB
 
@@ -113,11 +116,17 @@ class Flash_C
         void factoryReset(void);
         void readSerial(void);
         /* One-shot factory programming. Refuses unless every byte of that
-           field is still 0xFF, and never erases the page. Serial is stored
-           as decimal ASCII in the 16-byte field (NUL-padded). PUK is stored
-           as exactly 8 ASCII digits; value must be 0..99999999. */
+           field is still 0xFF, and never erases the page. Serial and PUK
+           are big-endian uint32. Serial 0xFFFFFFFF is refused. PUK must
+           be 0..99999999. Assembly is a big-endian uint16 at offset 8;
+           0xFFFF is refused. serialNumber() returns 0xFFFFFFFF when blank. */
         bool programSerial(uint32_t value);
         bool programPuk(uint32_t value);
+        bool programAssembly(uint16_t value);
+        uint32_t serialNumber(void);
+        uint16_t assemblyNumber(void);
+        /* 0xFFFFFFFF when no PUK is programmed. */
+        uint32_t pukNumber(void);
         /* True when the presented 8 digits match the PUK programmed next
            to the serial. False when the page is still erased. */
         bool pukMatches(const char* digits);

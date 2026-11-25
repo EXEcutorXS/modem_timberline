@@ -4,9 +4,6 @@
 #include <stdint.h>
 #include "Modem.h"
 
-/* Serial number stored in flash */
-extern char serialNumberModem[16];
-
 /* USB bridge mode (passthrough to modem UART) — used by hw_config.c */
 extern bool             bridgeMode;
 #define BRIDGE_TX_MAX   64

@@ -1,4 +1,5 @@
 #include "work.h"
+#include "Version.h"
 #include "Modem.h"
 #include "Timberline.h"
 #include "CanRelay.h"
@@ -11,6 +12,8 @@
 #include "flash.h"
 #include "log.h"
 #include "ntc.h"
+#include "button.h"
+#include "randomize.h"
 
 #include <string.h>
 
@@ -66,11 +69,171 @@ void Work_C::handler(void) {
  *       PGN61/62, when that happens) — shown together on the panel so the
  *       resolved name can be cross-checked against the raw code
  *   3 — LAC + Cell ID
- *   Sub-packets 2-3 rarely change, sent every 10 s.
- * IMEI (and other long/variable strings) are no longer packed into PGN60 —
- * they're transferred on demand via the generic PGN61/62 string protocol,
- * see StringTransfer.cpp.                                                  */
+ *   4 — auto-registration status (change-triggered)
+ *   5 — button (D[1]) and bootloader version (D[2..5]); 0xFF if the
+ *       bootloader has no record at 0x080097F0
+ *   6 — serial number, big-endian uint32 in D[1..4] (0xFFFFFFFF if blank);
+ *       assembly number, big-endian uint16 in D[5..6] (0xFFFF if blank).
+ *       A frame with this layout from any sender except another modem
+ *       programs a field that is still blank. 0xFF in a field leaves it.
+ * SIMCOM revision is not a PGN 60 sub-packet. It is STRID_SIMCOM_FW (20),
+ * pushed with the other strings (PGN 61/62) and answered by a PGN 61 request.
+ * Sub-packets 2, 3 and 6 are sent every 10 s.
+ * Air temperature is D[4] of sub-packet 0. GSM signal is D[2] of
+ * sub-packet 0. The operator (GPRS) code is sub-packet 2.
+ * Processor temperature is not a PGN 60 byte: it is PGN 13 D[2]
+ * (celsius+75), the same encoding a heater already uses.                  */
+/* Internal die temperature from the ADC channel Randomize already samples.
+   Same +75 wire encoding as heater PGN 13 D[2]. 0xFF until the ADC has a
+   plausible reading. */
+static uint8_t boardTempByte(void) {
+    uint32_t sum = 0;
+    for (int i = 0; i < Randomize::ARRAY_SIZE; i++) sum += randomize.array[i];
+    uint32_t raw = sum / Randomize::ARRAY_SIZE;
+    if (raw < 200 || raw > 3900) return 0xFF;
+    int mv = (int)(raw * 3300u / 4095u);
+    int t = (1430 - mv) * 10 / 43 + 25;
+    if (t < -40 || t > 125) return 0xFF;
+    return (uint8_t)(t + 75);
+}
+
+/* nations-bootloader plants this at 0x080097F0. An older bootloader has no
+   record, and the four version bytes stay 0xFF. */
+static void readBootloaderVersion(uint8_t out[4]) {
+    const uint32_t magic = *(__IO uint32_t*)0x080097F0u;
+    if (magic != 0xB00710ADu) {
+        out[0] = out[1] = out[2] = out[3] = 0xFF;
+        return;
+    }
+    for (int i = 0; i < 4; i++) out[i] = *(__IO uint8_t*)(0x080097F4u + i);
+}
+
+/* PGN 6 is handled in the CAN RX interrupt, which must not burst
+   SendMessage(): three mailboxes, and the call drops whatever does not fit.
+   The interrupt only queues. canBroadcast() drains one frame per free mailbox. */
+enum { REPLY_Q = 16 };
+struct ReplyFrame { uint32_t id; uint8_t d[8]; };
+static ReplyFrame replyQ[REPLY_Q];
+static volatile uint8_t replyHead = 0;
+static volatile uint8_t replyTail = 0;
+
+static void enqueueReply(uint32_t id, uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
+                         uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7) {
+    uint8_t next = (uint8_t)((replyTail + 1) % REPLY_Q);
+    if (next == replyHead) return;
+    ReplyFrame* f = &replyQ[replyTail];
+    f->id = id;
+    f->d[0] = d0; f->d[1] = d1; f->d[2] = d2; f->d[3] = d3;
+    f->d[4] = d4; f->d[5] = d5; f->d[6] = d6; f->d[7] = d7;
+    replyTail = next;
+}
+
+static void pumpReplyQueue(void) {
+    if (replyHead == replyTail || !can.txReady()) return;
+    ReplyFrame* f = &replyQ[replyHead];
+    can.SendMessage(f->id, f->d[0], f->d[1], f->d[2], f->d[3], f->d[4], f->d[5], f->d[6], f->d[7]);
+    replyHead = (uint8_t)((replyHead + 1) % REPLY_Q);
+}
+
+static uint32_t directedId(uint16_t pgn, uint8_t toType, uint8_t toAddr) {
+    return ((uint32_t)pgn << 20) | ((uint32_t)toType << 13) | ((uint32_t)toAddr << 10)
+         | ((uint32_t)can.idType << 3) | can.idAddress;
+}
+
+static void enqueuePgn60(uint8_t sub, uint8_t toType, uint8_t toAddr) {
+    uint32_t id = directedId(60, toType, toAddr);
+    switch (sub) {
+    case 0: {
+        uint8_t d1 = (uint8_t)(  (modem.network.isRegistered ? 1u : 0u)
+                                | ((modem.network.isRoaming ? 1u : 0u) << 2)
+                                | ((modem.internet.isInternetConnected ? 1u : 0u) << 4)
+                                | ((modem.mqtt.connected ? 1u : 0u) << 6));
+        enqueueReply(id, 0, d1, modem.network.csq, modem.network.networkAcT,
+            ntc.connected ? (uint8_t)(ntc.temperature + 75) : 0xFF, 0xFF, 0xFF, 0xFF);
+        break;
+    }
+    case 1: {
+        /* Same bytes as DataActualizator::sendSettings(). onlySms is the
+           inverted useInternet flag, the polarity already on the wire. */
+        uint8_t d1 = (uint8_t)(  (!modem.config.useInternet ? 1u : 0u)
+                                | ((modem.config.faultReport ? 1u : 0u) << 2)
+                                | ((modem.config.cmdAck ? 1u : 0u) << 4)
+                                | ((uint32_t)(modem.config.tempUnit & 1) << 6));
+        enqueueReply(id, 1, d1, modem.config.force2gOnly ? 1 : 0,
+            modem.config.allowRoaming ? 1 : 0, 0xFF, 0xFF, 0xFF, 0xFF);
+        break;
+    }
+    case 2: {
+        uint16_t mcc = 0, mnc = 0;
+        uint8_t mncDigits = 0;
+        const char* p = modem.network.operatorCode;
+        uint8_t i = 0;
+        for (; i < 3 && p[i]; i++) mcc = (uint16_t)(mcc * 10 + (uint16_t)(p[i] - '0'));
+        for (; p[i]; i++) { mnc = (uint16_t)(mnc * 10 + (uint16_t)(p[i] - '0')); mncDigits++; }
+        enqueueReply(id, 2, (uint8_t)(mcc >> 8), (uint8_t)mcc, (uint8_t)(mnc >> 8), (uint8_t)mnc,
+            mncDigits, 0xFF, 0xFF);
+        break;
+    }
+    case 3:
+        enqueueReply(id, 3,
+            (uint8_t)(modem.network.lac >> 8), (uint8_t)modem.network.lac,
+            (uint8_t)(modem.network.cellId >> 24), (uint8_t)(modem.network.cellId >> 16),
+            (uint8_t)(modem.network.cellId >> 8), (uint8_t)modem.network.cellId, 0xFF);
+        break;
+    case 4:
+        enqueueReply(id, 4, (uint8_t)modem.autoRegisterStatus, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+        break;
+    case 5: {
+        uint8_t bl[4];
+        readBootloaderVersion(bl);
+        enqueueReply(id, 5, button.debounced ? 1u : 0u, bl[0], bl[1], bl[2], bl[3], 0xFF, 0xFF);
+        break;
+    }
+    case 6: {
+        uint32_t serial = flash.serialNumber();
+        uint16_t assembly = flash.assemblyNumber();
+        enqueueReply(id, 6,
+            (uint8_t)(serial >> 24), (uint8_t)(serial >> 16),
+            (uint8_t)(serial >> 8), (uint8_t)serial,
+            (uint8_t)(assembly >> 8), (uint8_t)assembly, 0xFF);
+        break;
+    }
+    case 8: {
+        uint32_t puk = flash.pukNumber();
+        enqueueReply(id, 8,
+            (uint8_t)(puk >> 24), (uint8_t)(puk >> 16),
+            (uint8_t)(puk >> 8), (uint8_t)puk, 0xFF, 0xFF, 0xFF);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void replyToPgnRequest(uint16_t pgn, uint8_t sub, uint8_t toType, uint8_t toAddr) {
+    if (pgn == 13) {
+        enqueueReply(directedId(13, toType, toAddr),
+            0xFF, 0xFF, boardTempByte(), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+        return;
+    }
+    if (pgn == 18) {
+        enqueueReply(directedId(18, toType, toAddr),
+            VERSION_1, VERSION_2, VERSION_3, VERSION_4, 0xFF, 0xFF, 0xFF, 0xFF);
+        return;
+    }
+    if (pgn != 60) return;
+    /* 0xFF asks for every periodic sub-packet. PUK (8) stays opt-in. */
+    if (sub == 0xFF) {
+        static const uint8_t all[] = { 0, 1, 2, 3, 4, 5, 6 };
+        for (uint8_t i = 0; i < sizeof(all); i++) enqueuePgn60(all[i], toType, toAddr);
+        return;
+    }
+    enqueuePgn60(sub, toType, toAddr);
+}
+
 void Work_C::canBroadcast(void) {
+    pumpReplyQueue();
+
     static uint32_t timer     = 0;
     static uint32_t timerSlow = 0;
     static uint8_t  prevD1    = 0xFFu; /* forces an immediate first send once real state exists */
@@ -114,6 +277,12 @@ void Work_C::canBroadcast(void) {
             0, d1, modem.network.csq, modem.network.networkAcT,
             ntc.connected ? (uint8_t)(ntc.temperature + 75) : 0xFF,
             0xFF, 0xFF, 0xFF);
+        /* PGN 13, same layout as a heater: D[2] is the processor
+           temperature (celsius+75). The modem has no flame, liquid or
+           overheat sensors, so those bytes stay 0xFF. */
+        uint32_t id13 = (13u<<20) | ((uint32_t)Can::BROADCAST_TYPE<<13) | ((uint32_t)Can::BROADCAST_ADDRESS<<10)
+                      | ((uint32_t)can.idType<<3) | can.idAddress;
+        can.SendMessage(id13, 0xFF, 0xFF, boardTempByte(), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
     }
 
     /* Sub-packet 4: auto-registration status (see doAutoRegister() in
@@ -231,6 +400,27 @@ void Work_C::canBroadcast(void) {
             (uint8_t)(modem.network.cellId>>24),(uint8_t)(modem.network.cellId>>16),
             (uint8_t)(modem.network.cellId>>8), (uint8_t)modem.network.cellId,
             0xFF);
+
+        uint32_t serial = flash.serialNumber();
+        uint16_t assembly = flash.assemblyNumber();
+        can.SendMessage(id60,
+            6,
+            (uint8_t)(serial >> 24), (uint8_t)(serial >> 16),
+            (uint8_t)(serial >> 8),  (uint8_t)serial,
+            (uint8_t)(assembly >> 8), (uint8_t)assembly, 0xFF);
+    }
+
+    /* Sub-packet 5: button and bootloader version. A press goes out
+       immediately; otherwise once a second so a missed frame is recovered. */
+    static uint8_t  prevBtn = 0xFFu;
+    static uint32_t timerStand = 0;
+    uint8_t btn = button.debounced ? 1u : 0u;
+    if (btn != prevBtn || (core.getTick() - timerStand) >= 1000) {
+        prevBtn = btn;
+        timerStand = core.getTick();
+        uint8_t bl[4];
+        readBootloaderVersion(bl);
+        can.SendMessage(id60, 5, btn, bl[0], bl[1], bl[2], bl[3], 0xFF, 0xFF);
     }
 
     /* Round-robin push of every registered string (IMEI, PIN, phones, SMS

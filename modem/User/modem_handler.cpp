@@ -6,7 +6,6 @@
 #include "flash.h"
 #include <string.h>
 
-char             serialNumberModem[16]       = {0};
 bool             bridgeMode                  = false;
 volatile uint8_t bridgeTxBuf[BRIDGE_TX_MAX]  = {0};
 volatile uint8_t bridgeTxLen                 = 0;
@@ -203,12 +202,14 @@ static int appendUint(char* buf, int n, uint32_t v) {
 }
 
 static void serialText(char* out, int cap) {
+    uint32_t v = flash.serialNumber();
+    if (v == 0xFFFFFFFFu || cap < 2) { out[0] = 0; return; }
+    char tmp[10];
+    int t = 0;
+    if (v == 0) tmp[t++] = '0';
+    while (v > 0 && t < 10) { tmp[t++] = (char)('0' + v % 10u); v /= 10u; }
     int n = 0;
-    for (int i = 0; i < 16 && n < cap - 1; i++) {
-        unsigned char c = (unsigned char)serialNumberModem[i];
-        if (c < 0x20 || c > 0x7e) break;
-        out[n++] = (char)c;
-    }
+    while (t > 0 && n < cap - 1) out[n++] = tmp[--t];
     out[n] = 0;
 }
 

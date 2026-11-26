@@ -24,7 +24,6 @@ enum TlCmdType {
     TL_CMD_WARMUP,          /* warmupMode             — warmup burner/element/both */
     TL_CMD_FAULTREPORT,     /* boolVal                — enable fault SMS        */
     TL_CMD_SETPIN,          /* pin[5]                 — change PIN code         */
-    TL_CMD_PUK,             /* strArg[8 digits]       — authorises setpin/admin/phone in the same message */
     TL_CMD_UNIT,            /* unit (TlTempUnit)      — C or F                  */
     TL_CMD_BURNER,          /* boolVal                — diesel burner on/off    */
     TL_CMD_ELEMENT,         /* boolVal                — electric element on/off */
@@ -89,6 +88,7 @@ struct TlSmsCmd {
 struct TlSmsParseResult {
     bool     authenticated;                          /* false → wrong PIN or unknown sender  */
     bool     isAdmin;                                /* true  → sender is admin phone        */
+    bool     pukOk;                                  /* true → message started with the 8-digit master PIN and a space */
     uint8_t  cmdCount;
     TlSmsCmd cmds[TL_SMS_MAX_COMMANDS];
     uint8_t  errCount;
@@ -101,8 +101,11 @@ struct TlSmsParseResult {
  *
  * Authentication rules:
  *   - Admin phone  (adminPhone): commands without PIN prefix.
- *   - Any other number: message must start with 4-digit PIN and a space,
- *     e.g. "1234 burner on,z1 heat".
+ *   - Any other number: message must start with the 4-digit PIN and a space,
+ *     e.g. "1234 burner on,z1 heat", or with the 8-digit master PIN and a space.
+ *   - setpin / admin / phone are accepted only when the message starts with
+ *     the 8-digit master PIN and a space, the same way a PIN prefixes a command:
+ *     "12345678 setpin 4321". A 4-digit PIN may stand in front of that.
  *   - If adminPhone is NULL or empty the device has no admin set yet;
  *     in that case any sender may use PIN-based auth.
  *
@@ -122,6 +125,7 @@ struct TlSmsParseResult {
 void tl_sms_parse(const char*       senderPhone,
                   const char*       message,
                   const char*       pin,
+                  const char*       puk,
                   const char*       adminPhone,
                   const char        trustedPhones[][16],
                   TlTempUnit        tempUnit,

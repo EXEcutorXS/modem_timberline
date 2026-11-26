@@ -135,7 +135,7 @@ void Timberline::ProcessCanMessage(CanRxMessage* msg)
             can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, ok ? D[5] : 0, 0xFF, 0xFF);
             break;
         }
-        case 32: { /* Factory PUK, 8 digits. D[2..5] big-endian, only while the field is 0xFF. */
+        case 32: { /* Factory master PIN, 8 digits. D[2..5] big-endian, only while the field is 0xFF. */
             uint32_t puk = ((uint32_t)D[2] << 24) | ((uint32_t)D[3] << 16) | ((uint32_t)D[4] << 8) | D[5];
             bool ok = flash.programPuk(puk);
             can.SendMessage(ID, D[0], D[1], ok ? D[2] : 0, ok ? D[3] : 0, ok ? D[4] : 0, ok ? D[5] : 0, 0xFF, 0xFF);
@@ -1014,11 +1014,7 @@ static const char HELP_SMS_DE[] =
    no phone number to reply to. */
 
 static bool messagePukOk(const TlSmsParseResult& result) {
-    for (uint8_t i = 0; i < result.cmdCount; i++) {
-        if (result.cmds[i].type == TL_CMD_PUK && flash.pukMatches(result.cmds[i].strArg))
-            return true;
-    }
-    return false;
+    return result.pukOk;
 }
 
 static void onSmsReceived(const char* phone, const char* text) {
@@ -1033,7 +1029,9 @@ static void onSmsReceived(const char* phone, const char* text) {
 
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     TlSmsParseResult result;
-    tl_sms_parse(phone, text, modem.config.pin, modem.config.phones[0], &modem.config.phones[1], (TlTempUnit)modem.config.tempUnit, result);
+    char pukCode[9];
+    if (!flash.copyPuk(pukCode)) pukCode[0] = '\0';
+    tl_sms_parse(phone, text, modem.config.pin, pukCode, modem.config.phones[0], &modem.config.phones[1], (TlTempUnit)modem.config.tempUnit, result);
 
     if (!result.authenticated) {
         log_info("SMS: auth failed\r\n");
@@ -1082,12 +1080,9 @@ static void onSmsReceived(const char* phone, const char* text) {
             NVIC_SystemReset();
             break;
 
-        case TL_CMD_PUK:
-            break;
-
         case TL_CMD_ADMIN: {
             if (!secretsOk) {
-                modem.sendSms(phone, de ? "PUK erforderlich" : "PUK required");
+                modem.sendSms(phone, de ? "Dieser Befehl braucht die Master-PIN, nicht die PIN" : "This command needs the master PIN, not the PIN");
                 break;
             }
             const char* p = cmd.phone[0] ? cmd.phone : phone;
@@ -1100,7 +1095,7 @@ static void onSmsReceived(const char* phone, const char* text) {
 
         case TL_CMD_PHONE:
             if (!secretsOk) {
-                modem.sendSms(phone, de ? "PUK erforderlich" : "PUK required");
+                modem.sendSms(phone, de ? "Dieser Befehl braucht die Master-PIN, nicht die PIN" : "This command needs the master PIN, not the PIN");
                 break;
             }
             if (cmd.phoneNum >= 1 && cmd.phoneNum <= 4) {
@@ -1114,7 +1109,7 @@ static void onSmsReceived(const char* phone, const char* text) {
 
         case TL_CMD_SETPIN:
             if (!secretsOk) {
-                modem.sendSms(phone, de ? "PUK erforderlich" : "PUK required");
+                modem.sendSms(phone, de ? "Dieser Befehl braucht die Master-PIN, nicht die PIN" : "This command needs the master PIN, not the PIN");
                 break;
             }
             memcpy(modem.config.pin, cmd.pin, 5);

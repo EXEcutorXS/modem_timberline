@@ -11,7 +11,7 @@
 0x0802A000   130 KB     Код основной программы + в конце длина/CRC16/версия
 0x0804A800     2 KB     OTA-футер (длина/CRC/версия образа целевого устройства/стартовый адрес программы)
 0x0804B000   208 KB     OTA-образ (буфер прошивки целевого устройства)
-0x0807F000     2 KB     Серийный номер, PUK и номер сборки (сектор)
+0x0807F000     2 KB     Серийный номер, мастер-PIN и номер сборки (сектор)
 0x0807F800     2 KB     Настройки (сектор)
 0x08080000   —          конец flash (512 KB)
 
@@ -25,12 +25,12 @@
 
 
 121.0.0.32
-Identity page is binary: serial uint32, PUK uint32, assembly uint16, all big-endian at offsets 0, 4 and 8
+Identity page is binary: serial uint32, master PIN uint32, assembly uint16, all big-endian at offsets 0, 4 and 8
 Blank sentinels 0xFFFFFFFF and 0xFFFF are refused.
-PUK is required to change the PIN, admin and trusted numbers; the identity page is never erased. 
+The master PIN is required to change the PIN, admin and trusted numbers; the identity page is never erased. It is an 8-digit prefix with a space, the same way a PIN prefixes a command. 
 PGN 1 command 31 carries the serial in D[2..5]. PGN 60 sub-packet 6 carries serial and assembly and can program a still-blank field when the sender is not another modem. 
 Sub-packet 5 is the button and the bootloader version. Processor temperature is PGN 13 D[2] (celsius+75).
-PGN 6 answers PGN 13, PGN 18 and PGN 60; D[2] selects a sub-packet, 0xFF sends sub-packets 0..6, and sub-packet 8 (PUK) only when asked by number.
+PGN 6 answers PGN 13, PGN 18 and PGN 60; D[2] selects a sub-packet, 0xFF sends sub-packets 0..6, and sub-packet 8 (master PIN) only when asked by number.
 SIMCOM revision is string id 20, the AT+CGMR text, in the periodic string broadcast. 
 A USSD code written as string id 21 is sent to the operator; the reply comes back as string id 22.
 Received SMS text (string id 12) is announced as UTF-8. Self-OTA fetches /profile. A self-update older than the running build is refused.

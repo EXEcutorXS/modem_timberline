@@ -232,7 +232,7 @@ void replyToPgnRequest(uint16_t pgn, uint8_t sub, uint8_t toType, uint8_t toAddr
         return;
     }
     if (pgn != 60) return;
-    /* 0xFF asks for every periodic sub-packet. PUK (8) stays opt-in. */
+    /* 0xFF asks for every periodic sub-packet. The master PIN (8) stays opt-in. */
     if (sub == 0xFF) {
         static const uint8_t all[] = { 0, 1, 2, 3, 4, 5, 6 };
         for (uint8_t i = 0; i < sizeof(all); i++) enqueuePgn60(all[i], toType, toAddr);

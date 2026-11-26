@@ -278,21 +278,6 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
         return;
     }
 
-    /* ── puk <8 digits> ─────────────────────────────────────────────────────
-       Does nothing by itself. Present in the same message, and matching the
-       code programmed next to the serial, it authorises setpin / admin /
-       phone. See onSmsReceived() and modem_process_usb_set(). */
-    if (!strcmp(cmd, "puk")) {
-        if (strlen(arg) != 8) { add_error(res, "puk: need 8 digits"); return; }
-        for (int i = 0; i < 8; i++)
-            if (arg[i] < '0' || arg[i] > '9') { add_error(res, "puk: digits only"); return; }
-        c.type = TL_CMD_PUK;
-        memcpy(c.strArg, arg, 8);
-        c.strArg[8] = '\0';
-        add_cmd(res, c);
-        return;
-    }
-
     /* ── unit / einheit C/F ───────────────────────────────────────────────── */
     if (!strcmp(cmd, "unit") || !strcmp(cmd, "einheit")) {
         if (!strcmp(cmd, "einheit")) mark_german(res);
@@ -604,9 +589,21 @@ static void parse_one(char* cmd, char* arg, const char* origArg, TlTempUnit temp
 /* ═══════════════════════════════════════════════════════════════════════════
    Public entry point
    ═══════════════════════════════════════════════════════════════════════════*/
+/* Matching 8-digit master PIN and a space, same shape as the 4-digit PIN prefix.
+   On a match, advances past it and sets ok. A wrong code is left in place. */
+static const char* take_puk_prefix(const char* message, const char* puk, bool& ok)
+{
+    ok = false;
+    if (!message || !puk || strlen(puk) != 8) return message;
+    if (strncmp(message, puk, 8) != 0 || message[8] != ' ') return message;
+    ok = true;
+    return message + 9;
+}
+
 void tl_sms_parse(const char*       senderPhone,
                   const char*       message,
                   const char*       pin,
+                  const char*       puk,
                   const char*       adminPhone,
                   const char        trustedPhones[][16],
                   TlTempUnit        tempUnit,
@@ -633,22 +630,33 @@ void tl_sms_parse(const char*       senderPhone,
     }
 
     const char* cmdStart = message;
+    bool pukOk = false;
 
-    if (!isAdmin && !isTrusted) {
-        /* Unknown sender must prefix with PIN + space */
+    /* Master PIN before PIN: its first four digits must not be read as the PIN. */
+    cmdStart = take_puk_prefix(message, puk, pukOk);
+
+    if (!pukOk && !isAdmin && !isTrusted) {
+        /* Unknown sender must prefix with PIN + space, or with the master PIN above. */
         size_t pinLen = pin ? strlen(pin) : 0;
         if (pinLen != 4) return;                          /* no valid PIN stored */
         if (strncmp(message, pin, 4) != 0) return;        /* wrong PIN           */
         if (message[4] != ' ')            return;         /* no space separator  */
         cmdStart = message + 5;
-    } else if (pin && strlen(pin) == 4 &&
+    } else if (!pukOk && pin && strlen(pin) == 4 &&
                strncmp(message, pin, 4) == 0 && message[4] == ' ') {
         /* Admin/trusted may optionally send PIN prefix — strip it silently */
         cmdStart = message + 5;
     }
 
+    if (!pukOk) {
+        bool pukAfterPin = false;
+        cmdStart = take_puk_prefix(cmdStart, puk, pukAfterPin);
+        pukOk = pukAfterPin;
+    }
+
     result.authenticated = true;
     result.isAdmin       = isAdmin;
+    result.pukOk         = pukOk;
 
     char buf[512];
     strncpy(buf, cmdStart, sizeof(buf) - 1);

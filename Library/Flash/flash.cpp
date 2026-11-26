@@ -204,7 +204,7 @@ void Flash_C::readSetup(void)
     }
 }
 
-/* Identity page: serial uint32 at 0, PUK uint32 at 4, assembly uint16 at 8.
+/* Identity page: serial uint32 at 0, master PIN uint32 at 4, assembly uint16 at 8.
    Big-endian. Nothing in this firmware erases FLASH_SERIAL_ADDR — see flash.h. */
 static uint32_t serialValue = 0xFFFFFFFFu;
 static uint32_t pukValue = 0xFFFFFFFFu;

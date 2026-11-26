@@ -344,14 +344,14 @@ static void usb_process_line(char* line)
         return;
     }
 
-    /* puk — print the 8 digits stored next to the serial. The same code
-       is on the case label; USB is just a way to read it back. */
-    if (!strcmp(line, "puk")) { usb_print_puk(); return; }
+    /* master — print the 8-digit master PIN stored next to the serial.
+       The same code is on the case label; USB is just a way to read it back. */
+    if (!strcmp(line, "master") || !strcmp(line, "puk")) { usb_print_puk(); return; }
 
     /* set <name> <value>[,<name2> <value2>...]  — change modem settings.
-       admin / phone1-4 / setpin in this line also need a matching
-       "puk <8 digits>" in the same comma-separated list. Other settings
-       stay available on physical USB without it. */
+       admin / phone1-4 / setpin in this line also need the master PIN
+       and a space in front of the commands, the same way a PIN prefixes
+       an SMS. Other settings stay available on physical USB without it. */
     if (!strncmp(line, "set ", 4)) {
         usb_set_config_line(line + 4);
         log_info("[USB SET] queued\r\n");

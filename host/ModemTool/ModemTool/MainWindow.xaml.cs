@@ -114,11 +114,11 @@ public partial class MainWindow : Window
         if (line.StartsWith("[USB SET]"))
             StatusBar.Text = line;
 
-        if (line.StartsWith("puk="))
+        if (line.StartsWith("master="))
         {
-            var value = line["puk=".Length..];
+            var value = line["master=".Length..];
             PukBox.Text = value == "none" ? "" : value;
-            StatusBar.Text = value == "none" ? "PUK is not programmed" : "PUK read";
+            StatusBar.Text = value == "none" ? "Master PIN is not programmed" : "Master PIN read";
             return;
         }
 
@@ -189,7 +189,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "Connect to the modem first.", "Modem Tool", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        _link.Send("puk");
+        _link.Send("master");
     }
 
     private static bool CommandNeedsPuk(string command) =>
@@ -217,14 +217,14 @@ public partial class MainWindow : Window
         var line = $"set {command} {row.NewValue}";
         if (CommandNeedsPuk(command))
         {
-            var puk = PukBox.Text.Trim();
-            if (puk.Length != 8 || !puk.All(char.IsDigit))
+            var code = PukBox.Text.Trim();
+            if (code.Length != 8 || !code.All(char.IsDigit))
             {
-                MessageBox.Show(this, "Read the PUK first. It is the 8 digits on the case.", "Modem Tool",
+                MessageBox.Show(this, "Read the master PIN first. It is the 8 digits on the case.", "Modem Tool",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            line += $",puk {puk}";
+            line = $"set {code} {command} {row.NewValue}";
         }
         _link.Send(line);
         row.NewValue = "";

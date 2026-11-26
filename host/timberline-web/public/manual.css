@@ -230,6 +230,7 @@ section.screen:last-child{border-bottom:none;}
   gap:32px;
   align-items:start;
 }
+.spec.stack{grid-template-columns:minmax(0,1fr);}
 @media (max-width:760px){
   .spec{grid-template-columns:minmax(0,1fr);}
   .wrap{grid-template-columns:minmax(0,1fr);}
@@ -253,6 +254,7 @@ section.screen:last-child{border-bottom:none;}
   background:#000;
   border-radius:8px;
 }
+.frame.wide .screen-inner{aspect-ratio:1024/600;}
 .frame .screen-inner img{
   position:absolute;inset:0;
   width:100%;height:100%;

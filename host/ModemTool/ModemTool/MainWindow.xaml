@@ -54,7 +54,7 @@
                                        TextWrapping="Wrap" Foreground="Gray" VerticalAlignment="Center" Margin="12,0,0,0"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <TextBlock Text="PUK:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBlock Text="Master PIN:" VerticalAlignment="Center" Margin="0,0,8,0"/>
                             <TextBox x:Name="PukBox" Width="90" MaxLength="8" VerticalAlignment="Center"/>
                             <Button x:Name="ReadPukButton" Content="Read from modem" Margin="8,0,0,0" Click="ReadPuk_Click"/>
                             <TextBlock Text="Sent automatically with admin, phone and PIN changes."

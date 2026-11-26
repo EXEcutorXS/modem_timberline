@@ -49,36 +49,37 @@ void modem_process_usb_set(void) {
     if (!setPending) return;
     setPending = false;
 
+    char pukCode[9];
+    const char* line = setLine;
+    bool secretsOk = false;
+    if (flash.copyPuk(pukCode) && strncmp(setLine, pukCode, 8) == 0 && setLine[8] == ' ') {
+        secretsOk = true;
+        line = setLine + 9;
+    }
+
     TlSmsParseResult result;
-    tl_parse_commands(setLine, (TlTempUnit)modem.config.tempUnit, result);
+    tl_parse_commands(line, (TlTempUnit)modem.config.tempUnit, result);
+    result.pukOk = secretsOk;
 
     for (uint8_t e = 0; e < result.errCount; e++) {
         log_info("[USB SET] error: "); log_info(result.errors[e]); log_info("\r\n");
     }
 
     bool mqttChanged = false;
-    bool secretsOk = false;
-    for (uint8_t i = 0; i < result.cmdCount; i++) {
-        if (result.cmds[i].type == TL_CMD_PUK && flash.pukMatches(result.cmds[i].strArg))
-            secretsOk = true;
-    }
 
     for (uint8_t i = 0; i < result.cmdCount; i++) {
         const TlSmsCmd& cmd = result.cmds[i];
         switch (cmd.type) {
 
-        case TL_CMD_PUK:
-            break;
-
         case TL_CMD_ADMIN:
-            if (!secretsOk) { log_info("[USB SET] PUK required\r\n"); break; }
+            if (!secretsOk) { log_info("[USB SET] master PIN required\r\n"); break; }
             if (!cmd.phone[0]) { log_info("[USB SET] admin: phone number required\r\n"); break; }
             strncpy(modem.config.phones[0], cmd.phone, 15); modem.config.phones[0][15] = '\0';
             log_info("[USB SET] admin updated\r\n");
             break;
 
         case TL_CMD_PHONE:
-            if (!secretsOk) { log_info("[USB SET] PUK required\r\n"); break; }
+            if (!secretsOk) { log_info("[USB SET] master PIN required\r\n"); break; }
             if (cmd.phoneNum < 1 || cmd.phoneNum > 4) break;
             if (!cmd.phone[0]) { log_info("[USB SET] phone: number required\r\n"); break; }
             strncpy(modem.config.phones[cmd.phoneNum], cmd.phone, 15);
@@ -87,7 +88,7 @@ void modem_process_usb_set(void) {
             break;
 
         case TL_CMD_SETPIN:
-            if (!secretsOk) { log_info("[USB SET] PUK required\r\n"); break; }
+            if (!secretsOk) { log_info("[USB SET] master PIN required\r\n"); break; }
             memcpy(modem.config.pin, cmd.pin, 5);
             log_info("[USB SET] pin updated\r\n");
             break;
@@ -333,8 +334,8 @@ extern "C" void usb_print_config(void) {
 
 extern "C" void usb_print_puk(void) {
     char puk[9];
-    if (!flash.copyPuk(puk)) { log_info("puk=none\r\n"); return; }
-    log_info("puk=");
+    if (!flash.copyPuk(puk)) { log_info("master=none\r\n"); return; }
+    log_info("master=");
     log_info(puk);
     log_info("\r\n");
 }

@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="ru" id="html-root">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title id="doc-title">Пульт ПУ-36</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body>
+<div class="langswitch"><select id="lang-select"></select></div>
+<div class="wrap">
+  <div class="cover">
+    <p class="crumb" id="crumb"></p>
+    <span class="eyebrow" id="cv-eyebrow"></span>
+    <h1 id="cv-h1"></h1>
+    <p class="lede" id="cv-lede"></p>
+    <div class="plate"><div class="nameplate">
+      <span id="np-control-k"></span><b id="np-control-v"></b>
+      <span id="np-link-k"></span><b id="np-link-v"></b>
+      <span id="np-doc-k"></span><b id="doc-date">—</b>
+    </div></div>
+  </div>
+  <nav class="toc"><div class="group-label" id="toc-label"></div><ol id="toc-main"></ol></nav>
+  <main id="main"></main>
+  <footer id="doc-footer"></footer>
+</div>
+<script>
+const IMG = "img/pu36/";
+const PW = 1024, PH = 600;
+/* Геометрия общая. Подписи — в COPY. Кадры — макет английской светлой темы: фон экрана и кнопки. */
+const GEOM = {
+  home:{img:"00_main.png", hot:[
+    [0,0,204,68,"logo"],[205,4,265,63,"err"],[268,5,328,64,"modem"],[956,4,1012,60,"gear"],
+    [15,78,266,149,"heater"],[15,155,266,226,"element"],[15,232,266,303,"floor"],[15,307,266,378,"engine"],[15,384,266,455,"water"],
+    [281,383,424,454,"off"],[427,383,570,454,"heat"],[573,382,705,453,"vent"],[724,383,865,454,"manual"],[868,384,1009,455,"auto"],
+    [280,80,1010,175,"day"],[280,185,1010,270,"night"],[280,280,1010,365,"fanspd"],
+    [14,466,209,590,"z"],[214,466,409,590,"z"],[414,466,609,590,"z"],[614,466,809,590,"z"],[814,466,1009,590,"z"]
+  ]},
+  clock:{img:"01_clock.png", hot:[
+    [9,7,103,102,"back"],[16,110,100,189,"navclock"],[16,192,100,271,"navtemp"],[16,272,100,351,"navsys"],
+    [16,353,100,432,"navdn"],[16,433,100,512,"navbl"],[17,514,101,593,"navinfo"],
+    [140,50,500,230,"time"],[600,64,984,130,"fmt"],[700,140,1000,230,"corr"],
+    [140,270,720,470,"date"],[815,496,994,567,"upd"]
+  ]},
+  temp:{img:"02_temperatures.png", hot:[
+    [9,7,103,102,"back"],[364,23,748,90,"units"],
+    [120,120,1000,230,"floor"],[120,250,1000,370,"engine"],[110,479,1015,590,"calib"]
+  ]},
+  calib:{img:"03_calibration.png", hot:[[9,7,103,102,"back"],[110,90,1000,580,"rows"]]},
+  sys:{img:"04_system.png", hot:[
+    [9,7,103,102,"back"],[120,50,1000,230,"pumps"],
+    [120,240,1000,330,"runtime"],[120,340,1000,430,"pumptime"],[120,440,1000,530,"storage"]
+  ]},
+  daynight:{img:"05_daynight.png", hot:[
+    [9,7,103,102,"back"],[120,20,1000,120,"day"],[120,180,1000,310,"night"],
+    [700,400,1000,490,"auto"],[560,492,988,571,"theme"]
+  ]},
+  backlight:{img:"06_backlight.png", hot:[[9,7,103,102,"back"],[120,20,1000,580,"rows"]]},
+  info:{img:"07_info.png", hot:[
+    [9,7,103,102,"back"],[120,40,430,500,"temps"],[430,40,720,500,"zones"],[730,40,1000,480,"status"],
+    [107,508,404,587,"heater"],[413,510,708,589,"soft"],[719,508,1014,587,"modem"]
+  ]},
+  versions:{img:"08_versions.png", hot:[[9,7,103,102,"back"],[115,27,199,78,"info"]]},
+  heater:{img:"09_heater.png", hot:[
+    [116,22,203,82,"back"],[120,500,310,580,"en"],[311,513,538,592,"burn"],[543,513,770,592,"eco"],
+    [779,517,1010,596,"nav"]
+  ]},
+  modem:{img:"15_modem.png", hot:[
+    [9,6,103,101,"back"],[776,18,1006,72,"reg"],[120,120,460,470,"status"],[500,120,980,430,"net"],
+    [502,486,992,577,"toggles"]
+  ]},
+  errors:{img:"16_errors.png", hot:[[9,6,103,101,"back"],[788,21,998,82,"clear"]]},
+  ble:{img:"14_ble.png", hot:[[225,392,502,475,"allow"],[517,393,794,476,"deny"]]},
+  sleep:{img:"13_sleep.png", hot:[[1,1,1023,598,"wake"]]},
+  contacts:{img:"17_contacts.png", hot:[[9,7,103,102,"back"]]},
+};
+const COPY = {
+ru:{
+  docTitle:"Пульт ПУ-36", crumb:"Руководства",
+  eyebrow:"Изделие · панель управления Timberline",
+  h1:"Пульт ПУ-36",
+  lede:"Основная сенсорная панель системы. Ниже — экран за экраном: что на нём видно и что делает касание. Снимки — макет английской светлой темы: фон экрана и кнопки в типичном состоянии.",
+  npControl:"Управление", npControlV:"сенсор 1024×600",
+  npLink:"Связь", npLinkV:"CAN, опц. модем и Bluetooth", npDoc:"Документ",
+  tocLabel:"Содержание",
+  footer:"Руководство по пульту ПУ-36 (версия ПО 13.x). Вспомогательный пульт комнаты описан в <a href=\"/pu28manual.html\">руководстве на ПУ-28</a>.",
+  dateLocale:"ru-RU",
+  screens:{
+    home:{tag:"Экран 1 · главный", title:"Главный экран", access:"Сразу после включения.",
+      lede:"Источники тепла слева, уставки и вентилятор по центру, пять зон внизу. Цветная полоска сверху плитки — режим: оранжевый обогрев, голубой вентиляция. У выключенной полоски нет, фон как у остальных кнопок. Выбранная зона обведена.",
+      t:{logo:["Логотип","Открывает экран контактов."], err:["Ошибка","Появляется при неисправности. Открывает список ошибок."], modem:["Модем","Открывает экран модема, если он подключён. Цвет значка — уровень связи, от «нет сети» до MQTT."], gear:["Настройки","Открывает настройку часов. Слева на следующих экранах то же меню."],
+        heater:["Горелка","Включает и выключает подогреватель. Значок показывает фазу: выкл, продувка, ожидание, розжиг, работа."], element:["ТЭН","Включает и выключает электронагреватель. Скрыт, если ТЭН отключён в конфигурации."], floor:["Тёплый пол","Включает и выключает подогрев пола."], engine:["Двигатель","Включает и выключает подогрев двигателя."], water:["Вода","Включает и выключает подогрев воды."],
+        off:["Выкл","Выключает выбранную зону."], heat:["Обогрев","Включает обогрев выбранной зоны."], vent:["Вентиляция","Включает вентиляцию выбранной зоны. Доступно, если зона подключена как вентиляторная."], manual:["Ручной","Скорость вентилятора задаётся ползунком."], auto:["Авто","Скорость вентилятора считает блок управления."],
+        day:["День","Уставка дневной температуры выбранной зоны. «−» и «+» меняют значение."], night:["Ночь","Ночная уставка выбранной зоны."], fanspd:["Вентилятор","Ручная скорость, %. Кнопки неактивны в режиме «Авто»."],
+        z:["Плитка зоны","Короткое нажатие выбирает зону. Имя и температура лежат на общем фоне; полоска сверху показывает обогрев или вентиляцию."]}},
+    clock:{tag:"Экран 2 · часы", title:"Дата и время", access:"Шестерёнка на главном экране или пункт часов в левом меню.",
+      lede:"Время, дата и поправка хода. Левая колонка — общее меню настроек, она повторяется на соседних экранах.",
+      t:{back:["На главную","Возврат на главный экран."], navclock:["Часы","Этот экран."], navtemp:["Температуры","Единицы, пол и двигатель."], navsys:["Система","Насосы, таймеры, хранение."], navdn:["День и ночь","Расписание и тема."], navbl:["Подсветка","Яркость и сон."], navinfo:["Состояние","Температуры и наработки."],
+        time:["Время","Часы и минуты, кнопки вверх и вниз."], fmt:["Формат","24 часа или 12 часов."], corr:["Поправка","Секунд в сутки, от −50 до +50. Компенсирует уход часов панели."], date:["Дата","Число, месяц и год."], upd:["Обновить","Записывает введённое время в часы панели."]},
+    },
+    temp:{tag:"Экран 3 · температуры", title:"Температуры", access:"Левое меню → значок термометра.",
+      lede:"Единицы измерения, уставки тёплого пола и подогрева двигателя. Строка внизу открывает калибровку датчиков зон.",
+      t:{back:["На главную",""], units:["Единицы","Цельсий или Фаренгейт. Действует на все температуры пульта."], floor:["Тёплый пол","Уставка. «−» и «+» по краям. Строка скрыта, если пол не подключён или работает по уставке зоны."], engine:["Двигатель","Уставка подогрева и направление: из двигателя в бак или из бака в двигатель."], calib:["Калибровка","Переход к подстройке датчиков зон."]}},
+    calib:{tag:"Экран 4 · калибровка", title:"Калибровка датчиков", access:"Температуры → «Калибровка датчиков зон».",
+      lede:"Поправка показаний каждой подключённой зоны, в градусах. Отключённая зона в списке скрыта.",
+      t:{back:["Назад","Возврат к температурам."], rows:["Зоны 1–5","«−» и «+» меняют поправку выбранной зоны."]}},
+    sys:{tag:"Экран 5 · система", title:"Система", access:"Левое меню → шестерёнка.",
+      lede:"Принудительное включение насосов, ограничение времени работы, прогон помпы после остановки и температура хранения.",
+      t:{back:["На главную",""], pumps:["Насосы","Восемь переключателей: помпы зон, помпа подогревателя и дополнительные. Неподключённый насос скрыт."], runtime:["Время работы","1–96 часов непрерывной работы, дальше отопитель останавливается. Значение выше показывается как бесконечность."], pumptime:["Прогон помпы","Сколько минут циркулировать теплоноситель после остановки горелки, 2–60."], storage:["Хранение","Температура, которую зоны держат в режиме хранения, 3–15 °C."]}},
+    daynight:{tag:"Экран 6 · день и ночь", title:"День и ночь", access:"Левое меню → луна.",
+      lede:"Когда начинается день и ночь, и какая тема экрана при этом включается.",
+      t:{back:["На главную",""], day:["Начало дня","Час и минута."], night:["Начало ночи","Час и минута."], auto:["Автотема","Ночью тёмная тема, днём светлая."], theme:["Тема","Светлая или тёмная вручную, если автотема выключена."]}},
+    backlight:{tag:"Экран 7 · подсветка", title:"Подсветка", access:"Левое меню → солнце.",
+      lede:"Тайм-аут до сна и яркость днём, ночью и в сне. Отдельной кнопки «Применить» нет: значение уходит сразу.",
+      t:{back:["На главную",""], rows:["Яркость и тайм-аут","Сверху вниз: тайм-аут, яркость дня, яркость ночи, яркость сна днём и ночью. «−» и «+» справа."]}},
+    info:{tag:"Экран 8 · состояние", title:"Состояние", access:"Левое меню → информация.",
+      lede:"Текущие температуры, состояние зон и насосов. Внизу переход к отопителю, версиям ПО и модему.",
+      t:{back:["На главную",""], temps:["Температуры","Улица, бак, горелка, пол, двигатель и датчики платы расширения."], zones:["Зоны","Имя, температура и скорость вентилятора каждой подключённой зоны."], status:["Статус","ТЭН, фаза горелки, поток воды, уровень бака и какие насосы крутятся."], heater:["Отопитель","Экран горелки."], soft:["ПО","Версии прошивок."], modem:["Модем","Экран модема, если он есть."]}},
+    versions:{tag:"Экран 9 · версии", title:"Версии прошивки", access:"Состояние → «ПО».",
+      lede:"Версии пульта, блока управления, подогревателя и модема, а также наработка. Только просмотр.",
+      t:{back:["Назад","Возврат к состоянию."], info:["К состоянию","Тот же возврат на экран состояния."]}},
+    heater:{tag:"Экран 10 · отопитель", title:"Отопитель", access:"Состояние → «Отопитель».",
+      lede:"Живые параметры горения. Большинство строк только для чтения.",
+      t:{back:["Назад","К экрану состояния."], en:["Включён","Разрешает или запрещает этот подогреватель."], burn:["Горелка","Основная горелка: вкл / выкл."], eco:["ЭКО","Ограничение мощности всех отопителей."], nav:["Листание","Предыдущий и следующий подогреватель, если их несколько. Рядом — сброс ошибок горелки."]}},
+    modem:{tag:"Экран 11 · модем", title:"Модем", access:"Значок модема на главном экране или «Состояние» → «Модем».",
+      lede:"Регистрация в сети, интернет и MQTT, пять переключателей поведения. Команды SMS и веб-приложение описаны в <a href=\"/manual-modem.html\">руководстве на модем</a>.",
+      t:{back:["Назад","На предыдущий экран."], reg:["Авторегистрация","Запускает привязку модема, если он ещё не зарегистрирован."], status:["Статус","Сеть, роуминг, сигнал, оператор, IMEI, версия модуля."], net:["Интернет","Есть ли интернет и MQTT, режим 2G/4G, адрес проверки, брокер, логин и пароль."], toggles:["Переключатели","Только SMS, принудительно 2G, роуминг, SMS о неисправности, подтверждение команд."]}},
+    errors:{tag:"Экран 12 · ошибки", title:"Ошибки", access:"Значок неисправности на главном экране.",
+      lede:"Список активных ошибок системы.",
+      t:{back:["Назад","На главный экран."], clear:["Сбросить","Снимает запомненные ошибки, которые блок управления позволяет стереть."]}},
+    ble:{tag:"Экран 13 · Bluetooth", title:"Подтверждение Bluetooth", access:"Появляется само, когда телефон просит доступ.",
+      lede:"Новое устройство хочет подключиться к пульту. Пока выбор не сделан, экран не уходит.",
+      t:{allow:["Разрешить","Пускает устройство."], deny:["Отклонить","Отказывает и возвращает на главный экран."]}},
+    sleep:{tag:"Экран 14 · сон", title:"Сон", access:"Сам, когда истекает тайм-аут подсветки.",
+      lede:"Тёмные часы. Любое касание возвращает на главный экран и включает подсветку.",
+      t:{wake:["Касание","Пробуждение."]}},
+    contacts:{tag:"Экран 15 · контакты", title:"Контакты", access:"Логотип Timberline на главном экране.",
+      lede:"Координаты производителя. Левое меню ведёт обратно в настройки.",
+      t:{back:["Назад","На главный экран."]}}
+  }
+},
+en:{
+  docTitle:"PU-36 control panel", crumb:"Manuals",
+  eyebrow:"Product · Timberline control panel",
+  h1:"PU-36 control panel",
+  lede:"The main touch panel of the system. Below, screen by screen: what you see and what a tap does. Pictures are a mock-up of the English light theme: the screen background with its buttons in a typical state.",
+  npControl:"Control", npControlV:"1024×600 touchscreen",
+  npLink:"Connectivity", npLinkV:"CAN, optional modem and Bluetooth", npDoc:"Document",
+  tocLabel:"Contents",
+  footer:"Manual for the PU-36 panel (software 13.x). The room panel is covered in the <a href=\"/pu28manual.html\">PU-28 manual</a>.",
+  dateLocale:"en-GB",
+  screens:{
+    home:{tag:"Screen 1 · home", title:"Home", access:"Shown as soon as the panel powers on.",
+      lede:"Heat sources on the left, setpoints and the fan in the middle, five zones along the bottom. A coloured band on a tile is the mode: orange for heat, blue for ventilation. An off tile has no band and the same fill as the other buttons. The selected zone has an outline.",
+      t:{logo:["Logo","Opens the contacts screen."], err:["Fault","Appears when the system has a fault. Opens the fault list."], modem:["Modem","Opens the modem screen when a modem is fitted. The colour shows how far the link has got, from no network up to MQTT."], gear:["Settings","Opens the clock. The same menu stays on the left of the following screens."],
+        heater:["Heater","Turns the burner on and off. The icon shows the phase: off, purge, standby, ignition, running."], element:["Element","Turns the electric heater on and off. Hidden when the element is disabled in configuration."], floor:["Floor","Turns floor heating on and off."], engine:["Engine","Turns engine preheat on and off."], water:["Water","Turns water heating on and off."],
+        off:["Off","Switches the selected zone off."], heat:["Heat","Sets the selected zone to heat."], vent:["Vent","Sets the selected zone to ventilation. Available when the zone is connected as a fan zone."], manual:["Manual","Fan speed comes from the slider."], auto:["Auto","The controller sets the fan speed."],
+        day:["Day","Day setpoint of the selected zone. − and + change it."], night:["Night","Night setpoint of the selected zone."], fanspd:["Fan speed","Manual speed, %. The buttons do nothing while Auto is on."],
+        z:["Zone tile","A short tap selects the zone. The name and temperature sit on a shared background; the band on top shows heat or ventilation."]}},
+    clock:{tag:"Screen 2 · clock", title:"Date and time", access:"The gear on the home screen, or the clock item in the left menu.",
+      lede:"Time, date and the clock correction. The left column is the shared settings menu; it is the same on the neighbouring screens.",
+      t:{back:["Home","Back to the home screen."], navclock:["Clock","This screen."], navtemp:["Temperatures","Units, floor and engine."], navsys:["System","Pumps, timers, storage."], navdn:["Day and night","Schedule and theme."], navbl:["Backlight","Brightness and sleep."], navinfo:["Status","Temperatures and running hours."],
+        time:["Time","Hours and minutes, up and down."], fmt:["Format","24-hour or 12-hour."], corr:["Correction","Seconds per day, −50 to +50. Compensates drift of the panel clock."], date:["Date","Day, month and year."], upd:["Update","Writes the time you entered into the panel clock."]},
+    },
+    temp:{tag:"Screen 3 · temperatures", title:"Temperatures", access:"Left menu → thermometer.",
+      lede:"Temperature units and the floor and engine setpoints. The bottom row opens zone-sensor calibration.",
+      t:{back:["Home",""], units:["Units","Celsius or Fahrenheit. Applies to every temperature on the panel."], floor:["Floor heating","Setpoint. − and + at the ends. Hidden when the floor is not connected, or when it follows a zone setpoint."], engine:["Engine","Preheat setpoint and direction: engine to tank, or tank to engine."], calib:["Calibration","Opens the zone sensor trim."]}},
+    calib:{tag:"Screen 4 · calibration", title:"Sensor calibration", access:"Temperatures → Zone sensor calibration.",
+      lede:"An offset for each connected zone, in degrees. A disconnected zone is not listed.",
+      t:{back:["Back","Returns to Temperatures."], rows:["Zones 1–5","− and + change that zone's offset."]}},
+    sys:{tag:"Screen 5 · system", title:"System", access:"Left menu → gear.",
+      lede:"Forced pump run, the heater time limit, post-run pump time and the storage temperature.",
+      t:{back:["Home",""], pumps:["Pumps","Eight switches: zone pumps, the heater pump and the auxiliary pumps. A pump that is not connected is hidden."], runtime:["Run time","1–96 hours of continuous heater operation, then it stops. A higher value is shown as infinity."], pumptime:["Pump run time","How many minutes to circulate after the burner stops, 2–60."], storage:["Storage","The temperature zones hold in storage mode, 3–15 °C."]}},
+    daynight:{tag:"Screen 6 · day and night", title:"Day and night", access:"Left menu → moon.",
+      lede:"When day and night start, and which screen theme comes with them.",
+      t:{back:["Home",""], day:["Day start","Hour and minute."], night:["Night start","Hour and minute."], auto:["Auto theme","Dark theme at night, light theme by day."], theme:["Theme","Light or dark by hand, when auto theme is off."]}},
+    backlight:{tag:"Screen 7 · backlight", title:"Backlight", access:"Left menu → sun.",
+      lede:"Sleep timeout and brightness by day, by night and while asleep. There is no Apply button: the value is sent at once.",
+      t:{back:["Home",""], rows:["Brightness and timeout","Top to bottom: timeout, day brightness, night brightness, sleep brightness by day and by night. − and + on the right."]}},
+    info:{tag:"Screen 8 · status", title:"Status", access:"Left menu → information.",
+      lede:"Live temperatures, zone state and pumps. The bottom row opens the heater, the firmware versions and the modem.",
+      t:{back:["Home",""], temps:["Temperatures","Outside, tank, burner, floor, engine and the extension-board sensors."], zones:["Zones","Name, temperature and fan speed of each connected zone."], status:["Status","Element, burner phase, water flow, tank level and which pumps are running."], heater:["Heater","The burner screen."], soft:["Software","Firmware versions."], modem:["Modem","The modem screen, when a modem is fitted."]}},
+    versions:{tag:"Screen 9 · versions", title:"Firmware versions", access:"Status → Software.",
+      lede:"Versions of the panel, the controller, the heater and the modem, plus running hours. Read only.",
+      t:{back:["Back","Returns to Status."], info:["To status","The same return to the status screen."]}},
+    heater:{tag:"Screen 10 · heater", title:"Heater", access:"Status → Heater.",
+      lede:"Live combustion values. Most rows are read only.",
+      t:{back:["Back","Returns to Status."], en:["Enabled","Allows or inhibits this heater."], burn:["Burner","The main burner, on or off."], eco:["ECO","Power limit for every heater."], nav:["Paging","Previous and next heater when several are fitted. Beside them, clear the burner faults."]}},
+    modem:{tag:"Screen 11 · modem", title:"Modem", access:"The modem icon on the home screen, or Status → Modem.",
+      lede:"Network registration, internet and MQTT, and five behaviour switches. SMS commands and the web app are in the <a href=\"/manual-modem.html\">modem manual</a>.",
+      t:{back:["Back","The previous screen."], reg:["Auto-registration","Starts pairing when the modem is not registered yet."], status:["Status","Network, roaming, signal, operator, IMEI, module version."], net:["Internet","Whether internet and MQTT are up, 2G/4G mode, the check address, broker, login and password."], toggles:["Switches","SMS only, force 2G, roaming, fault SMS, command acknowledgement."]}},
+    errors:{tag:"Screen 12 · faults", title:"Faults", access:"The fault icon on the home screen.",
+      lede:"The list of active system faults.",
+      t:{back:["Back","Home."], clear:["Clear","Drops stored faults that the controller allows to be erased."]}},
+    ble:{tag:"Screen 13 · Bluetooth", title:"Bluetooth confirmation", access:"Appears by itself when a phone asks to connect.",
+      lede:"A new device wants access to the panel. The screen stays until you choose.",
+      t:{allow:["Allow","Lets the device in."], deny:["Deny","Refuses and returns home."]}},
+    sleep:{tag:"Screen 14 · sleep", title:"Sleep", access:"By itself, when the backlight timeout expires.",
+      lede:"A dark clock. Any touch returns home and turns the backlight on.",
+      t:{wake:["Touch","Wakes the panel."]}},
+    contacts:{tag:"Screen 15 · contacts", title:"Contacts", access:"The Timberline logo on the home screen.",
+      lede:"The manufacturer's details. The left menu leads back into settings.",
+      t:{back:["Back","Home."]}}
+  }
+},
+de:{
+  docTitle:"Bedienpanel PU-36", crumb:"Anleitungen",
+  eyebrow:"Produkt · Timberline-Bedienpanel",
+  h1:"Bedienpanel PU-36",
+  lede:"Das Haupt-Touchpanel des Systems. Im Folgenden Bildschirm für Bildschirm: was zu sehen ist und was eine Berührung bewirkt. Die Bilder sind ein Mock-up der englischen hellen Oberfläche: Bildschirmhintergrund mit Tasten in einem typischen Zustand.",
+  npControl:"Bedienung", npControlV:"Touchscreen 1024×600",
+  npLink:"Anbindung", npLinkV:"CAN, optional Modem und Bluetooth", npDoc:"Dokument",
+  tocLabel:"Inhalt",
+  footer:"Anleitung für das Panel PU-36 (Software 13.x). Das Zimmerpanel ist in der <a href=\"/pu28manual.html\">PU-28-Anleitung</a> beschrieben.",
+  dateLocale:"de-DE",
+  screens:{
+    home:{tag:"Bildschirm 1 · Start", title:"Startbildschirm", access:"Direkt nach dem Einschalten.",
+      lede:"Wärmequellen links, Sollwerte und Lüfter in der Mitte, fünf Zonen unten. Ein farbiger Streifen auf der Kachel ist der Modus: orange Heizen, blau Lüften. Eine ausgeschaltete Kachel hat keinen Streifen und dieselbe Fläche wie die übrigen Tasten. Die gewählte Zone hat einen Rahmen.",
+      t:{logo:["Logo","Öffnet die Kontakte."], err:["Störung","Erscheint bei einem Fehler. Öffnet die Fehlerliste."], modem:["Modem","Öffnet den Modem-Bildschirm, wenn ein Modem vorhanden ist. Die Farbe zeigt, wie weit die Verbindung reicht."], gear:["Einstellungen","Öffnet die Uhr. Dasselbe Menü bleibt links auf den folgenden Bildschirmen."],
+        heater:["Heizung","Schaltet den Brenner ein und aus. Das Symbol zeigt die Phase: aus, Spülen, Bereit, Zündung, Betrieb."], element:["Heizstab","Schaltet den Elektroheizer ein und aus. Verborgen, wenn er in der Konfiguration aus ist."], floor:["Fußboden","Schaltet die Fußbodenheizung ein und aus."], engine:["Motor","Schaltet die Motorvorwärmung ein und aus."], water:["Wasser","Schaltet die Wassererwärmung ein und aus."],
+        off:["Aus","Schaltet die gewählte Zone aus."], heat:["Heizen","Stellt die gewählte Zone auf Heizen."], vent:["Lüften","Stellt die gewählte Zone auf Lüften. Nur wenn die Zone als Lüfterzone angeschlossen ist."], manual:["Manuell","Die Lüfterdrehzahl kommt vom Schieber."], auto:["Auto","Das Steuergerät setzt die Lüfterdrehzahl."],
+        day:["Tag","Tag-Sollwert der gewählten Zone. − und + ändern ihn."], night:["Nacht","Nacht-Sollwert der gewählten Zone."], fanspd:["Lüfter","Manuelle Drehzahl in %. Die Tasten tun nichts, solange Auto aktiv ist."],
+        z:["Zonenkachel","Kurzes Tippen wählt die Zone. Name und Temperatur liegen auf gemeinsamem Grund; der Streifen oben zeigt Heizen oder Lüften."]}},
+    clock:{tag:"Bildschirm 2 · Uhr", title:"Datum und Uhrzeit", access:"Zahnrad auf dem Startbildschirm oder der Uhr-Eintrag links.",
+      lede:"Uhrzeit, Datum und Gangkorrektur. Die linke Spalte ist das gemeinsame Einstellungsmenü und wiederholt sich auf den Nachbarbildschirmen.",
+      t:{back:["Start","Zurück zum Startbildschirm."], navclock:["Uhr","Dieser Bildschirm."], navtemp:["Temperaturen","Einheiten, Boden und Motor."], navsys:["System","Pumpen, Zeiten, Lagerung."], navdn:["Tag und Nacht","Zeitplan und Thema."], navbl:["Beleuchtung","Helligkeit und Schlaf."], navinfo:["Status","Temperaturen und Betriebsstunden."],
+        time:["Uhrzeit","Stunden und Minuten, auf und ab."], fmt:["Format","24 Stunden oder 12 Stunden."], corr:["Korrektur","Sekunden pro Tag, −50 bis +50. Gleicht den Gang der Panel-Uhr aus."], date:["Datum","Tag, Monat und Jahr."], upd:["Aktualisieren","Schreibt die eingegebene Zeit in die Panel-Uhr."]},
+    },
+    temp:{tag:"Bildschirm 3 · Temperaturen", title:"Temperaturen", access:"Linkes Menü → Thermometer.",
+      lede:"Temperatureinheit und die Sollwerte für Fußboden und Motor. Die untere Zeile öffnet die Fühlerkorrektur.",
+      t:{back:["Start",""], units:["Einheiten","Celsius oder Fahrenheit. Gilt für alle Temperaturen am Panel."], floor:["Fußbodenheizung","Sollwert. − und + an den Enden. Verborgen, wenn der Boden nicht angeschlossen ist oder einem Zonensollwert folgt."], engine:["Motor","Vorwärm-Sollwert und Richtung: Motor zum Tank oder Tank zum Motor."], calib:["Kalibrierung","Öffnet die Zonenfühler-Korrektur."]}},
+    calib:{tag:"Bildschirm 4 · Kalibrierung", title:"Fühlerkalibrierung", access:"Temperaturen → Zonenfühler-Kalibrierung.",
+      lede:"Ein Offset je angeschlossener Zone, in Grad. Eine getrennte Zone erscheint nicht.",
+      t:{back:["Zurück","Zurück zu den Temperaturen."], rows:["Zonen 1–5","− und + ändern den Offset dieser Zone."]}},
+    sys:{tag:"Bildschirm 5 · System", title:"System", access:"Linkes Menü → Zahnrad.",
+      lede:"Erzwungenes Pumpen, die Laufzeitgrenze der Heizung, die Pumpennachlaufzeit und die Lagertemperatur.",
+      t:{back:["Start",""], pumps:["Pumpen","Acht Schalter: Zonenpumpen, Heizungspumpe und Zusatzpumpen. Eine nicht angeschlossene Pumpe ist verborgen."], runtime:["Laufzeit","1–96 Stunden Dauerbetrieb, danach stoppt die Heizung. Ein höherer Wert erscheint als Unendlich."], pumptime:["Pumpennachlauf","Wie viele Minuten nach dem Brennerstopp umgewälzt wird, 2–60."], storage:["Lagerung","Die Temperatur, die Zonen im Lagermodus halten, 3–15 °C."]}},
+    daynight:{tag:"Bildschirm 6 · Tag und Nacht", title:"Tag und Nacht", access:"Linkes Menü → Mond.",
+      lede:"Wann Tag und Nacht beginnen und welches Bildschirmthema dazu gehört.",
+      t:{back:["Start",""], day:["Tagesbeginn","Stunde und Minute."], night:["Nachtbeginn","Stunde und Minute."], auto:["Automatisches Thema","Nachts dunkel, tags hell."], theme:["Thema","Hell oder dunkel von Hand, wenn das automatische Thema aus ist."]}},
+    backlight:{tag:"Bildschirm 7 · Beleuchtung", title:"Beleuchtung", access:"Linkes Menü → Sonne.",
+      lede:"Schlaf-Timeout und Helligkeit am Tag, in der Nacht und im Schlaf. Es gibt keine Übernehmen-Taste: der Wert geht sofort weg.",
+      t:{back:["Start",""], rows:["Helligkeit und Timeout","Von oben: Timeout, Taghelligkeit, Nachthelligkeit, Schlafhelligkeit Tag und Nacht. − und + rechts."]}},
+    info:{tag:"Bildschirm 8 · Status", title:"Status", access:"Linkes Menü → Information.",
+      lede:"Aktuelle Temperaturen, Zonen und Pumpen. Unten geht es zur Heizung, zu den Softwareständen und zum Modem.",
+      t:{back:["Start",""], temps:["Temperaturen","Außen, Tank, Brenner, Boden, Motor und die Fühler der Erweiterungsplatine."], zones:["Zonen","Name, Temperatur und Lüfterdrehzahl jeder angeschlossenen Zone."], status:["Status","Heizstab, Brennerphase, Wasserdurchfluss, Tankstand und welche Pumpen laufen."], heater:["Heizung","Der Brennerbildschirm."], soft:["Software","Firmware-Versionen."], modem:["Modem","Der Modem-Bildschirm, wenn ein Modem vorhanden ist."]}},
+    versions:{tag:"Bildschirm 9 · Versionen", title:"Firmware-Versionen", access:"Status → Software.",
+      lede:"Versionen von Panel, Steuergerät, Heizung und Modem sowie Betriebsstunden. Nur Anzeige.",
+      t:{back:["Zurück","Zurück zum Status."], info:["Zum Status","Derselbe Weg zurück zum Statusbildschirm."]}},
+    heater:{tag:"Bildschirm 10 · Heizung", title:"Heizung", access:"Status → Heizung.",
+      lede:"Live-Werte der Verbrennung. Die meisten Zeilen sind nur Anzeige.",
+      t:{back:["Zurück","Zurück zum Status."], en:["Freigegeben","Gibt diese Heizung frei oder sperrt sie."], burn:["Brenner","Der Hauptbrenner, ein oder aus."], eco:["ECO","Leistungsgrenze für alle Heizungen."], nav:["Blättern","Vorherige und nächste Heizung, wenn mehrere vorhanden sind. Daneben die Brennerfehler löschen."]}},
+    modem:{tag:"Bildschirm 11 · Modem", title:"Modem", access:"Das Modemsymbol auf dem Startbildschirm oder Status → Modem.",
+      lede:"Netzregistrierung, Internet und MQTT sowie fünf Schalter. SMS-Befehle und die Web-App stehen in der <a href=\"/manual-modem.html\">Modem-Anleitung</a>.",
+      t:{back:["Zurück","Der vorherige Bildschirm."], reg:["Autoregistrierung","Startet die Kopplung, wenn das Modem noch nicht registriert ist."], status:["Status","Netz, Roaming, Signal, Anbieter, IMEI, Modulversion."], net:["Internet","Ob Internet und MQTT stehen, 2G/4G, Prüfadresse, Broker, Login und Passwort."], toggles:["Schalter","Nur SMS, 2G erzwingen, Roaming, Störungs-SMS, Befehlsbestätigung."]}},
+    errors:{tag:"Bildschirm 12 · Fehler", title:"Fehler", access:"Das Störungssymbol auf dem Startbildschirm.",
+      lede:"Die Liste der aktiven Systemfehler.",
+      t:{back:["Zurück","Zum Startbildschirm."], clear:["Löschen","Entfernt gespeicherte Fehler, die das Steuergerät löschen lässt."]}},
+    ble:{tag:"Bildschirm 13 · Bluetooth", title:"Bluetooth-Bestätigung", access:"Erscheint von selbst, wenn ein Telefon Zugang will.",
+      lede:"Ein neues Gerät möchte sich verbinden. Der Bildschirm bleibt, bis Sie wählen.",
+      t:{allow:["Zulassen","Lässt das Gerät zu."], deny:["Ablehnen","Lehnt ab und geht zum Startbildschirm."]}},
+    sleep:{tag:"Bildschirm 14 · Schlaf", title:"Schlaf", access:"Von selbst, wenn das Beleuchtungs-Timeout abläuft.",
+      lede:"Eine dunkle Uhr. Jede Berührung geht zum Startbildschirm und schaltet die Beleuchtung ein.",
+      t:{wake:["Berührung","Weckt das Panel."]}},
+    contacts:{tag:"Bildschirm 15 · Kontakte", title:"Kontakte", access:"Das Timberline-Logo auf dem Startbildschirm.",
+      lede:"Die Angaben des Herstellers. Das linke Menü führt zurück in die Einstellungen.",
+      t:{back:["Zurück","Zum Startbildschirm."]}}
+  }
+}
+};
+const ORDER = ["home","clock","temp","calib","sys","daynight","backlight","info","versions","heater","modem","errors","ble","sleep","contacts"];
+const STR = COPY;
+const LANG_NAMES = { ru:"Русский", en:"English", de:"Deutsch" };
+const ACCESS = { ru:"Как открыть:", en:"How to open:", de:"So öffnen Sie:" };
+
+function hotspotHTML(list, texts){
+  let n = 0; const seen = new Map();
+  return list.map(([x1,y1,x2,y2,key])=>{
+    const label = (texts[key]||[key])[0];
+    if(!seen.has(key)){ n++; seen.set(key, n); }
+    const num = seen.get(key);
+    const l=(x1/PW*100).toFixed(2), t=(y1/PH*100).toFixed(2);
+    const w=((x2-x1)/PW*100).toFixed(2), h=((y2-y1)/PH*100).toFixed(2);
+    return `<div class="hot" style="left:${l}%;top:${t}%;width:${w}%;height:${h}%"><span class="num">${num}</span></div>`;
+  }).join("");
+}
+function legendHTML(list, texts){
+  let n = 0; const seen = new Set();
+  return list.map(([, , , ,key])=>{
+    if(seen.has(key)) return "";
+    seen.add(key); n++;
+    const [label, desc] = texts[key] || [key, ""];
+    return `<li><span class="n">${n}</span><span class="txt"><b>${label}</b>${desc?" — "+desc:""}</span></li>`;
+  }).join("");
+}
+function render(lang){
+  const t = STR[lang];
+  document.documentElement.lang = lang;
+  document.getElementById("doc-title").textContent = t.docTitle;
+  document.getElementById("crumb").innerHTML = '<a href="/">MultiHot</a> / <a href="/manuals.html">' + t.crumb + '</a>';
+  document.getElementById("cv-eyebrow").textContent = t.eyebrow;
+  document.getElementById("cv-h1").textContent = t.h1;
+  document.getElementById("cv-lede").textContent = t.lede;
+  document.getElementById("np-control-k").textContent = t.npControl;
+  document.getElementById("np-control-v").textContent = t.npControlV;
+  document.getElementById("np-link-k").textContent = t.npLink;
+  document.getElementById("np-link-v").textContent = t.npLinkV;
+  document.getElementById("np-doc-k").textContent = t.npDoc;
+  document.getElementById("toc-label").textContent = t.tocLabel;
+  document.getElementById("doc-footer").innerHTML = t.footer;
+  document.getElementById("doc-date").textContent = new Date().toLocaleDateString(t.dateLocale,{year:"numeric",month:"long",day:"numeric"});
+  document.getElementById("main").innerHTML = ORDER.map(id=>{
+    const g = GEOM[id], s = t.screens[id];
+    return `<section class="screen" id="${id}">
+      <div class="screen-head"><span class="tag">${s.tag}</span><h2>${s.title}</h2>
+      <p class="access"><b>${ACCESS[lang]}</b> ${s.access}</p><p class="lede">${s.lede}</p></div>
+      <div class="spec stack"><figure class="frame wide"><div class="screen-inner">
+        <img src="${IMG}${g.img}" alt="${s.title}">${hotspotHTML(g.hot, s.t)}
+      </div></figure><ul class="legend">${legendHTML(g.hot, s.t)}</ul></div>
+      ${s.extra||""}</section>`;
+  }).join("");
+  document.getElementById("toc-main").innerHTML = ORDER.map(id=>`<li><a href="#${id}">${t.screens[id].title}</a></li>`).join("");
+  document.getElementById("lang-select").value = lang;
+  try { localStorage.setItem("timberline_manual_lang", lang); } catch(e){}
+}
+const sel = document.getElementById("lang-select");
+sel.innerHTML = Object.keys(LANG_NAMES).map(c=>`<option value="${c}">${LANG_NAMES[c]}</option>`).join("");
+sel.addEventListener("change", ()=>render(sel.value));
+let lang = /^ru\b/i.test(navigator.language||"") ? "ru" : (/^de\b/i.test(navigator.language||"") ? "de" : "en");
+try { const s = localStorage.getItem("timberline_manual_lang"); if (LANG_NAMES[s]) lang = s; } catch(e){}
+render(lang);
+</script>
+</body>
+</html>

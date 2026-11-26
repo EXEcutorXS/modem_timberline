@@ -10,7 +10,7 @@
    while that field is still 0xFF. All three are unsigned integers,
    big-endian. Firmware must not erase this page.
    Offset 0: serial, uint32. 0xFFFFFFFF is not a value, it is the blank field.
-   Offset 4: PUK, uint32, range 0..99999999 (8 digits).
+   Offset 4: master PIN, uint32, range 0..99999999 (8 digits).
    Offset 8: assembly number, uint16. 0xFFFF is the blank field. */
 #define FLASH_SERIAL_ADDR               0x807F000       // Length 2 KB
 #define FLASH_SETUP_ADDR                0x807F800       // Length 2 KB
@@ -116,18 +116,18 @@ class Flash_C
         void factoryReset(void);
         void readSerial(void);
         /* One-shot factory programming. Refuses unless every byte of that
-           field is still 0xFF, and never erases the page. Serial and PUK
-           are big-endian uint32. Serial 0xFFFFFFFF is refused. PUK must
-           be 0..99999999. Assembly is a big-endian uint16 at offset 8;
+           field is still 0xFF, and never erases the page. Serial and the master
+           PIN are big-endian uint32. Serial 0xFFFFFFFF is refused. The master
+           PIN must be 0..99999999. Assembly is a big-endian uint16 at offset 8;
            0xFFFF is refused. serialNumber() returns 0xFFFFFFFF when blank. */
         bool programSerial(uint32_t value);
         bool programPuk(uint32_t value);
         bool programAssembly(uint16_t value);
         uint32_t serialNumber(void);
         uint16_t assemblyNumber(void);
-        /* 0xFFFFFFFF when no PUK is programmed. */
+        /* 0xFFFFFFFF when no master PIN is programmed. */
         uint32_t pukNumber(void);
-        /* True when the presented 8 digits match the PUK programmed next
+        /* True when the presented 8 digits match the master PIN programmed next
            to the serial. False when the page is still erased. */
         bool pukMatches(const char* digits);
         /* Copies the 8 digits and a NUL into out. False when none is programmed. */

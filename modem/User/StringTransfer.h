@@ -64,19 +64,21 @@ enum StringId
     STRID_IP_V4              = 18,  /* modem.internet.ipAddress — from +CGPADDR, diagnostics only */
     STRID_CONNECTION_LINK    = 19,  /* modem.internet.connectionLink — last "getlink" URL, pushed to the panel when (re)generated */
     STRID_SIMCOM_FW          = 20,  /* modem.network.simcomFw — AT+CGMR text, periodic with the other strings */
+    STRID_USSD_REQUEST       = 21,  /* incoming USSD code; the modem runs it */
+    STRID_USSD_RESPONSE      = 22,  /* last USSD reply from the operator */
 };
 
 class StringTransfer
 {
 public:
-    void registerString(uint16_t stringId, char* buffer, uint16_t bufferSize);
+    void registerString(uint16_t stringId, char* buffer, uint16_t bufferSize, uint8_t encoding = 0);
     /* Returns false if the pending queue was already full and this update
        got silently dropped (see MAX_PENDING) — callers that track their own
        old/new diff (DataActualizator) must NOT advance their "old" copy for
        this field when false, or the drop becomes permanent (nothing else
        would ever look "changed" again to trigger a retry). True covers both
        "sent immediately" and "successfully queued". */
-    bool sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
+    bool sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress, uint8_t encoding = 0);
     void requestString(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
     /* Pushes the next registered string (round-robin over regs[], one per
        call) to toType/toAddress — including empty ones, so a receiver that
@@ -95,6 +97,11 @@ public:
        (onPgn61) — since boot. Plain counter, no per-id breakdown; watch it
        in the debugger to see whether reception is actually progressing. */
     uint32_t receivedCount;
+
+    /* Bumped in the CAN RX interrupt when a registered string has been
+       received in full. receivedId is written first. */
+    volatile uint8_t  receivedSeq;
+    volatile uint16_t receivedId;
 
 private:
     /* MAX_LEN=161 is the hard ceiling: onPgn62's 32-packet receivedMask bitmask
@@ -115,6 +122,7 @@ private:
         uint16_t id;
         char*    buffer;
         uint16_t size;
+        uint8_t  encoding;
     };
     RegEntry regs[MAX_REGS];
     uint8_t  regCount;
@@ -143,6 +151,7 @@ private:
         char     data[MAX_LEN];
         uint8_t  toType;
         uint8_t  toAddress;
+        uint8_t  encoding;
     };
     PendingSend pending[MAX_PENDING];
     uint8_t     pendingCount;
@@ -201,7 +210,8 @@ private:
     RxSlot*   findRxSlot(uint16_t stringId);
     RxSlot*   freeRxSlot(void);
     uint32_t  buildId(uint8_t PGN, uint8_t toType, uint8_t toAddress) const;
-    void      beginSend(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress);
+    void      beginSend(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress, uint8_t encoding);
+    void      noteReceived(uint16_t stringId);
     void      sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
     void      beginRequest(RxSlot* slot, uint16_t stringId, uint8_t fromType, uint8_t fromAddress);
     void      advanceRxQueue(RxSlot* freedSlot);

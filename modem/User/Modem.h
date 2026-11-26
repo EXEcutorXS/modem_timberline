@@ -360,6 +360,8 @@ public:
        replyPhone is given (SMS "ussd" command, admin only) it is also sent
        there as an SMS. Returns false if a request is already in flight. */
     bool sendUssd(const char* req, const char* replyPhone = 0);
+    char* ussdRequestBuf(void) { return ussdCanRequest; }
+    char* ussdReplyBuf(void) { return ussdLast; }
     void mqttPublish(const char* name, const char* payload);  /* enqueue "cmd/actual/<name>" */
     void mqttForceReconnect(void);  /* call after mqttBroker/mqttPassword changes at runtime */
 
@@ -500,6 +502,7 @@ private:
     /* ── USSD ────────────────────────────────────────────────────────── */
     bool     ussdPending;
     char     ussdReq[32];
+    char     ussdCanRequest[32];  /* STRID_USSD_REQUEST, written from CAN */
     char     ussdReplyPhone[16];  /* who gets the SMS reply; empty = terminal only */
     bool     ussdAwaiting;        /* AT+CUSD accepted, waiting for the +CUSD: reply */
     uint32_t ussdAwaitStart;

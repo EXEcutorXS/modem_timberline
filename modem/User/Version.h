@@ -1,7 +1,7 @@
 #define VERSION_1 121
 #define VERSION_2 0
 #define VERSION_3 0
-#define VERSION_4 31
+#define VERSION_4 32
 /*
 
 Адрес        Длина      Назначение региона
@@ -24,8 +24,16 @@
 
 
 
-121.0.0.31
-Unreleased. Identity page is binary: serial uint32, PUK uint32, assembly uint16, all big-endian at offsets 0, 4 and 8. Blank sentinels 0xFFFFFFFF and 0xFFFF are refused. PUK is required to change the PIN, admin and trusted numbers; the identity page is never erased. PGN 1 command 31 carries the serial in D[2..5]. PGN 60 sub-packet 6 carries serial and assembly and can program a still-blank field when the sender is not another modem. Sub-packet 5 is the button and the bootloader version. Processor temperature is PGN 13 D[2] (celsius+75). SIMCOM revision is string id 20, the AT+CGMR text, in the periodic string broadcast. PGN 6 answers PGN 13, PGN 18 and PGN 60; D[2] selects a sub-packet, 0xFF sends sub-packets 0..6, and sub-packet 8 (PUK) only when asked by number. Self-OTA fetches /profile. A self-update older than the running build is refused.
+121.0.0.32
+Identity page is binary: serial uint32, PUK uint32, assembly uint16, all big-endian at offsets 0, 4 and 8
+Blank sentinels 0xFFFFFFFF and 0xFFFF are refused.
+PUK is required to change the PIN, admin and trusted numbers; the identity page is never erased. 
+PGN 1 command 31 carries the serial in D[2..5]. PGN 60 sub-packet 6 carries serial and assembly and can program a still-blank field when the sender is not another modem. 
+Sub-packet 5 is the button and the bootloader version. Processor temperature is PGN 13 D[2] (celsius+75).
+PGN 6 answers PGN 13, PGN 18 and PGN 60; D[2] selects a sub-packet, 0xFF sends sub-packets 0..6, and sub-packet 8 (PUK) only when asked by number.
+SIMCOM revision is string id 20, the AT+CGMR text, in the periodic string broadcast. 
+A USSD code written as string id 21 is sent to the operator; the reply comes back as string id 22.
+Received SMS text (string id 12) is announced as UTF-8. Self-OTA fetches /profile. A self-update older than the running build is refused.
 
 121.0.0.29
 Storage mode support added

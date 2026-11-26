@@ -19,7 +19,7 @@ StringTransfer::RegEntry* StringTransfer::findEntry(uint16_t stringId)
     return 0;
 }
 
-void StringTransfer::registerString(uint16_t stringId, char* buffer, uint16_t bufferSize)
+void StringTransfer::registerString(uint16_t stringId, char* buffer, uint16_t bufferSize, uint8_t encoding)
 {
     RegEntry* e = findEntry(stringId);
     if (!e && regCount < MAX_REGS)
@@ -27,12 +27,13 @@ void StringTransfer::registerString(uint16_t stringId, char* buffer, uint16_t bu
     if (!e)
         return;
 
-    e->id     = stringId;
-    e->buffer = buffer;
-    e->size   = bufferSize;
+    e->id       = stringId;
+    e->buffer   = buffer;
+    e->size     = bufferSize;
+    e->encoding = encoding;
 }
 
-void StringTransfer::beginSend(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress)
+void StringTransfer::beginSend(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress, uint8_t encoding)
 {
     uint16_t len = (uint16_t)strlen(string);
     if (len > sizeof(tx.data)-1)
@@ -52,14 +53,14 @@ void StringTransfer::beginSend(const char* string, uint16_t stringId, uint8_t to
         1, 0xFF,
         (uint8_t)stringId, (uint8_t)(stringId>>8),
         (uint8_t)len, (uint8_t)(len>>8),
-        0, 0xFF);
+        encoding, 0xFF);
 }
 
-bool StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress)
+bool StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t toType, uint8_t toAddress, uint8_t encoding)
 {
     if (!tx.active)
     {
-        beginSend(string, stringId, toType, toAddress);
+        beginSend(string, stringId, toType, toAddress, encoding);
         return true;
     }
 
@@ -75,6 +76,7 @@ bool StringTransfer::sendString(const char* string, uint16_t stringId, uint8_t t
     p.data[len] = 0;
     p.toType    = toType;
     p.toAddress = toAddress;
+    p.encoding  = encoding;
     return true;
 }
 
@@ -90,7 +92,13 @@ void StringTransfer::broadcastNext(uint8_t toType, uint8_t toAddress)
     broadcastIdx = (uint8_t)((broadcastIdx + 1) % regCount);
 
     if (e.buffer)
-        sendString(e.buffer, e.id, toType, toAddress);
+        sendString(e.buffer, e.id, toType, toAddress, e.encoding);
+}
+
+void StringTransfer::noteReceived(uint16_t stringId)
+{
+    receivedId = stringId;
+    receivedSeq++;
 }
 
 void StringTransfer::sendRequestFrame(uint16_t stringId, uint8_t fromType, uint8_t fromAddress)
@@ -175,7 +183,7 @@ void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_
     {
         RegEntry* e = findEntry(id);
         if (e && e->buffer)
-            beginSend(e->buffer, id, fromType, fromAddress);
+            beginSend(e->buffer, id, fromType, fromAddress, e->encoding);
         return;
     }
 
@@ -227,6 +235,7 @@ void StringTransfer::onPgn61(uint8_t fromType, uint8_t fromAddress, const uint8_
             if (e && e->buffer && e->size > 0)
                 e->buffer[0] = 0;
             receivedCount++;
+            noteReceived(id);
             slot->active = false;
             advanceRxQueue(slot);
         }
@@ -283,6 +292,7 @@ void StringTransfer::onPgn62(const uint8_t* D)
             __enable_irq();
         }
         receivedCount++;
+        noteReceived(id);
         slot->active = false;
         advanceRxQueue(slot);
     }
@@ -315,7 +325,7 @@ void StringTransfer::handler(void)
 
                 if (pendingCount > 0)
                 {
-                    beginSend(pending[0].data, pending[0].id, pending[0].toType, pending[0].toAddress);
+                    beginSend(pending[0].data, pending[0].id, pending[0].toType, pending[0].toAddress, pending[0].encoding);
                     for (uint8_t i = 1; i < pendingCount; i++)
                         pending[i-1] = pending[i];
                     pendingCount--;

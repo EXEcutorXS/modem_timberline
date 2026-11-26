@@ -82,7 +82,7 @@ Modem::Modem()
     rx.cursor = 0; rx.len = 0;
 
     network.imei[0] = network.iccid[0] = network.ownNumber[0] = network.operatorCode[0] = network.operatorName[0] = 0;
-    network.smsPhone[0] = network.smsText[0] = network.cmgrPhone[0] = network.cmgrBody[0] = ussdReq[0] = 0;
+    network.smsPhone[0] = network.smsText[0] = network.cmgrPhone[0] = network.cmgrBody[0] = ussdReq[0] = ussdCanRequest[0] = 0;
     ussdReplyPhone[0] = 0; ussdAwaiting = false; ussdAwaitStart = 0; ussdAccLen = 0; ussdLast[0] = 0;
     timeSync.enabled = false; timeSync.offsetMin = 0; timeSync.dstRule = 0;
     timeSync.nextAt = 0; timeSync.resultReady = false; timeSync.lastOk = false; timeSync.utc = 0;
@@ -1110,7 +1110,11 @@ void Modem::doIdle(void) {
     }
     if (ussdAwaiting && (now - ussdAwaitStart) >= 40000) {
         ussdAwaiting = false;
-        if (ussdReplyPhone[0]) { sendSms(ussdReplyPhone, "USSD: no reply"); ussdReplyPhone[0] = 0; }
+        strncpy(ussdLast, "USSD: no reply", sizeof(ussdLast) - 1);
+        ussdLast[sizeof(ussdLast) - 1] = 0;
+        stringTransfer.sendString(ussdLast, STRID_USSD_RESPONSE,
+            Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS, 1);
+        if (ussdReplyPhone[0]) { sendSms(ussdReplyPhone, ussdLast); ussdReplyPhone[0] = 0; }
     }
     if (sms.pending)                  { setState(ST_SEND_SMS);  return; }
     if (ussdPending)                 { setState(ST_USSD);       return; }
@@ -1210,6 +1214,8 @@ bool Modem::sendUssd(const char* req, const char* replyPhone) {
 void Modem::ussdDeliver(const char* utf8) {
     log_info("[USSD] "); log_info(utf8); log_info("\r\n");
     strncpy(ussdLast, utf8, sizeof(ussdLast) - 1); ussdLast[sizeof(ussdLast) - 1] = 0;
+    stringTransfer.sendString(ussdLast[0] ? ussdLast : "USSD: no text", STRID_USSD_RESPONSE,
+        Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS, 1);
     answer |= ANS_CUSD;
     ussdAwaiting = false;
     if (ussdReplyPhone[0]) {
@@ -1254,12 +1260,14 @@ void Modem::doUssd(void) {
             if (answer & ANS_TIMEOUT) { log_info("[USSD] timeout\r\n"); fail = "USSD: timeout"; }
             if (answer & ANS_ERROR)   { log_info("[USSD] error\r\n");   fail = "USSD: error"; }
             ussdPending = false;
-            if (fail && ussdReplyPhone[0]) {
-                sendSms(ussdReplyPhone, fail);
-                ussdReplyPhone[0] = 0;
-            } else if (!fail && ussdReplyPhone[0]) {
-                /* Accepted — the network's answer arrives later as +CUSD:
-                   (see parseLine()); doIdle() gives up waiting after 40 s. */
+            if (fail) {
+                strncpy(ussdLast, fail, sizeof(ussdLast) - 1);
+                ussdLast[sizeof(ussdLast) - 1] = 0;
+                stringTransfer.sendString(ussdLast, STRID_USSD_RESPONSE,
+                    Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS, 1);
+                if (ussdReplyPhone[0]) { sendSms(ussdReplyPhone, fail); ussdReplyPhone[0] = 0; }
+            } else {
+                /* Accepted. The network answer arrives later as +CUSD:. */
                 ussdAwaiting = true;
                 ussdAwaitStart = core.getTick();
             }

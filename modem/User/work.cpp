@@ -26,6 +26,16 @@ void Work_C::initialize(void) {
 }
 
 void Work_C::handler(void) {
+    static uint8_t seenUssdRx;
+    static bool ussdQueued;
+    if (stringTransfer.receivedSeq != seenUssdRx) {
+        if (stringTransfer.receivedId == STRID_USSD_REQUEST && modem.ussdRequestBuf()[0])
+            ussdQueued = true;
+        seenUssdRx = stringTransfer.receivedSeq;
+    }
+    if (ussdQueued && modem.sendUssd(modem.ussdRequestBuf(), 0))
+        ussdQueued = false;
+
     resetHandler();
     modem_process_emulated_sms();
     modem_process_usb_set();

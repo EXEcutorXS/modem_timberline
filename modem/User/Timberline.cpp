@@ -1025,7 +1025,10 @@ static void onSmsReceived(const char* phone, const char* text) {
     /* Push the last-received SMS to the bus as soon as it arrives, regardless
        of auth outcome — useful for diagnosing rejected/garbled commands too. */
     /* broadcast, not to self - see work.cpp::canBroadcast() comment */
-    stringTransfer.sendString(text,  STRID_LAST_REC_SMS_TEXT, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS);
+    /* cmgrBody is UTF-8: decodeUcs2Hex() converts a UCS2-hex body, and plain
+       GSM7 is ASCII, which is valid UTF-8. ASCII on the wire turns the
+       Cyrillic bytes into '?' in CAN Tool. */
+    stringTransfer.sendString(text,  STRID_LAST_REC_SMS_TEXT, Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS, 1);
     stringTransfer.sendString(phone, STRID_LAST_REC_SMS_NUM,  Can::BROADCAST_TYPE, Can::BROADCAST_ADDRESS);
 
     uint8_t D[8]= {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
@@ -1437,7 +1440,7 @@ void Timberline::init(void) {
     stringTransfer.registerString(STRID_TRUSTED_PHONE2,  modem.config.phones[2],     sizeof(modem.config.phones[2]));
     stringTransfer.registerString(STRID_TRUSTED_PHONE3,  modem.config.phones[3],     sizeof(modem.config.phones[3]));
     stringTransfer.registerString(STRID_TRUSTED_PHONE4,  modem.config.phones[4],     sizeof(modem.config.phones[4]));
-    stringTransfer.registerString(STRID_LAST_REC_SMS_TEXT,  modem.network.cmgrBody,   sizeof(modem.network.cmgrBody));
+    stringTransfer.registerString(STRID_LAST_REC_SMS_TEXT,  modem.network.cmgrBody,   sizeof(modem.network.cmgrBody), 1);
     stringTransfer.registerString(STRID_LAST_REC_SMS_NUM,   modem.network.cmgrPhone,  sizeof(modem.network.cmgrPhone));
     stringTransfer.registerString(STRID_LAST_SENT_SMS_TEXT, modem.network.smsText,    sizeof(modem.network.smsText));
     stringTransfer.registerString(STRID_LAST_SENT_SMS_NUM,  modem.network.smsPhone,   sizeof(modem.network.smsPhone));
@@ -1450,6 +1453,8 @@ void Timberline::init(void) {
     stringTransfer.registerString(STRID_IP_V4,           modem.internet.ipAddress,     sizeof(modem.internet.ipAddress));
     stringTransfer.registerString(STRID_CONNECTION_LINK, modem.internet.connectionLink, sizeof(modem.internet.connectionLink));
     stringTransfer.registerString(STRID_SIMCOM_FW,       modem.network.simcomFw,       sizeof(modem.network.simcomFw));
+    stringTransfer.registerString(STRID_USSD_REQUEST,    modem.ussdRequestBuf(),       32);
+    stringTransfer.registerString(STRID_USSD_RESPONSE,   modem.ussdReplyBuf(),         200, 1);
 }
 
 /* ── mqttActualizerHandler ─────────────────────────────────────────────
